@@ -1,0 +1,85 @@
+<!--/* Connect — point an LLM at this server (D88, SSR). A content fragment; layout.html provides the shell.
+     Everything automatable on this serve instance is described by ONE uber prompt — the assembled
+     cold-start guide (the same text GET /api/prompts returns and MCP sends as `instructions`), rendered
+     server-side from the `coldStartPrompt` template global. The page exists so a human can HAND that
+     prompt to an LLM (paste into a chat / agent) instead of having to know the endpoint conventions. */-->
+<div x-data="connectApp()" x-cloak class="max-w-4xl mx-auto px-6 py-8" data-ka-section="connect">
+
+  <h1 class="text-base font-semibold text-slate-900 dark:text-slate-100">Connect your LLM<!--
+    D124 context-sensitive "?" — connecting an LLM / BYO endpoint. -->
+    <a href="/help#install.llm" target="ka-help" rel="noopener" title="Connecting an LLM — open the Help deep-dive"
+       class="inline-flex items-center justify-center w-4 h-4 ml-1 align-middle rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold no-underline hover:ring-1 hover:ring-indigo-400">?</a></h1>
+  <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+    Everything this server can do — drive the browser, run flows, query coverage — is automatable by any
+    LLM over plain HTTP. Copy a prompt below, paste it to your LLM or agent, and it drives this instance.
+  </p>
+
+  <!-- the connect prompt (curl flavor) — the quick start: fetch the guide, drive /api/eval -->
+  <section class="mt-6 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm" data-ka-section="connect.curl">
+    <div class="flex items-center justify-between gap-3">
+      <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Connect prompt <span class="font-normal text-slate-400">(curl / HTTP)</span></h2>
+      <button @click="copy('prompt', connectPrompt())"
+              class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
+              x-text="copied === 'prompt' ? 'copied ✓' : 'Copy'"></button>
+    </div>
+    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Paste this to any LLM that can run shell commands (Claude Code, a coding agent, …). It fetches the app-wide guide itself — everything this instance can do. (Browser-driving only? The focused prompt is the <a href="/runs" class="text-indigo-600 dark:text-indigo-400 hover:underline">Copy LLM prompt</a> button on Runs.)</p>
+    <pre class="mt-3 max-h-56 overflow-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-100 font-mono whitespace-pre-wrap" x-text="connectPrompt()"></pre>
+  </section>
+
+  <!-- MCP flavor — for MCP-native clients the endpoint IS the integration (instructions ride the handshake) -->
+  <section class="mt-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm" data-ka-section="connect.mcp">
+    <div class="flex items-center justify-between gap-3">
+      <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">MCP endpoint</h2>
+      <button @click="copy('mcp', mcpUrl())"
+              class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
+              x-text="copied === 'mcp' ? 'copied ✓' : 'Copy URL'"></button>
+    </div>
+    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">MCP-native clients need only the endpoint — the same guide below arrives as the server's <code>instructions</code> on connect.</p>
+    <pre class="mt-3 rounded-lg bg-slate-900 p-3 text-xs text-slate-100 font-mono" x-text="mcpUrl()"></pre>
+  </section>
+
+  <!-- the full guide — on-demand pull (collapsed; fetched from /api/prompts on first open) -->
+  <section class="mt-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm" data-ka-section="connect.guide">
+    <div class="flex items-center justify-between gap-3">
+      <button @click="toggleGuide()" class="flex items-center gap-2 text-left">
+        <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">The full guide <span class="font-normal text-slate-400">(what the LLM reads)</span></h2>
+        <span class="text-slate-400 text-xs" x-text="guideOpen ? '▾' : '▸'"></span>
+      </button>
+      <button x-show="guideOpen && guide" @click="copy('uber', guide)"
+              class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
+              x-text="copied === 'uber' ? 'copied ✓' : 'Copy'"></button>
+    </div>
+    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Served at <code>GET /api/prompts</code> — paste it directly if your LLM can't run curl.</p>
+    <pre x-show="guideOpen" x-text="guide || 'loading…'"
+         class="mt-3 max-h-[28rem] overflow-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-100 font-mono whitespace-pre-wrap"></pre>
+  </section>
+
+</div>
+
+<script>
+  function connectApp() {
+    return {
+      copied: '', guide: '', guideOpen: false,
+      mcpUrl() { return location.origin + '/api/mcp'; },
+      async toggleGuide() {
+        this.guideOpen = !this.guideOpen;
+        if (this.guideOpen && !this.guide) {
+          try { this.guide = await (await fetch('/api/prompts')).text(); }
+          catch (e) { this.guide = 'could not load /api/prompts: ' + e; }
+        }
+      },
+      // deliberately MINIMAL (one curl + follow it) — and APP-WIDE: this curls the bare uber
+      // prompt (everything automatable on this instance); the browser-focused set
+      // (/api/prompts/browser) is the /runs page's copy button
+      connectPrompt() {
+        const base = location.origin;
+        return 'Run `curl -s ' + base + '/api/prompts` and follow those instructions.';
+      },
+      async copy(which, text) {
+        await kaCopy(text);
+        this.copied = which;
+        setTimeout(() => { this.copied = ''; }, 1800);
+      }
+    };
+  }
+</script>

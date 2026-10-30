@@ -1,0 +1,13 @@
+package io.karatelabs.js;
+
+public enum EventType {
+   CONTEXT_ENTER,
+   CONTEXT_EXIT,
+   STATEMENT_ENTER,
+   STATEMENT_EXIT,
+   EXPRESSION_ENTER,
+   EXPRESSION_EXIT,
+   BRANCH,
+   COMPARE,
+   PROPERTY_GET;
+}

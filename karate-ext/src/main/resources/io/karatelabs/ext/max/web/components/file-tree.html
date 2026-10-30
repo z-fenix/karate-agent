@@ -1,0 +1,187 @@
+<!--/* components/file-tree.html — the reusable VS Code-style project-explorer widget.
+
+  A lazy, draggable, right-clickable file tree with inline rename, colored per-type icons, and a hover
+  properties popover. All filesystem CRUD is owned by the kaFileTree() factory (pub/file-tree.js); the
+  widget stays decoupled from whatever renders an opened file — it dispatches a window `ka-file-open`
+  event carrying a resolved VIEW id, so the host switches its right pane with a switch.
+
+  REQUIRES on the page:
+    - the icon sprite once:  <th:block th:insert="~{components/icons :: sprite}"></th:block>
+    - <script src="/pub/file-tree.js"> loaded before Alpine scans this fragment
+
+  PARAMS (th:with):
+    cfg  (required) — NAME of a global config function, e.g. 'checksTreeConfig'. The fragment does
+                      x-data="kaFileTree(window[$el.dataset.cfg]())" so it stays generic.
+
+  USE:  <div data-ka-section="checks.sidebar" class="h-full min-h-0">
+          <th:block th:insert="~{components/file-tree :: fileTree}" th:with="cfg:'checksTreeConfig'"></th:block>
+        </div>
+*/-->
+<div th:fragment="fileTree" th:attr="'data-cfg': cfg"
+     x-data="kaFileTree(window[$el.dataset.cfg]())" x-cloak
+     class="flex flex-col h-full min-h-0 text-sm text-slate-700 dark:text-slate-200">
+
+  <!-- ── header: label + actions (h-11 matches the editor toolbar so the two read as one bar) ── -->
+  <div class="flex items-center gap-0.5 px-2 h-11 border-b border-slate-100 dark:border-slate-800 shrink-0">
+    <span class="flex-1 min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
+          x-text="cfg.rootLabel" :title="cfg.rootLabel"></span>
+    <a href="/help#check" target="ka-help" rel="noopener" title="What is a check? Open the Help deep-dive"
+       class="inline-flex items-center justify-center w-4 h-4 mr-1 rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold no-underline hover:ring-1 hover:ring-indigo-400">?</a>
+    <button type="button" title="New file" @click="startCreate('file', activeParent())"
+            class="p-1 rounded text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800">
+      <svg class="w-4 h-4"><use href="#ic-new-file"></use></svg></button>
+    <button type="button" title="New folder" @click="startCreate('folder', activeParent())"
+            class="p-1 rounded text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800">
+      <svg class="w-4 h-4"><use href="#ic-new-folder"></use></svg></button>
+    <button type="button" title="Upload into the selected folder" @click="uploadTarget = activeParent(); $refs.uploadInput.click()"
+            class="p-1 rounded text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800">
+      <svg class="w-4 h-4"><use href="#ic-upload"></use></svg></button>
+    <button type="button" title="Collapse all" @click="expanded = {}; persistExpanded()"
+            class="p-1 rounded text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800">
+      <svg class="w-4 h-4"><use href="#ic-collapse"></use></svg></button>
+    <!-- the LENS badge + popover (D193, cfg.lens hosts opt in) — last item on the explorer header.
+         A lens FILTERS this one tree (folders intact, every file op identical); the lens API
+         (lens/lensLabel/lenses/lensOpen/setLens) resolves up the Alpine scope chain to the host.
+         The explorer IS the lens host per D193, so the checks.lens section id lives here. -->
+    <template x-if="cfg.lens">
+      <div class="relative ml-1 shrink-0" data-ka-section="checks.lens">
+        <button type="button" @click="lensOpen = !lensOpen" title="Lens — filter the explorer by artifact type"
+                class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium"
+                :class="lens==='all' ? 'border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-400' : 'border-indigo-400 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40'">
+          <span x-text="lensLabel"></span><span class="text-[9px] opacity-60">▾</span>
+        </button>
+        <div x-show="lensOpen" @click.outside="lensOpen = false" x-cloak
+             class="absolute right-0 top-7 z-30 w-56 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg py-1">
+          <template x-for="l in lenses" :key="l.id">
+            <button type="button" @click="if (!l.soon) { setLens(l.id); lensOpen = false; }"
+                    class="w-full flex items-baseline gap-2 px-3 py-1.5 text-left"
+                    :class="l.soon ? 'opacity-50 cursor-not-allowed' : (lens===l.id ? 'bg-indigo-50 dark:bg-indigo-950/40' : 'hover:bg-slate-50 dark:hover:bg-slate-800')">
+              <span class="w-9 shrink-0 text-xs font-medium" :class="lens===l.id ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-700 dark:text-slate-200'" x-text="l.label"></span>
+              <span class="text-[11px] text-slate-400 dark:text-slate-500" x-text="l.hint"></span>
+              <span x-show="l.soon" class="ml-auto text-[9px] uppercase tracking-wide rounded px-1 py-0.5 bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500">soon</span>
+            </button>
+          </template>
+        </div>
+      </div>
+    </template>
+    <input x-ref="uploadInput" type="file" multiple class="hidden"
+           @change="uploadInto(uploadTarget, $event.target.files); $event.target.value = ''">
+  </div>
+
+  <!-- ── the tree (scrolls); the whole area is a drop-to-root target ──── -->
+  <div class="flex-1 min-h-0 overflow-auto py-1"
+       @dragover="onDragOverRoot($event)" @drop="onDropRoot($event)"
+       :class="drag.src && dropTarget === '' ? 'bg-indigo-50/40 dark:bg-indigo-950/30' : ''">
+
+    <p x-show="empty && !create.open" x-cloak class="px-3 py-2 text-xs text-slate-400">empty — ＋ to add a file or folder</p>
+    <p x-show="filterEmpty" x-cloak class="px-3 py-2 text-xs text-slate-400">
+      nothing matches this lens<template x-if="filter && filter.hint"><span> — <span x-text="filter.hint"></span></span></template></p>
+    <p x-show="error" x-cloak class="mx-2 my-1 rounded bg-rose-50 dark:bg-rose-950/40 px-2 py-1 text-[11px] text-rose-700 dark:text-rose-300" x-text="error"></p>
+
+    <template x-for="n in flatTree" :key="n.path">
+      <div>
+        <!-- the inline new-file / new-folder input — rendered AS A ROW inside its target folder, at the
+             matching indent, so it visibly lands where it will be created (not adrift at the tree top) -->
+        <template x-if="n.__create">
+          <div class="flex items-center gap-1 pr-1.5 py-[3px]" :style="'padding-left:' + (0.25 + n.depth * 0.75) + 'rem'">
+            <span class="w-4 shrink-0"></span>
+            <svg class="w-4 h-4 shrink-0" :class="create.kind === 'folder' ? 'text-slate-400' : 'text-amber-500'"><use :href="'#ic-' + (create.kind === 'folder' ? 'folder' : 'code')"></use></svg>
+            <form @submit.prevent="submitCreate()" class="flex-1 min-w-0">
+              <input x-ref="createInput" x-model="create.name" @click.stop @keydown.escape.prevent="cancelCreate()" @blur="cancelCreate()"
+                     :placeholder="create.kind === 'folder' ? 'folder name' : 'name.js'"
+                     class="w-full text-sm rounded border border-indigo-400 dark:bg-slate-900 px-1.5 py-0.5 focus:outline-none">
+            </form>
+          </div>
+        </template>
+        <!-- a normal node row -->
+        <template x-if="!n.__create">
+      <div class="group flex items-center gap-1 pr-1.5 py-[3px] cursor-pointer select-none border-l-2"
+           :style="'padding-left:' + (0.25 + n.depth * 0.75) + 'rem'"
+           :class="(selected === n.path ? 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-900 dark:text-indigo-100 border-indigo-500' : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/60') + (dropTarget === n.path && drag.src ? ' ring-1 ring-inset ring-indigo-400' : '')"
+           draggable="true"
+           @dragstart.stop="onDragStart(n, $event)" @dragend="onDragEnd()"
+           @dragover="onDragOver(n, $event)" @drop.stop="onDrop(n, $event)"
+           @click="onRow(n)" @contextmenu.prevent.stop="openMenu(n, $event)">
+
+        <!-- disclosure chevron (folders) / spacer (files) -->
+        <button type="button" x-show="n.dir" @click.stop="toggleExpand(n.path)"
+                class="w-4 h-4 shrink-0 flex items-center justify-center text-slate-400">
+          <svg class="w-3 h-3 transition-transform" :class="expanded[n.path] ? 'rotate-90' : ''"><use href="#ic-chevron"></use></svg>
+        </button>
+        <span x-show="!n.dir" class="w-4 shrink-0"></span>
+
+        <!-- colored per-type icon -->
+        <svg class="w-4 h-4 shrink-0" :class="iconClass(n)"><use :href="'#ic-' + iconKey(n)"></use></svg>
+
+        <!-- name, or the inline rename input -->
+        <template x-if="rename.path !== n.path">
+          <span class="truncate" x-text="n.name" :title="n.path"></span>
+        </template>
+        <template x-if="rename.path === n.path">
+          <input x-ref="renameInput" x-model="rename.name" @click.stop
+                 @keydown.enter.prevent="submitRename()" @keydown.escape.prevent="cancelRename()" @blur="submitRename()"
+                 class="flex-1 min-w-0 text-sm rounded border border-indigo-400 dark:bg-slate-900 px-1 py-0 focus:outline-none">
+        </template>
+
+        <!-- hover-revealed properties button -->
+        <button type="button" tabindex="-1" title="Properties" @click.stop="openProps(n, $event)"
+                class="ml-auto shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-100 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400">
+          <svg class="w-3.5 h-3.5"><use href="#ic-info"></use></svg>
+        </button>
+      </div>
+        </template>
+      </div>
+    </template>
+  </div>
+
+  <!-- ── right-click context menu (fixed at cursor) ──────────────────── -->
+  <div x-show="menu.open" x-cloak @click.stop
+       class="fixed z-50 w-48 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 py-1 shadow-xl text-sm"
+       :style="'left:' + menu.x + 'px; top:' + menu.y + 'px'">
+    <template x-if="menu.node">
+      <div>
+        <button x-show="!menu.node.dir" @click="openFile(menu.node); menu.open = false" class="ka-mi">Open</button>
+        <button x-show="isRunnable(menu.node)" @click="runNode(menu.node)" class="ka-mi">Run ▶</button>
+        <button @click="startCreate('file', menu.node.dir ? menu.node.path : parentOf(menu.node.path))" class="ka-mi">New File</button>
+        <button @click="startCreate('folder', menu.node.dir ? menu.node.path : parentOf(menu.node.path))" class="ka-mi">New Folder</button>
+        <button x-show="menu.node.dir" @click="uploadTarget = menu.node.path; menu.open = false; $refs.uploadInput.click()" class="ka-mi">Upload here…</button>
+        <div class="my-1 border-t border-slate-100 dark:border-slate-700"></div>
+        <button @click="startRename(menu.node)" class="ka-mi">Rename…</button>
+        <button @click="copyPath(menu.node)" class="ka-mi">Copy path</button>
+        <button @click="del(menu.node)" class="ka-mi ka-mi-danger">Delete</button>
+      </div>
+    </template>
+  </div>
+
+  <!-- ── properties popover (fixed, anchored under the ⓘ) ────────────── -->
+  <div x-show="props.open" x-cloak @click.outside="closeProps()"
+       class="fixed z-50 w-64 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-3 shadow-xl text-xs"
+       :style="'left:' + props.x + 'px; top:' + props.y + 'px'">
+    <template x-if="props.node">
+      <div>
+        <div class="flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-100">
+          <svg class="w-4 h-4 shrink-0" :class="iconClass(props.node)"><use :href="'#ic-' + iconKey(props.node)"></use></svg>
+          <span class="truncate" x-text="props.node.name"></span>
+        </div>
+        <dl class="mt-2 space-y-1 text-slate-500 dark:text-slate-400">
+          <div class="flex items-start gap-1">
+            <dt class="text-slate-400 shrink-0">path </dt>
+            <dd class="text-slate-700 dark:text-slate-300 break-all min-w-0" x-text="rootPath(props.node)"></dd>
+            <button type="button" @click.stop="copyRef(props.node)"
+                    :title="props.copied ? 'copied' : 'copy path (from project root)'"
+                    class="shrink-0 ml-auto p-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700"
+                    :class="props.copied ? 'text-emerald-500' : 'text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400'">
+              <svg class="w-3.5 h-3.5"><use href="#ic-copy"></use></svg>
+            </button>
+          </div>
+          <div><dt class="inline text-slate-400">kind </dt><dd class="inline text-slate-700 dark:text-slate-300" x-text="props.node.dir ? 'folder' : kindOf(props.node.name)"></dd></div>
+          <div x-show="!props.node.dir"><dt class="inline text-slate-400">size </dt><dd class="inline text-slate-700 dark:text-slate-300" x-text="fmtSize(props.node.size)"></dd></div>
+          <div><dt class="inline text-slate-400">modified </dt><dd class="inline text-slate-700 dark:text-slate-300" x-text="fmtTime(props.node.modified)"></dd></div>
+          <div x-show="props.loading" class="text-slate-400 italic">reading…</div>
+          <div x-show="props.meta && props.meta.description"><dt class="inline text-slate-400">desc </dt><dd class="inline text-slate-700 dark:text-slate-300" x-text="props.meta && props.meta.description"></dd></div>
+          <div x-show="props.meta && props.meta.params"><dt class="inline text-slate-400">params </dt><dd class="inline text-slate-700 dark:text-slate-300" x-text="props.meta && props.meta.params"></dd></div>
+        </dl>
+      </div>
+    </template>
+  </div>
+</div>

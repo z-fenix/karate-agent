@@ -1,0 +1,121 @@
+<!--/* Home — the simplified switchboard (D88, SSR). A content fragment: layout.html provides <head>/<header>/<body>.
+     Tuned for manual testers (feedback: the full six-tile grid intimidated them). One friendly hero with the
+     single primary action — open the shared run-kickoff modal (components/run-modal, the SAME surface the Runs
+     page uses) — over just three tiles: Runs · Connect · Help. The in-flight banner is rendered SERVER-SIDE
+     (harness.status() in ka:scope) — no client round-trip, so it never queues behind a bot op on the evalLock. */-->
+<script ka:scope="global">
+  // Manual mode is the landing page when this browser chose it on /manual/choose (the D114 session), else
+  // when KARATE_CONSOLE_VIEW=manual and the browser has not chosen Dev
+  var chosenView = (session && session.ui) ? session.ui.consoleView : null;
+  if ((chosenView || settings.consoleView()) == 'manual') context.redirect('/manual');
+  // a browser that has not chosen is told where a tester's way in is
+  _.unchosen = chosenView ? null : true;
+
+  // read the live run server-side; null unless a run is actually in flight
+  var st = harness.status();
+  _.live = (st && st.status == 'running') ? st : null;
+
+  // the shared run-kickoff modal's SSR data (same block the /runs page builds), so the hero button can
+  // open the exact same modal here: the LLM selector, the single-user gate, and the file picker.
+  var data = harness.runs();
+  _.activeRun = data.active || '';                                  // single-user (D48): one run at a time
+  _.llm = harness.providers();                                      // providers with env keys + the default
+  // .js checks + .feature files are both SET members, named project-root relative (D281); .md notes are
+  // goals; a *.karate.js orchestrator keeps its own single-leaf launch lane, named project-root relative
+  // too — Runner.launch resolves against the project root
+  var pickables = [];
+  var jsChecks = check.list();
+  for (var i = 0; i < jsChecks.length; i++) {
+    var cn = 'checks/' + jsChecks[i].name;
+    pickables.push({ name: cn, type: cn.substring(cn.length - 10) == '.karate.js' ? 'launch' : 'js' });
+  }
+  // ANY project .md is a usable goal prompt (Harness.explore resolves checks/ first, then the project
+  // root); file.list already prunes target/ + runs/. Only a checks/ file is named checks-relative.
+  var mdFiles = file.list('**/*.md');
+  for (var j = 0; j < mdFiles.length; j++) {
+    pickables.push({ name: mdFiles[j].indexOf('checks/') === 0 ? mdFiles[j].substring(7) : mdFiles[j], type: 'md' });
+  }
+  var features = file.list('**/*.feature');
+  for (var k = 0; k < features.length; k++) pickables.push({ name: features[k], type: 'feature' });
+  _.pickables = pickables;
+  // no provider key set (providers() lists only those whose env key is present) → the agent can't
+  // drive an autonomous run; the hero shows how to fix it (add a key) or use a no-key path (Connect).
+  _.noLlm = !(_.llm.providers && _.llm.providers.length);
+</script>
+<div ka:island="llm"/>
+<div ka:island="activeRun"/>
+<div ka:island="pickables"/>
+
+<div class="max-w-4xl mx-auto px-6 py-10" data-ka-section="home">
+
+  <!-- the shared kickoff modal — the same one the Runs page opens; the hero button below fires it -->
+  <th:block th:insert="~{components/run-modal :: runModal}"></th:block>
+
+  <a th:if="unchosen" href="/manual/choose" data-ka-section="home.manual"
+     class="mt-6 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/40 p-4 flex items-center justify-between hover:border-indigo-400">
+    <span class="text-sm text-indigo-700 dark:text-indigo-300"><span class="font-medium">Testing by hand, without code?</span>
+      <span class="block text-xs text-slate-500 dark:text-slate-400 mt-0.5">Manual mode shows your tests, what they prove, and runs them.</span></span>
+    <span class="text-sm font-medium text-indigo-600 dark:text-indigo-400 shrink-0">Open Manual mode →</span>
+  </a>
+
+  <!-- in-flight run banner (SSR — only present when a run is live) -->
+  <a th:if="live" th:href="'/runs/' + encodeURIComponent(live.runId)" data-ka-section="home.inflight"
+     class="mt-6 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/40 p-4 flex items-center justify-between hover:border-indigo-400">
+    <span class="text-sm text-indigo-700 dark:text-indigo-300">
+      <span class="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse mr-2 align-middle"></span>
+      <span class="font-medium">A run is in flight</span>
+      <span class="block text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate max-w-xl" th:text="live.task">task</span>
+    </span>
+    <span class="text-sm font-medium text-indigo-600 dark:text-indigo-400 shrink-0">connect →</span>
+  </a>
+
+  <!-- HERO — the one primary action for a manual tester: start a test run (opens the shared modal) -->
+  <section data-ka-section="home.start"
+           class="mt-8 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/40 p-8 text-center shadow-sm">
+    <div class="text-2xl">🚀</div>
+    <h2 class="mt-3 text-xl font-semibold text-slate-900 dark:text-slate-100">Ready to explore?</h2>
+    <p class="mx-auto mt-2 max-w-md text-sm text-slate-600 dark:text-slate-300">
+      Just describe what you want to check in plain English and let the agent drive the browser for you.
+      Nothing to install.
+    </p>
+    <button type="button" onclick="kaRunModalOpen()" data-ka-section="home.start.button"
+            class="mt-6 inline-flex items-center gap-2 whitespace-nowrap rounded-xl bg-indigo-600 px-6 py-3 text-base font-semibold text-white shadow hover:bg-indigo-500">
+      ▶ Start a test run
+    </button>
+
+    <!-- no provider key set: the agent can't drive a run on its own — guide them (BYO-LLM, D34) -->
+    <p th:if="noLlm" data-ka-section="home.start.nokey" class="mx-auto mt-5 max-w-md text-xs text-amber-700 dark:text-amber-400">
+      ⚠ No AI provider key is set here yet, so the agent can't drive a run on its own. You can still run
+      saved tests, or <a href="/connect" class="font-medium underline hover:no-underline">point your own AI assistant</a>
+      at it — or <a href="/help#install.llm" target="ka-help" rel="noopener" class="font-medium underline hover:no-underline">add a provider key</a>.
+    </p>
+  </section>
+
+  <!-- the three tiles a manual tester needs — Runs · Connect · Help -->
+  <div class="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-4" data-ka-section="home.switchboard">
+    <a href="/runs" class="group rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm hover:border-indigo-400 hover:shadow">
+      <div class="text-2xl">🎛️</div>
+      <h2 class="mt-2 font-semibold text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400">Runs</h2>
+      <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">See past runs, watch the live one, or start another.</p>
+    </a>
+    <a href="/connect" class="group rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm hover:border-indigo-400 hover:shadow">
+      <div class="text-2xl">🔌</div>
+      <h2 class="mt-2 font-semibold text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400">Connect</h2>
+      <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Point your own AI assistant at this instance — it'll do the driving and explaining.</p>
+    </a>
+    <a href="/help" class="group rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm hover:border-indigo-400 hover:shadow">
+      <div class="text-2xl">📖</div>
+      <h2 class="mt-2 font-semibold text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400">Help</h2>
+      <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Friendly guides and answers — or try the built-in demo to see how it all works.</p>
+    </a>
+  </div>
+</div>
+
+<script>
+  // deep-link: opening "/#start" pops the kickoff modal straight away — a shareable "start a test" link.
+  // Fire on alpine:initialized so the modal's @ka-run-modal-open.window listener is guaranteed attached
+  // (Alpine is deferred; a 0ms timer can beat it and the open event is then lost).
+  if (location.hash === '#start') {
+    document.addEventListener('alpine:initialized', function () { kaRunModalOpen(); });
+  }
+</script>

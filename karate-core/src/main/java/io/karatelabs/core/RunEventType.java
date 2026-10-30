@@ -1,0 +1,18 @@
+package io.karatelabs.core;
+
+public enum RunEventType {
+   SUITE_ENTER,
+   SUITE_EXIT,
+   FEATURE_ENTER,
+   FEATURE_EXIT,
+   OUTLINE_ENTER,
+   SCENARIO_ENTER,
+   SCENARIO_EXIT,
+   STEP_ENTER,
+   STEP_EXIT,
+   HTTP_ENTER,
+   HTTP_EXIT,
+   MATCH_EXIT,
+   ERROR,
+   PROGRESS;
+}

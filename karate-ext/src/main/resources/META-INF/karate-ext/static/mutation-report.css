@@ -1,0 +1,137 @@
+/* Mutation report (api-mutation-testing SPEC §4/§6) — self-contained component styles. Kept
+ * independent of Tailwind utility classes (the report JS lives outside the tailwind content-scan
+ * globs), so the report renders correctly straight off disk. Same token convention as the Rule
+ * Analysis report; the six mutant statuses get their own chip palette. */
+
+:root {
+    --km-bg: #f8fafc;
+    --km-panel: #ffffff;
+    --km-border: #e2e8f0;
+    --km-border-strong: #cbd5e1;
+    --km-ink: #1e293b;
+    --km-muted: #64748b;
+    --km-faint: #94a3b8;
+    --km-accent: #4f46e5;
+    --km-killed: #047857;
+    --km-killed-bg: #ecfdf5;
+    --km-killed-border: #a7f3d0;
+    --km-survived: #b91c1c;
+    --km-survived-bg: #fef2f2;
+    --km-survived-border: #fecaca;
+    --km-notcovered: #b45309;
+    --km-notcovered-bg: #fffbeb;
+    --km-notcovered-border: #fde68a;
+    --km-screened: #475569;
+    --km-screened-bg: #f1f5f9;
+    --km-screened-border: #cbd5e1;
+    --km-invalid: #6b21a8;
+    --km-invalid-bg: #faf5ff;
+    --km-invalid-border: #e9d5ff;
+    --km-timeout: #9f1239;
+    --km-timeout-bg: #fff1f2;
+    --km-timeout-border: #fecdd3;
+    --km-rail-bg: #eef2ff;
+    --km-rail-border: #c7d2fe;
+    --km-rail-ink: #3730a3;
+    --km-subtle: #f1f5f9;
+    --km-stripe: #f8fafc;
+}
+
+[data-theme="dark"] {
+    --km-bg: #0f172a;
+    --km-panel: #1e293b;
+    --km-border: #334155;
+    --km-border-strong: #475569;
+    --km-ink: #e2e8f0;
+    --km-muted: #94a3b8;
+    --km-faint: #64748b;
+    --km-accent: #818cf8;
+    --km-killed: #34d399;
+    --km-killed-bg: #0c2e25;
+    --km-killed-border: #15604a;
+    --km-survived: #f87171;
+    --km-survived-bg: #3a1414;
+    --km-survived-border: #7f1d1d;
+    --km-notcovered: #fbbf24;
+    --km-notcovered-bg: #3a2c0a;
+    --km-notcovered-border: #78510f;
+    --km-screened: #94a3b8;
+    --km-screened-bg: #273241;
+    --km-screened-border: #47566b;
+    --km-invalid: #c4b5fd;
+    --km-invalid-bg: #2b2350;
+    --km-invalid-border: #4c3d85;
+    --km-timeout: #fda4af;
+    --km-timeout-bg: #3d1420;
+    --km-timeout-border: #7c2438;
+    --km-rail-bg: #232358;
+    --km-rail-border: #3b3680;
+    --km-rail-ink: #c7d2fe;
+    --km-subtle: #273241;
+    --km-stripe: #243044;
+}
+
+html, body { background: var(--km-bg); color: var(--km-ink); }
+.km-wrap { max-width: 72rem; margin: 0 auto; padding: 1.5rem 1.25rem 3rem;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.km-head { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; }
+.km-head h1 { font-size: 1.35rem; font-weight: 700; margin: 0; }
+.km-rule { color: var(--km-accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.km-lane { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
+    padding: 0.15rem 0.5rem; border-radius: 999px; background: var(--km-subtle);
+    border: 1px solid var(--km-border-strong); color: var(--km-muted); }
+.km-sub { color: var(--km-muted); font-size: 0.85rem; margin: 0.35rem 0 1rem; }
+.km-sub code { background: var(--km-subtle); padding: 0.05rem 0.3rem; border-radius: 0.25rem;
+    font-size: 0.8em; }
+
+/* score tiles */
+.km-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 0.75rem; margin-bottom: 1rem; }
+.km-tile { background: var(--km-panel); border: 1px solid var(--km-border); border-radius: 0.6rem;
+    padding: 0.8rem 1rem; }
+.km-tile--hero { border-color: var(--km-accent); border-width: 2px; }
+.km-tile .km-val { font-size: 1.7rem; font-weight: 700; line-height: 1.15; }
+.km-tile .km-lbl { font-size: 0.75rem; color: var(--km-muted); margin-top: 0.15rem; }
+.km-tile .km-note { font-size: 0.7rem; color: var(--km-faint); margin-top: 0.25rem; }
+
+/* the §6 framing rail — always on the face, never collapsible */
+.km-rail { background: var(--km-rail-bg); border: 1px solid var(--km-rail-border);
+    color: var(--km-rail-ink); border-radius: 0.6rem; padding: 0.7rem 1rem; font-size: 0.85rem;
+    margin-bottom: 1.25rem; }
+.km-rail strong { font-weight: 700; }
+
+/* status chip strip */
+.km-chips { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+.km-chip { font-size: 0.75rem; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: 999px;
+    border: 1px solid; }
+
+/* sections + tables */
+.km-section h2 { font-size: 1rem; font-weight: 700; margin: 1.5rem 0 0.5rem; }
+.km-section .km-hint { color: var(--km-muted); font-size: 0.8rem; margin: 0 0 0.6rem; }
+.km-tablewrap { overflow-x: auto; background: var(--km-panel); border: 1px solid var(--km-border);
+    border-radius: 0.6rem; }
+table.km-table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+.km-table th { text-align: left; font-weight: 600; color: var(--km-muted); font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.04em; padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid var(--km-border-strong); background: var(--km-stripe);
+    position: sticky; top: 0; }
+.km-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--km-border);
+    vertical-align: top; }
+.km-table tr:last-child td { border-bottom: none; }
+.km-table tr:hover td { background: var(--km-stripe); }
+.km-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; }
+.km-req { display: inline-block; background: var(--km-subtle); border-radius: 0.25rem;
+    padding: 0.05rem 0.35rem; font-size: 0.72rem; font-family: ui-monospace, monospace; }
+.km-status { display: inline-block; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.03em;
+    padding: 0.12rem 0.5rem; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+.km-KILLED { color: var(--km-killed); background: var(--km-killed-bg); border-color: var(--km-killed-border); }
+.km-SURVIVED { color: var(--km-survived); background: var(--km-survived-bg); border-color: var(--km-survived-border); }
+.km-NOTCOVERED { color: var(--km-notcovered); background: var(--km-notcovered-bg); border-color: var(--km-notcovered-border); }
+.km-SCREENED { color: var(--km-screened); background: var(--km-screened-bg); border-color: var(--km-screened-border); }
+.km-INVALID { color: var(--km-invalid); background: var(--km-invalid-bg); border-color: var(--km-invalid-border); }
+.km-TIMEOUT { color: var(--km-timeout); background: var(--km-timeout-bg); border-color: var(--km-timeout-border); }
+.km-fix { color: var(--km-muted); font-size: 0.78rem; margin-top: 0.25rem; }
+.km-cx { background: var(--km-subtle); border-radius: 0.35rem; padding: 0.3rem 0.5rem;
+    margin-top: 0.3rem; font-size: 0.72rem; overflow-x: auto; white-space: pre; }
+.km-empty { color: var(--km-faint); padding: 1rem; font-size: 0.85rem; }
+.km-foot { margin-top: 2rem; color: var(--km-faint); font-size: 0.75rem; }

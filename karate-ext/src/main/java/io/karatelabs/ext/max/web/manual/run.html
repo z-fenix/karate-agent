@@ -1,0 +1,1099 @@
+<!--/* Manual mode — one run (/manual/runs/{id}): the same route in flight and finished.
+     Everything is read server-side off the run's own record (harness.get — pure, D88):
+       in flight  the title by kind, Stop (Runner.stop for a set, Harness.stop for the one browser-holding
+                  run — the calls run.html makes), the live browser (noVNC, view-only unless you are the one
+                  recording), and an action log fed by the run's SSE topic (pub/manual-runs.js). No stage
+                  strip, no estimate — the log is what happened, the figures are elapsed time and attempts.
+       finished   the outcome in plain words, what it checked (get().checks, each match or status step in the triage
+                  box's words) or the set's tests (memberVerdicts) with a feature's scenarios and their @req links
+                  (apiTest.read), the evidence, the last runs of the same selection, Run again, and what
+                  this run covered (requirement.readiness({run})) — data-m-live, so the `coverage` fold
+                  refreshes it in place.
+     A status is never re-derived: the mark is the record's status, the words say which one (pub/manual-words.js). */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  (function () {
+    request.pathMatches('/manual/runs/{id}');
+    var runId = String(request.pathParams.id);
+    _.runId = runId;
+    _.found = null;
+    _.flight = null;
+    _.done = null;
+    _.watch = null;
+    _.campaignLink = null;
+    _.campaignGone = null;
+    _.stages = null;
+    context.setGlobal('pageTitle', 'Run ' + runId + ' · Karate Agent');
+
+    var meta = harness.get(runId);
+    if (!meta || !meta.runId) return;
+    _.found = true;
+
+    var nowMs = Date.now();
+    var plural = kaWords.plural, firstLine = kaWords.firstLine, why = kaWords.why, short = kaWords.short,
+        duration = kaWords.duration, age = kaWords.age, stageStrip = kaWords.stageStrip;
+    function checkPath(c) { c = String(c); return c.indexOf('checks/') == 0 ? c : 'checks/' + c; }
+    function bare(c) { c = String(c); return c.indexOf('checks/') == 0 ? c.substring(7) : c; }
+
+    var kind = meta.kind ? String(meta.kind) : '';
+    var status = String(meta.status || '');
+    // a campaign's launch leads back to the campaign carrying its id, under today's name; one deleted since
+    // (or recreated under that name) is not the campaign it was launched under
+    if (meta.campaign) {
+      var owner = null;
+      var campaigns = meta.campaignId ? request.cache('manual.campaigns', function () { return campaign.list(); }) : null;
+      for (var ci = 0; campaigns && ci < campaigns.length; ci++) {
+        if (String(campaigns[ci].id) == String(meta.campaignId)) owner = campaigns[ci];
+      }
+      if (owner) {
+        _.campaignLink = { label: 'Campaign ' + owner.name,
+                           href: '/manual/campaign?c=' + encodeURIComponent(String(owner.name)) };
+      } else {
+        _.campaignGone = 'Campaign ' + meta.campaign + ' no longer exists';
+      }
+    }
+    var live = meta.live === true;
+    var ai = meta.ai === true;
+    // the loops that write a test file: author writes it, heal repairs it, revise changes it as a person asked
+    var writesTest = kind == 'author' || kind == 'heal' || kind == 'revise';
+    var loop = writesTest || kind == 'explore' || kind == 'troubleshoot' || kind == 'codify';
+    var members = meta.members ? meta.members : [];
+    var jsMembers = 0;
+    for (var i = 0; i < members.length; i++) { if (String(members[i].kind) == 'js') jsMembers++; }
+    var checks = request.cache('manual.checks', function () { return check.list(); });
+    var testsByName = {};
+    if (checks && checks.length) {
+      for (var c = 0; c < checks.length; c++) testsByName[String(checks[c].name)] = checks[c];
+    }
+    // what the run did is its record's (`changed`, stamped at settle): the AI can declare an authoring run finished
+    // without writing its file. The project says only whether the file is there today
+    var wroteNothing = kaWords.wroteNothing(meta);
+    var present = meta.check ? testsByName[bare(meta.check)] : null;
+    var written = wroteNothing ? null : present;
+    function codeHref(path) { return '/checks?file=' + encodeURIComponent(path); }
+    function testHref(path) { return '/manual/tests/edit?test=' + encodeURIComponent(checkPath(path)); }
+    function reqHref(stamp) { return '/manual/coverage#req-' + encodeURIComponent(String(stamp).split('/')[0]); }
+    function reqLinks(list) {
+      var out = [];
+      for (var r1 = 0; r1 < list.length; r1++) out.push({ id: String(list[r1]), href: reqHref(list[r1]), sep: r1 > 0 ? ', ' : '' });
+      return out;
+    }
+    // what New test saved for this recording (kaManual.startRecording → session.ui.manualRecording, D114)
+    var intent = session && session.ui && session.ui.manualRecording ? session.ui.manualRecording : null;
+    // one result per kind of test the recording becomes (kaManual.turnIntoTest, /ui/apitest/chat {from})
+    var results = intent && intent.results ? intent.results : {};
+    var uiResult = results.ui || {};
+    var intentName = intent && String(intent.runId) == runId && intent.name ? String(intent.name) : null;
+    var askedName = request.param('name') ? String(request.param('name')).replace(/\.js$/, '').replace(/^checks\//, '') : null;
+    var testName = askedName || intentName;
+    if (!testName) {
+      // the default is the first name no test has: Harness.author refuses a taken one unless asked to replace it
+      testName = 'recorded-flow';
+      for (var n2 = 2; testsByName[testName + '.js']; n2++) testName = 'recorded-flow-' + n2;
+    }
+    // turning a recording into a test needs an AI model on this console: without one the button would only
+    // start a run that fails, so the page says so instead
+    function aiReady() {
+      var llm = null;
+      try { llm = harness.providers(); } catch (e) { llm = null; }
+      return llm && llm.providers && llm.providers.length > 0 ? true : null;
+    }
+
+    // ---------------------------------------------------------------- in flight
+    if (live) {
+      var slot = harness.status();
+      var recording = kind == 'live' && slot && slot.mode == 'record' && slot.status == 'running'
+          && String(slot.runId) == runId;
+      // the rail's run count names the run holding the browser, and reads no record
+      var runs = request.cache('manual.rail.runs', function () { return rail.runs(); });
+      var holdsBrowser = runs && runs.active && String(runs.active) == runId;
+      var title = kind == 'suite' ? (members.length == 1 ? 'Replaying your test' : 'Replaying your tests')
+          : kind == 'check' ? 'Replaying your test'
+          : kind == 'author' ? 'Writing the test'
+          : kind == 'heal' ? 'Repairing the test'
+          : kind == 'revise' ? 'Changing the test'
+          : kind == 'explore' ? 'Exploring'
+          : kind == 'troubleshoot' ? 'Looking into a failed run'
+          : kind == 'codify' ? 'Writing rules'
+          : recording ? 'Recording'
+          : meta.check ? 'Replaying your test'
+          : 'Working in the browser';
+      // a browser is on the container display for a loop that drives one, a live run, or a set with a test file
+      var watchable = kind == 'live' || writesTest || kind == 'explore' || (kind == 'suite' && jsMembers > 0);
+      var note = recording ? 'You are driving the real browser. Every click and entry is recorded.'
+          : loop ? 'You are watching the real browser the agent drives.' + (meta.hasVideo ? ' It is being recorded.' : '')
+          : 'You are watching the real browser.' + (meta.hasVideo ? ' It is being recorded.' : '');
+      if (request.param('verify') && (kind == 'suite' || kind == 'check')) _.stages = stageStrip(3);
+      else if (recording) _.stages = stageStrip(1);
+      else if (kind == 'author') _.stages = stageStrip(2);   // Verify lights up client-side at its first test run
+      var stopVia = kind == 'suite' ? 'suite' : (holdsBrowser ? (recording ? 'record' : 'harness') : null);
+      _.flight = {
+        title: title,
+        stopVia: stopVia,
+        watchable: watchable ? true : null,
+        layout: watchable ? 'm-run-live' : 'm-run-live m-run-live--solo',
+        vnc: '/novnc/vnc.html?autoconnect=true&password=karate&resize=scale&path=novnc/websockify&view_only='
+            + (recording ? '0' : '1'),
+        note: note,
+        memberCount: kind == 'suite' && members.length ? members.length : null,
+        ai: ai ? true : null,
+        // a recording is stopped first and turned into a test once settled, as the Dev run page does
+        rec: recording ? { ai: aiReady() } : null
+      };
+      _.watch = { runId: runId, kind: kind, startedMs: meta.startedMs || nowMs, tokens: meta.tokens || 0,
+                  model: meta.model ? String(meta.model) : '', recording: recording ? true : null };
+      return;
+    }
+
+    // ---------------------------------------------------------------- finished
+    // a change the AI finished without touching the file: its record says so (changed:false)
+    var unchanged = kaWords.unchanged(meta);
+    // the recording an authoring run started from, when New test saved it (Try again goes back to it)
+    var fromRecording = intent && String(uiResult.authorRunId) == runId && intent.runId ? String(intent.runId) : null;
+    // a writing attempt that left no test (nothing written, failed, stopped, out of attempts) is never a dead
+    // end: write it again from the same recording, or record the flow again under the same name and criteria
+    var retry = null;
+    if (kind == 'author' && !live && (wroteNothing || status != 'completed')) {
+      var againName = meta.check ? bare(meta.check).replace(/\.js$/, '') : (intent && intent.name ? String(intent.name) : '');
+      var againReq = [];
+      if (fromRecording && intent.req) for (var q2 = 0; q2 < intent.req.length; q2++) againReq.push(String(intent.req[q2]));
+      retry = {
+        run: fromRecording,
+        name: againName,
+        // the file the attempt was writing is there: Try again writes it again, in its place (Harness.author
+        // refuses a taken name unless asked to replace it) — only when the person already chose to replace it, or it
+        // is the AI's (the loop marks each check it writes) and the record does not say the attempt left it as it was
+        // (changed:false: a file there now was made since); any other file is asked about first
+        overwrite: fromRecording && present
+            && (meta.replaces === true || (present.ai === true && meta.changed !== false)) ? true : null,
+        path: present ? checkPath(meta.check) : null,
+        record: '/manual/tests/new?name=' + encodeURIComponent(againName)
+            + (againReq.length ? '&req=' + encodeURIComponent(againReq.join(',')) : '')
+      };
+    }
+    var mk = kaWords.runMark(meta, false);
+    var took = duration(meta.durationMs);
+    var verdicts = meta.memberVerdicts ? meta.memberVerdicts : [];
+    var byPath = {};
+    for (var v = 0; v < verdicts.length; v++) byPath[String(verdicts[v].path)] = verdicts[v];
+    var passed = 0, failed = 0, notRun = 0;
+    var firstWhy = null;   // why the first red test failed, in its own words
+    for (var v2 = 0; v2 < verdicts.length; v2++) {
+      if (verdicts[v2].notRun) notRun++;
+      else if (verdicts[v2].passed) passed++;
+      else { failed++; if (!firstWhy && verdicts[v2].error) firstWhy = why(verdicts[v2].error, 200); }
+    }
+    var scen = meta.verdicts ? meta.verdicts : [];
+    if (!verdicts.length && scen.length) {   // a record from before members existed: its scenarios
+      for (var v3 = 0; v3 < scen.length; v3++) { if (scen[v3].passed) passed++; else if (!scen[v3].skipped) failed++; }
+    }
+    // a lone failed check says what it expected and what came back, before the failure's own words
+    var redChecks = [], allChecks = meta.checks ? meta.checks : [];
+    for (var rc = 0; rc < allChecks.length; rc++) { if (allChecks[rc] && allChecks[rc].pass === false) redChecks.push(allChecks[rc]); }
+    var expected = redChecks.length == 1 ? kaWords.expectation(redChecks[0].label, redChecks[0].actual) : null;
+    if (expected && failed) firstWhy = expected;
+    var total = verdicts.length ? verdicts.length : (members.length ? members.length : passed + failed);
+    var recordable = kind == 'live' && !meta.check && meta.recordable === true;
+    var canWrite = recordable ? aiReady() : null;
+    if (request.param('verify') && (kind == 'suite' || kind == 'check')) _.stages = stageStrip(mk.label == 'passed' ? 4 : 3);
+    // what a replay started after this run said of the test it wrote (verifiedBy, off the project graph): the
+    // AI saying it finished is not a verdict, nor is a green from before the run
+    var verified = writesTest && meta.verifiedBy ? meta.verifiedBy : null;
+    if (recordable) _.stages = stageStrip(2);
+    else if (kind == 'author') {
+      _.stages = stageStrip(status != 'completed' || wroteNothing ? 2 : (verified && verified.status == 'passed' ? 4 : 3));
+    }
+    var errText = meta.errorShort ? String(meta.errorShort) : (meta.error ? why(meta.error, 200) : null);
+
+    var title = 'Finished';
+    var line = null;
+    if (status == 'stopped') {
+      title = 'Stopped';
+      line = 'It was stopped before it finished.';
+    } else if (status == 'terminated') {
+      title = 'Stopped at its limit';
+      line = errText ? 'It hit its limit: ' + errText : 'It hit its limit before it finished.';
+    } else if (status == 'interrupted') {
+      title = 'Interrupted';
+      line = 'The console restarted while this run was in flight, so it never finished.';
+    } else if (status == 'blocked') {
+      title = 'Blocked';
+      line = errText ? 'It could not go on: ' + errText : 'It found it could not go on.';
+    } else if (status == 'empty') {
+      title = 'Nothing ran';
+      line = 'No test matched this selection, so nothing was checked.';
+    } else if (status == 'unknown' || status == 'nometa' || status == 'running') {
+      title = 'No result';
+      line = 'This run left no record of how it ended.';
+    } else if (kind == 'postman') {
+      var pmTotal = meta.total || 0, pmFailed = meta.failed || 0, pmUnchecked = meta.notchecked || 0;
+      title = !pmTotal ? 'Nothing ran' : status == 'completed' ? (pmTotal == 1 ? 'The request passed' : 'All ' + pmTotal + ' requests passed')
+          : pmFailed ? pmFailed + ' of ' + plural(pmTotal, 'request', 'requests') + ' failed'
+          : pmUnchecked + ' of ' + plural(pmTotal, 'request was', 'requests were') + ' not checked';
+    } else if (kind == 'suite' || kind == 'check' || (kind == 'live' && meta.check)) {
+      if (meta.dryRun) {
+        title = 'Nothing ran';
+        line = 'This was a dry run: the tests were read, not run.';
+      } else if (kind == 'suite' && status != 'completed' && failed == 0) {
+        // the run failed, yet no test did: with verdicts on record, it failed before any test ran
+        var before = verdicts.length > 0 || scen.length > 0;
+        title = before ? 'The run failed before any test ran' : 'The run failed';
+        line = errText || (before ? 'Something failed before the first test started.' : 'It failed.');
+      } else if (status == 'completed') {
+        title = total <= 1 ? 'The test passed' : (notRun ? passed + ' of ' + total + ' tests passed' : 'All ' + total + ' tests passed');
+        // a set that all passed says it in its title: the card carries the meta instead of repeating it
+        line = total <= 1 ? (meta.check ? checkPath(meta.check) + ' passed' : 'The test passed')
+            : notRun ? passed + ' of ' + total + ' tests passed, ' + notRun + ' did not run' : null;
+      } else {
+        title = total <= 1 ? 'The test failed' : failed + ' of ' + total + ' tests failed';
+        line = total <= 1 ? (errText || firstWhy || (meta.check ? checkPath(meta.check) + ' failed' : null))
+            : failed + ' of ' + total + ' tests failed' + (passed ? ', ' + passed + ' passed' : '');
+      }
+    } else if (kind == 'author' && wroteNothing) {
+      title = 'No test was written';
+      line = 'The AI said it had finished, but ' + checkPath(meta.check || 'the test') + ' was never written.';
+    } else if (kind == 'author') {
+      title = status == 'completed' ? 'Test written' : 'The test could not be written';
+      line = status == 'completed' ? 'Wrote ' + checkPath(meta.check || 'a test') : (errText || 'The AI did not get the test to pass.');
+    } else if (kind == 'heal') {
+      title = status == 'completed' ? 'Test repaired' : 'The test could not be repaired';
+      line = status == 'completed' ? 'Repaired ' + checkPath(meta.check || 'a test') : (errText || 'The AI did not get the test to pass.');
+    } else if (kind == 'revise') {
+      title = status != 'completed' ? 'The test could not be changed' : unchanged ? 'Nothing changed' : 'Test changed';
+      line = status != 'completed' ? (errText || 'The AI did not make the change.')
+          : unchanged ? 'The AI finished without changing ' + checkPath(meta.check || 'the test') + '.'
+          : 'Changed ' + checkPath(meta.check || 'a test');
+    } else if (kind == 'explore') {
+      title = status == 'completed' ? 'Exploration finished' : 'Exploration failed';
+      line = status == 'completed' ? firstLine(meta.goal || meta.task, 160) : (errText || 'The AI did not reach the goal.');
+    } else if (kind == 'troubleshoot') {
+      title = status == 'completed' ? 'Diagnosis written' : 'Diagnosis failed';
+      line = status == 'completed' ? 'The AI wrote down why the run failed.' : (errText || 'The AI could not say why.');
+    } else if (kind == 'codify') {
+      title = status == 'completed' ? 'Rules written' : 'The rules could not be written';
+      line = status == 'completed' ? 'The AI wrote rules from what it saw.' : (errText || 'The AI did not finish.');
+    } else if (kind == 'live') {
+      title = recordable ? 'Flow recorded' : 'Browser session ended';
+      line = recordable ? (canWrite ? 'Your steps are saved. Turn them into a test below.' : 'Your steps are saved.')
+          : 'The live browser session ended. It tested nothing.';
+    } else if (status == 'failed' || status == 'error') {
+      title = 'Failed';
+      line = errText || 'It failed.';
+    }
+    // a change that did not complete is put back (restored), unless the test was changed elsewhere meanwhile
+    // (conflict); a run cut off before it settled never was. A change elsewhere is said on any ending, with
+    // where the version the run wrote over is kept (theirs)
+    var after = null;
+    if (kind == 'revise' && status != 'completed') {
+      after = meta.restoreError ? 'It could not be put back as it was: ' + firstLine(meta.restoreError, 160)
+          : meta.conflict ? 'The test was changed elsewhere while this ran, so it was not put back. Check the code.'
+          : meta.changed === false ? 'The test is as it was.' : 'It may have changed the test before it stopped. Check the code.';
+    } else if (kind == 'revise' && meta.conflict) {
+      after = 'The test was also changed elsewhere while this ran. Check the code.';
+    }
+    if (after && meta.conflict && meta.theirs) {
+      after += ' The version it wrote over is kept at ' + meta.theirs + '.';
+    }
+    if (after) line = line ? line.replace(/([^.!?…])$/, '$1.') + ' ' + after : after;
+
+    var bits = [];
+    var when = age(meta.finishedMs || meta.startedMs);
+    if (when) bits.push(when);
+    if (took) bits.push(took);
+    bits.push(ai ? 'AI used' + (meta.model ? ' · ' + meta.model : '') : 'no AI');
+
+    // what the set ran — one row per member, in the order it ran
+    var memberRows = [];
+    for (var m1 = 0; m1 < members.length; m1++) {
+      var path = String(members[m1].path);
+      var vd = byPath[path];
+      var test = String(members[m1].kind) == 'js' ? testsByName[bare(path)] : null;
+      var label = test && test.title ? String(test.title) : (test && test.description ? String(test.description) : path);
+      var reqs = test && test.req ? test.req : [];
+      var reqIds = reqLinks(reqs);
+      // a feature's scenarios, each with the requirements its @req tags link it to
+      var scenRows = [];
+      if (String(members[m1].kind) != 'js' && /\.feature$/.test(path) && members.length <= 20) {
+        var fr = null;
+        try { fr = apiTest.read(path); } catch (e) { fr = null; }
+        var fs = fr && !fr.error && fr.scenarios ? fr.scenarios : [];
+        for (var s1 = 0; s1 < fs.length; s1++) {
+          scenRows.push({ name: String(fs[s1].name || 'Scenario ' + (s1 + 1)), reqs: reqLinks(fs[s1].req || []) });
+        }
+        if (fr && !fr.error && fr.name) label = String(fr.name);
+      }
+      memberRows.push({
+        dot: 'm-dot ' + (!vd || vd.notRun ? 'm-dot--notrun' : (vd.passed ? 'm-dot--passed' : 'm-dot--failed')),
+        state: !vd || vd.notRun ? 'not run' : (vd.passed ? 'passed' : 'failed'),
+        title: label,
+        href: test ? testHref(path) : null,
+        path: label != path ? path : null,   // a test with no title is named by its path once
+        error: vd && !vd.passed && vd.error ? why(vd.error, 160) : null,
+        reqs: scenRows.length ? [] : reqIds,
+        scenarios: scenRows,
+        took: vd && vd.durationMs != null ? duration(vd.durationMs) : (vd && vd.notRun ? 'not run' : '')
+      });
+    }
+
+    // what it checked — its labeled assertions and pass/fail steps, as Harness.get counted them (D358)
+    var checkRows = [];
+    var cr = meta.checks ? meta.checks : [];
+    var SHOW = 20;
+    var ct = meta.checkTotals ? meta.checkTotals : { passed: 0, failed: 0 };
+    var counted = ct.passed + ct.failed;
+    for (var k1 = 0; k1 < cr.length && checkRows.length < SHOW; k1++) {
+      var a = cr[k1].actual;
+      var raw = a == null ? null : (typeof a == 'string' ? a : JSON.stringify(a));
+      // a value is shown only when it reads as one (a count, a total) — never a page dump
+      var value = raw == null ? null : (raw.indexOf('\n') < 0 && raw.length <= 30 ? raw : null);
+      // a match or status step reads as the triage box says it; the step as written is folded under it
+      var stepText = String(cr[k1].label);
+      var said = cr[k1].pass ? kaWords.checkWords(stepText) : kaWords.expectation(stepText, a);
+      checkRows.push({ dot: 'm-dot ' + (cr[k1].pass ? 'm-dot--passed' : 'm-dot--failed'),
+                       state: cr[k1].pass ? 'passed' : 'failed', label: said || stepText, step: said ? stepText : null,
+                       value: said && !cr[k1].pass ? null : value });
+    }
+
+    // what you did — the steps the recording keeps for the AI (Recording.get's), in the words the live log uses
+    var did = [];
+    var steps = 0;
+    var kept = recordable ? recordings.steps(runId) : [];
+    for (var l1 = 0; l1 < kept.length && did.length < 60; l1++) {
+      if (kept[l1].note != null) {
+        did.push({ text: 'Note: ' + short(kept[l1].note, 160), n: '', cls: 'm-row m-row--step m-run-did m-run-did--note' });
+      } else {
+        steps++;
+        did.push({ text: kaWords.step(kept[l1]), n: String(steps), cls: 'm-row m-row--step m-run-did' });
+      }
+    }
+
+    // ---- Write: what the recording becomes — a UI test, an API test, or both, one after the other (D400). The
+    // calls panel is Traffic.sift with the choices this browser made on it (/ui/traffic); a recording with no
+    // captured calls can only become a UI test, so it keeps the one button
+    var write = null;
+    var mine = intent && String(intent.runId) == runId ? intent : null;
+    var sift = null;
+    if (recordable) {
+      var picked = session && session.ui && session.ui.traffic ? session.ui.traffic[runId] : null;
+      var siftOpts = {};
+      if (picked && picked.moves && picked.moves.length) siftOpts.moves = picked.moves;
+      if (picked && picked.hosts && picked.hosts.length) siftOpts.hosts = picked.hosts;
+      try { sift = traffic.sift(runId, siftOpts); } catch (e) { sift = null; }
+      if (sift && sift.error) sift = null;
+    }
+    if (sift) {
+      var mineResults = mine && mine.results ? mine.results : {};
+      // the UI test: its authoring run's own record says how it ended
+      var uiRes = null;
+      if (mineResults.ui && mineResults.ui.authorRunId) {
+        var am = harness.get(String(mineResults.ui.authorRunId));
+        var ast = am && am.status ? String(am.status) : 'unknown';
+        var aLive = am && am.live === true;
+        var aWrote = !aLive && ast == 'completed' && !kaWords.wroteNothing(am);
+        uiRes = { status: aLive ? 'running' : ast, settled: aLive ? null : true,
+                  dot: 'm-dot ' + (aLive ? 'm-dot--inflight' : aWrote ? 'm-dot--passed' : 'm-dot--failed'),
+                  words: aLive ? 'being written' : aWrote ? 'written' : 'not written',
+                  check: mineResults.ui.check ? checkPath(mineResults.ui.check) : null,
+                  href: '/manual/runs/' + encodeURIComponent(String(mineResults.ui.authorRunId)) };
+      }
+      // the API test: what its chat answers of it (Harness.chat's result), the chat held by this recording's run id
+      var apiRes = null;
+      var apiChat = picked && picked.chat ? String(picked.chat) : (mineResults.api && mineResults.api.chat ? String(mineResults.api.chat) : null);
+      if (apiChat) {
+        var held = null;
+        try { held = harness.chat({ chat: apiChat }); } catch (e) { held = null; }
+        var said = held && !held.error && held.result ? held.result : { status: 'gone' };
+        var apiStatus = String(said.status);
+        var apiTest = said.test ? String(said.test) : null;
+        var API_WORDS = { saved: 'saved', bug: 'saved as a suspected bug', red: 'did not pass: answer the assistant',
+                          writing: 'being written', unsaved: 'not saved yet: ask the assistant',
+                          failed: 'stopped before it was saved', gone: 'the chat ended when the console restarted' };
+        apiRes = { status: apiStatus, test: apiTest,
+                   dot: 'm-dot ' + (apiStatus == 'saved' ? 'm-dot--passed' : apiStatus == 'writing' ? 'm-dot--inflight'
+                       : apiStatus == 'unsaved' || apiStatus == 'gone' ? 'm-dot--notrun' : 'm-dot--failed'),
+                   words: API_WORDS[apiStatus] || apiStatus,
+                   error: said.error ? kaWords.short(String(said.error), 200) : null,
+                   href: apiTest && (apiStatus == 'saved' || apiStatus == 'bug' || apiStatus == 'red')
+                       ? '/manual/tests/api?test=' + encodeURIComponent(apiTest)
+                       : '/manual/tests/api?from=' + encodeURIComponent(runId) + '&chat=open' };
+      }
+      var choice = request.param('write') ? String(request.param('write')) : (mine && mine.choice ? String(mine.choice) : null);
+      if (choice != 'ui' && choice != 'api' && choice != 'both') choice = null;
+      var words = kaWords.traffic(sift);
+      var leftRows = 0;
+      for (var g1 = 0; g1 < words.groups.length; g1++) leftRows += words.groups[g1].rows.length;
+      var reqIds = [];
+      var reqFrom = mine && mine.req && mine.req.length ? mine.req : (request.param('req') ? String(request.param('req')).split(',') : []);
+      for (var r2 = 0; r2 < reqFrom.length; r2++) { var rid = String(reqFrom[r2]).trim(); if (rid) reqIds.push(rid); }
+      var hasAi = aiReady();
+      // the API test is written by the side chat, which needs its own model check (Harness.chat answers it)
+      var chatAi = null;
+      try { chatAi = harness.chat({}).model === true ? true : null; } catch (e) { chatAi = null; }
+      // both runs one after the other: the UI test holds the browser, so the API test waits until it has ended
+      var waiting = choice == 'both' && (!uiRes || !uiRes.settled);
+      var counts = sift.counts || {};
+      write = {
+        choice: choice,
+        choices: [
+          { key: 'ui', label: 'UI test', said: 'Replays your clicks in a browser.' },
+          { key: 'api', label: 'API test', said: 'Sends the calls your clicks made, without a browser.' },
+          { key: 'both', label: 'Both', said: 'The UI test first, then the API test.' }
+        ].map(function (c) {
+          return { key: c.key, label: c.label, said: c.said, current: c.key == choice ? 'true' : null,
+                   href: '/manual/runs/' + encodeURIComponent(runId) + '?write=' + c.key };
+        }),
+        ui: uiRes,
+        api: apiRes,
+        results: uiRes || apiRes ? true : null,
+        name: choice == 'ui' || (choice == 'both' && !uiRes) ? { name: testName, ai: hasAi, both: choice == 'both' ? 'both' : null } : null,
+        panel: choice == 'api' || (choice == 'both' && uiRes) ? true : null,
+        source: runId,
+        kept: words.kept,
+        groups: words.groups,
+        captured: counts.exchanges,
+        keptN: counts.kept,
+        leftN: counts.left,
+        leftRows: leftRows,
+        summary: plural(counts.exchanges || 0, 'call was', 'calls were') + ' captured while you recorded: '
+            + (counts.kept || 0) + ' kept, ' + (counts.left || 0) + ' left out.',
+        complete: sift.capture && sift.capture.complete ? true : null,
+        gaps: words.gaps,
+        make: {
+          href: apiRes ? apiRes.href : '/manual/tests/api?from=' + encodeURIComponent(runId) + '&chat=open'
+              + (reqIds.length ? '&req=' + encodeURIComponent(reqIds.join(',')) : ''),
+          ok: chatAi && (counts.kept || 0) > 0 && !waiting ? true : null,
+          why: !chatAi ? 'It needs an AI model, and this console has none.'
+              : !(counts.kept > 0) ? 'Keep at least one call to make a test from.'
+              : waiting ? 'The API test starts once the UI test has been written.' : null,
+          again: apiRes ? true : null
+        }
+      };
+    }
+
+    // a Postman run: each data row's requests with their verdicts and why (Postman.results, the run's own record), and
+    // the way back to the collection
+    var pm = null;
+    if (kind == 'postman' && meta.collection) {
+      var PM_DOT = { passed: 'm-dot--passed', failed: 'm-dot--failed', error: 'm-dot--failed', notchecked: 'm-dot--stopped' };
+      var PM_WORD = { passed: 'passed', failed: 'failed', error: 'not sent', notchecked: 'not checked' };
+      var pmRows = [], pmBy = {};
+      var got = [];
+      try { got = postman.results(runId, {}); } catch (e) { got = []; }
+      for (var p1 = 0; got && !got.error && p1 < got.length; p1++) {
+        var pr = got[p1];
+        var grp = pmBy[pr.row];
+        if (!grp) { grp = pmBy[pr.row] = { label: 'Row ' + (pr.row + 1), worst: 'passed', items: [] }; pmRows.push(grp); }
+        var st = String(pr.status);
+        if (st == 'failed' || st == 'error') grp.worst = 'failed';
+        else if (st == 'notchecked' && grp.worst == 'passed') grp.worst = 'notchecked';
+        var reasons = [];
+        var pts = pr.tests || [];
+        for (var p2 = 0; p2 < pts.length; p2++) {
+          if (pts[p2].status == 'failed') reasons.push(String(pts[p2].name) + (pts[p2].message ? ': ' + kaWords.failure(String(pts[p2].message), 160) : ''));
+        }
+        if (st == 'error') reasons.push(kaWords.pmUnsent(pr.error, pr.transport));
+        else if (pr.error) reasons.push('A script stopped: ' + kaWords.failure(String(pr.error), 160));
+        if (st == 'notchecked') reasons.push(/0 of 0|no tests/.test(String(pr.reason)) ? 'It has no tests, so nothing was checked.' : 'Not checked: ' + String(pr.reason) + '.');
+        grp.items.push({ name: String(pr.name), dot: 'm-dot m-dot--xs ' + (PM_DOT[st] || 'm-dot--notrun'), state: PM_WORD[st] || st,
+                         why: reasons.length ? reasons.join(' · ') : null, at: pr.row + '|' + pr.item });
+      }
+      var single = pmRows.length == 1;
+      var redRows = [];
+      for (var p3 = 0; p3 < pmRows.length; p3++) {
+        pmRows[p3].dot = 'm-dot m-dot--xs ' + PM_DOT[pmRows[p3].worst];
+        pmRows[p3].head = single ? null : pmRows[p3].label + ' · ' + PM_WORD[pmRows[p3].worst];
+        if (pmRows[p3].worst != 'passed') redRows.push(p3 + 1);
+      }
+      if (!single && pmRows.length && line == null) {
+        line = (meta.data ? 'Over ' + meta.data + ': ' : '') + (redRows.length ? (redRows.length == 1 ? 'row ' + redRows[0] : 'rows ' + redRows.join(', '))
+            + ' of ' + pmRows.length + ' did not pass.' : 'all ' + pmRows.length + ' rows passed.');
+        line = line.charAt(0).toUpperCase() + line.substring(1);
+      }
+      pm = { rows: pmRows, sub: plural(got && !got.error ? got.length : 0, 'request', 'requests') + (single ? '' : ' over ' + pmRows.length + ' rows'),
+             href: '/manual/tests/postman?file=' + encodeURIComponent(String(meta.collection)) + (meta.item ? '&item=' + encodeURIComponent(String(meta.item)) : '')
+                 + '&run=' + encodeURIComponent(runId) };
+    }
+
+    // the evidence
+    var shotsAll = meta.screenshots ? meta.screenshots : [];
+    var shots = [];
+    for (var s2 = 0; s2 < shotsAll.length && s2 < 6; s2++) {
+      var fn = String(shotsAll[s2].filename);
+      shots.push({ url: '/api/artifacts/runs/' + encodeURIComponent(runId) + '/screenshots/' + encodeURIComponent(fn),
+                   title: shotsAll[s2].title ? String(shotsAll[s2].title) : 'screenshot' });
+    }
+
+    // the last runs of the same selection (the recorded selector, exactly — D281 c)
+    var history = null;
+    var historyNote = null;
+    var selector = meta.selector && meta.selector.length ? meta.selector : null;
+    if (kind == 'suite' && selector) {
+      var sel = [];
+      for (var q = 0; q < selector.length; q++) sel.push(String(selector[q]));
+      var past = harness.runs({ selector: sel, limit: 5 });
+      var list = past && past.runs ? past.runs : [];
+      history = [];
+      var red = 0;
+      for (var h1 = list.length - 1; h1 >= 0; h1--) {
+        var hm = kaWords.runMark(list[h1], list[h1].live === true);
+        if (hm.label == 'failed') red++;
+        history.push({ href: '/manual/runs/' + encodeURIComponent(String(list[h1].runId)),
+                       dot: 'm-dot ' + hm.dot,
+                       title: hm.label + ' · ' + (age(list[h1].finishedMs || list[h1].startedMs) || ''),
+                       current: String(list[h1].runId) == runId ? 'page' : null });
+      }
+      if (list.length < 2) history = null;
+      historyNote = list.length < 2 ? null
+          : (red == 0 ? 'None of the last ' + list.length + ' failed.'
+             : plural(red, 'failure', 'failures') + ' in the last ' + list.length + ' runs.') + ' Newest on the right.';
+    }
+
+    // what to do next
+    var again = null;
+    if (kind == 'suite' && selector && !meta.dryRun) {
+      var opts = {};
+      var o = meta.options || {};
+      if (o.env) opts.env = String(o.env);
+      if (o.tags && o.tags.length) { opts.tags = []; for (var t1 = 0; t1 < o.tags.length; t1++) opts.tags.push(String(o.tags[t1])); }
+      if (o.video) opts.video = true;
+      if (o.threads) opts.threads = o.threads;
+      if (meta.req) opts.req = String(meta.req);
+      if (meta.formal) opts.formal = true;
+      again = { label: 'Run again', selector: JSON.stringify(sel), options: JSON.stringify(opts), test: null };
+    } else if ((kind == 'check' || (kind == 'live' && meta.check)) && testsByName[bare(meta.check)]) {
+      again = { label: 'Run again', selector: null, options: null, test: checkPath(meta.check) };
+    } else if (writesTest && status == 'completed' && written && !unchanged) {
+      // the first replay of a written test is the Verify stage of creating it; a repair or a change creates nothing
+      again = { label: 'Run the test', selector: null, options: null, test: checkPath(meta.check),
+                verify: kind == 'author' ? 'verify' : null };
+    }
+    var writtenBy = null;
+    var link = null;
+    var askedReq = meta.req ? String(meta.req) : null;
+    if (!askedReq && fromRecording && intent.req && intent.req.length) {
+      var ir = [];
+      for (var q1 = 0; q1 < intent.req.length; q1++) ir.push(String(intent.req[q1]));
+      askedReq = ir.join(',');
+    }
+    if (kind == 'author' && status == 'completed' && written && askedReq) {
+      var want = askedReq.split(',');
+      var have = {};
+      var hr = written.req ? written.req : [];
+      for (var w1 = 0; w1 < hr.length; w1++) have[String(hr[w1]).trim()] = true;
+      for (var w2 = 0; w2 < want.length; w2++) {
+        var id2 = want[w2].trim().replace(/^@/, '').replace(/^req=/, '');
+        if (id2 && !have[id2]) { link = JSON.stringify({ kind: 'author', status: 'completed', check: String(meta.check), req: askedReq }); break; }
+      }
+    }
+    if (writesTest && status == 'completed' && !unchanged) {
+      writtenBy = written
+          ? { path: checkPath(meta.check), code: codeHref(checkPath(meta.check)), test: testHref(meta.check),
+              review: written.ai === true ? true : null,
+              said: kind == 'author' ? 'Written by AI' : kind == 'heal' ? 'Repaired by AI' : 'Changed by AI',
+              // only a test this authoring run created can be thrown away; a repaired, changed or replaced one
+              // was someone's before (the record says `replaces`)
+              del: kind == 'author' && meta.replaces !== true ? true : null }
+          : { path: checkPath(meta.check || ''), code: null, test: null, review: null, del: null,
+              said: wroteNothing ? (fromRecording ? null : 'Nothing was written.') : 'The test file is no longer in the project.' };
+    }
+    // a change can always be asked again, from the test's own edit screen
+    var askAgain = kind == 'revise' && (status != 'completed' || unchanged) && meta.check
+        ? '/manual/tests/edit?test=' + encodeURIComponent(checkPath(meta.check)) + '#change' : null;
+    // whether a replay since says the test passes — never the AI's own word (P29)
+    var since = null;
+    if (writesTest && status == 'completed' && written && !unchanged) {
+      since = !verified ? 'Not replayed since. Run the test to see whether it passes.'
+          : verified.status == 'passed' ? 'Replayed since: it passed.'
+          : verified.status == 'failed' ? 'Replayed since: it failed.'
+          : 'Replayed since, but it did not run.';
+    }
+
+    // what this run covered — its own graph, said only once that graph holds run evidence (runEvidence.tests
+    // is 0 while a run's graph is only the authored requirements, which would read as "covered nothing")
+    var covered = null;
+    var tests = kind == 'suite' || kind == 'check' || (kind == 'live' && meta.check)
+        || (writesTest && status == 'completed' && !wroteNothing);
+    if (tests) {
+      try {
+        var rd = requirement.readiness({ run: runId });
+        var cc = rd && rd.totals ? rd.totals.criteria : null;
+        var ran = rd && rd.runEvidence && rd.runEvidence.tests > 0;
+        if (ran && cc && cc.total > 0 && cc.covered > 0) covered = 'This run covered ' + cc.covered + ' of ' + plural(cc.total, 'criterion', 'criteria') + '.';
+      } catch (e) { covered = null; }
+    }
+
+    _.done = {
+      title: title,
+      idLine: 'RUN ' + runId,
+      dot: 'm-dot m-dot--lg ' + mk.dot,
+      label: mk.label,
+      // the card never repeats the title: when the line would, the meta takes its place
+      line: line == title ? null : line,
+      meta: bits.join(' · '),
+      hint: (status == 'failed' || status == 'error') && meta.errorHint ? String(meta.errorHint) : null,
+      said: kind == 'explore' && status == 'completed' && meta.result ? short(String(meta.result), 4000) : null,
+      asked: kind == 'revise' && meta.request ? 'Asked: ' + short(String(meta.request), 400) : null,
+      since: since,
+      sinceHref: verified && verified.runId ? '/manual/runs/' + encodeURIComponent(String(verified.runId)) : null,
+      // a video of a run that drove no browser is a blank desktop: offered only when a browser was driven
+      video: meta.hasVideo === true && (shotsAll.length > 0 || jsMembers > 0 || kind == 'live' || kind == 'check'
+          || writesTest || kind == 'explore')
+          ? '/api/artifacts/runs/' + encodeURIComponent(runId) + '/video.mp4' : null,
+      pm: pm,
+      members: memberRows,
+      membersSub: memberRows.length > 1 ? plural(memberRows.length, 'test', 'tests') : null,
+      // an empty "what it checked" is news only for a run that exists to check something
+      // a set of several tests is read by its tests; what it checked is shown for one test, or a failing set
+      showChecked: !wroteNothing && (memberRows.length <= 1 || ct.failed > 0)
+          && (checkRows.length > 0 || (memberRows.length == 0 && (kind == 'suite' || kind == 'check'
+          || writesTest || (kind == 'live' && meta.check)))) ? true : null,
+      checks: checkRows,
+      checksMore: counted > checkRows.length ? (counted - checkRows.length) + ' more in the full report.' : null,
+      checksSub: counted ? ct.passed + ' passed · ' + ct.failed + ' failed' : null,
+      did: recordable ? did : null,
+      shots: shots,
+      // a recording's report holds no test: its steps are the list above
+      report: !recordable && meta.hasReport === true && meta.reportUrl ? String(meta.reportUrl) : null,
+      history: history,
+      historyNote: historyNote,
+      // a recording with nothing filmed has no evidence to offer (its steps are the list above)
+      proof: null,
+      noProof: null,
+      again: again,
+      written: writtenBy,
+      convert: recordable && !write ? { name: testName, ai: canWrite } : null,
+      write: write,
+      // both, one after the other: the UI test has ended, green or red, so the API test is next
+      thenApi: kind == 'author' && fromRecording && intent.choice == 'both'
+          ? { href: '/manual/runs/' + encodeURIComponent(fromRecording) + '?write=api',
+              said: status == 'completed' && !wroteNothing ? 'The UI test is written. Next, the API test from the same recording.'
+                  : 'The UI test was not written, but the API test does not need it. Next, the API test from the same recording.' }
+          : null,
+      retry: retry,
+      askAgain: askAgain,
+      link: link,
+      covered: covered
+    };
+    // the evidence block holds only what exists (screenshots, the video, the full report); the history beside it
+    var hasEvidence = shots.length > 0 || _.done.video || _.done.report;
+    _.done.evidence = hasEvidence ? true : null;
+    _.done.proof = !hasEvidence && !history ? null
+        : (hasEvidence && history ? 'm-run-proof' : 'm-run-proof m-run-proof--solo');
+  })();
+</script>
+<div ka:island="watch"/>
+<link rel="stylesheet" href="/pub/manual-runs.css" ka:nocache="true">
+<section class="m-page" data-ka-section="manual.run">
+
+  <th:block th:if="!found">
+    <header class="m-head" data-ka-section="manual.run.header">
+      <div class="m-head-text">
+        <span class="m-eyebrow" th:text="'RUN ' + runId">RUN</span>
+        <h1 class="m-title">No such run</h1>
+      </div>
+      <div class="m-head-end"><a class="m-link" href="/manual/runs">All runs</a></div>
+    </header>
+    <div class="m-section">
+      <div class="m-empty">
+        <div class="m-empty-title">There is no record of this run.</div>
+        <div class="m-empty-sub">It may have been deleted. Every run the console kept is on the Runs page.</div>
+      </div>
+    </div>
+  </th:block>
+
+  <!--/* ================================ in flight ================================ */-->
+  <th:block th:if="flight">
+    <header class="m-head" data-ka-section="manual.run.header" th:attr="'data-m-phase': 'flight'">
+      <div class="m-head-text">
+        <span class="m-eyebrow" th:text="'RUN ' + runId">RUN</span>
+        <h1 class="m-title" th:text="flight.title">Writing the test</h1>
+      </div>
+      <div class="m-head-end">
+        <a th:if="campaignLink" class="m-link" th:href="campaignLink.href" th:text="campaignLink.label">Campaign</a>
+        <span th:if="campaignGone" class="m-muted" data-m-campaign-gone th:text="campaignGone">Campaign gone</span>
+        <button th:if="flight.stopVia" type="button" class="m-quiet" data-m-stop-btn
+                th:attr="'data-m-run': runId, 'data-m-stop': flight.stopVia"
+                onclick="kaManualRuns.stop(this)">Stop</button>
+      </div>
+    </header>
+    <ol th:if="stages" class="m-stages" aria-label="Creating a test" data-m-stages>
+      <li th:each="st: stages" th:class="st.cls" th:attr="'aria-current': st.current"><span class="m-stage-n" th:text="st.n">1</span><span th:text="st.label">Set up</span></li>
+    </ol>
+    <p class="m-runs-error" data-m-error></p>
+
+    <div th:class="flight.layout" data-m-watch>
+      <div th:if="flight.watchable" class="m-run-watch" data-ka-section="manual.run.live">
+        <div class="m-frame m-run-frame">
+          <iframe th:attr="'data-m-vnc': flight.vnc" title="The live browser" allow="clipboard-read; clipboard-write"></iframe>
+          <div class="m-run-frame-off" data-m-vnc-off hidden>The live browser view is not available on this console.</div>
+        </div>
+        <div class="m-run-watch-note">
+          <span class="m-dot m-dot--xs m-dot--inflight"></span>
+          <span th:text="flight.note">You are watching the real browser.</span>
+        </div>
+      </div>
+
+      <div class="m-run-side" data-ka-section="manual.run.log">
+        <p class="m-run-now" data-m-now hidden></p>
+        <div class="m-run-figures">
+          <div class="m-run-figure">
+            <span class="m-run-figure-value" data-m-elapsed>0s</span>
+            <span class="m-run-figure-label">elapsed</span>
+          </div>
+          <div th:if="flight.memberCount" class="m-run-figure">
+            <span class="m-run-figure-value"><span data-m-done>0</span><span class="m-run-figure-of" th:text="' / ' + flight.memberCount"> / 2</span></span>
+            <span class="m-run-figure-label">tests done</span>
+          </div>
+        </div>
+        <div class="m-run-log" data-m-log aria-live="polite">
+          <div class="m-run-log-empty" data-m-log-empty>Waiting for the first step…</div>
+        </div>
+        <div th:if="flight.ai" class="m-run-ai">
+          <a class="m-link" th:href="'/runs/' + encodeURIComponent(runId)" target="_blank" rel="noopener"
+             title="The full transcript, in the developer console">AI details ↗</a>
+        </div>
+        <div th:if="!flight.ai && !flight.rec" class="m-run-ai">
+          <span class="m-run-ai-free">No AI used. Replaying is free.</span>
+        </div>
+        <div th:if="flight.rec" class="m-run-convert">
+          <p th:if="flight.rec.ai" class="m-run-convert-note">Done? Stop the recording, then turn your steps into a test.</p>
+          <p th:unless="flight.rec.ai" class="m-run-convert-note">Done? Stop the recording; your steps are kept. Turning them into a test needs an AI model, and none is set up on this console yet.</p>
+          <div class="m-run-convert-go">
+            <button type="button" class="m-btn m-beacon m-beacon--late" data-m-stop-rec
+                    th:attr="'data-m-run': runId, 'data-m-stop': 'record'"
+                    onclick="kaManualRuns.stop(this)">Stop recording</button>
+          </div>
+          <p class="m-run-msg" data-m-msg role="alert"></p>
+        </div>
+        <p class="m-run-settled" data-m-settled hidden>It finished. <a th:href="'/manual/runs/' + encodeURIComponent(runId)">Show the result</a></p>
+      </div>
+    </div>
+  </th:block>
+
+  <!--/* ================================ finished ================================ */-->
+  <th:block th:if="done">
+    <header class="m-head" data-ka-section="manual.run.header" th:attr="'data-m-phase': 'done'">
+      <div class="m-head-text">
+        <span class="m-eyebrow" th:text="done.idLine">RUN</span>
+        <h1 class="m-title" th:text="done.title">All tests passed</h1>
+      </div>
+      <div class="m-head-end">
+        <a th:if="campaignLink" class="m-link" th:href="campaignLink.href" th:text="campaignLink.label">Campaign</a>
+        <span th:if="campaignGone" class="m-muted" data-m-campaign-gone th:text="campaignGone">Campaign gone</span>
+        <a th:unless="campaignLink" class="m-link" href="/manual/runs">All runs</a>
+      </div>
+    </header>
+    <ol th:if="stages" class="m-stages" aria-label="Creating a test" data-m-stages>
+      <li th:each="st: stages" th:class="st.cls" th:attr="'aria-current': st.current"><span class="m-stage-n" th:text="st.n">1</span><span th:text="st.label">Set up</span></li>
+    </ol>
+    <p class="m-runs-error" data-m-error></p>
+
+    <div data-ka-section="manual.run.result">
+      <div class="m-summary m-summary--lg m-run-summary">
+        <span th:class="done.dot" role="img" th:attr="'aria-label': done.label, 'title': done.label"></span>
+        <div>
+          <div th:if="done.line" class="m-summary-title" th:text="done.line">bot is not defined</div>
+          <div class="m-summary-sub" th:classappend="done.line ? '' : 'm-summary-sub--solo'" th:text="done.meta">12 min ago · 4.4 s · no AI</div>
+        </div>
+        <div class="m-summary-end">
+          <a th:if="done.video" class="m-link" href="#m-run-video" onclick="return kaRunBox('m-run-video')">Watch the video</a>
+        </div>
+      </div>
+      <p th:if="done.hint" class="m-run-hint" th:text="done.hint">hint</p>
+      <p th:if="done.asked" class="m-run-hint" data-m-asked th:text="done.asked">Asked: also check the cart</p>
+      <p th:if="done.since" class="m-run-hint" data-m-since><span th:text="done.since">Not replayed since.</span>
+        <a th:if="done.sinceHref" class="m-link" th:href="done.sinceHref">Open that run</a></p>
+      <div th:if="done.said" class="m-run-section">
+        <h2 class="m-section-title">What it found</h2>
+        <p class="m-run-said" th:text="done.said">result</p>
+      </div>
+    </div>
+
+    <div th:if="done.pm" class="m-run-section" data-ka-section="manual.run.postman">
+      <div class="m-section-head">
+        <h2 class="m-section-title">What each request did</h2>
+        <span class="m-section-sub" th:text="done.pm.sub">12 requests over 3 rows</span>
+        <a class="m-link" th:href="done.pm.href" data-m-collection>Open the collection</a>
+      </div>
+      <div th:if="done.pm.rows.length == 0" class="m-run-none">This run left no result for any request.</div>
+      <th:block th:each="g: done.pm.rows">
+        <div th:if="g.head" class="m-run-pm-row"><span th:class="g.dot"></span><span th:text="g.head">Row 2 · failed</span></div>
+        <div class="m-rows m-run-rows">
+          <div th:each="r: g.items" class="m-row" th:attr="'data-m-pm-result': r.at, 'data-m-check-state': r.state">
+            <span th:class="r.dot" role="img" th:attr="'aria-label': r.state, 'title': r.state"></span>
+            <span class="m-row-main">
+              <span class="m-row-title" th:text="r.name">Login</span>
+              <span th:if="r.why" class="m-row-sub" th:text="r.why">login succeeds: Got 401, expected 200</span>
+            </span>
+            <span class="m-run-dur" th:text="r.state">failed</span>
+          </div>
+        </div>
+      </th:block>
+    </div>
+
+    <div th:if="done.members.length > 0" class="m-run-section">
+      <div class="m-section-head">
+        <h2 class="m-section-title">The tests</h2>
+        <span class="m-section-sub" th:text="done.membersSub">2 tests</span>
+      </div>
+      <div class="m-rows m-run-rows">
+        <div th:each="t: done.members" class="m-row m-row--act" th:attr="'data-m-test-state': t.state">
+          <span th:class="t.dot" role="img" th:attr="'aria-label': t.state, 'title': t.state"></span>
+          <span class="m-row-main">
+            <span class="m-row-title" th:text="t.title">The documents list shows its columns</span>
+            <a th:if="t.href" class="m-run-member-path" th:href="t.href" th:text="t.path">checks/documents-list.js</a>
+            <span th:unless="t.href" class="m-run-member-path" th:text="t.path">checks/documents-list.js</span>
+            <span th:if="t.error" class="m-row-sub" th:text="t.error">error</span>
+            <span th:each="sc: t.scenarios" class="m-row-sub" data-m-scenario><span th:text="sc.name">Place an order</span><th:block th:if="sc.reqs.length > 0"> · proves <th:block th:each="rq: sc.reqs"><span th:text="rq.sep"></span><a th:href="rq.href" th:text="rq.id" data-m-req>DOC-001/1</a></th:block></th:block><th:block th:unless="sc.reqs.length > 0"> · linked to no requirement</th:block></span>
+          </span>
+          <span class="m-row-meta m-run-verifies"><th:block th:if="t.reqs.length > 0">verifies <th:block th:each="rq: t.reqs"><span th:text="rq.sep"></span><a th:href="rq.href" th:text="rq.id">DOC-001/1</a></th:block></th:block></span>
+          <span class="m-run-dur" th:text="t.took">2.1 s</span>
+        </div>
+      </div>
+    </div>
+
+    <div th:if="done.write" class="m-run-section" data-ka-section="manual.run.write">
+      <div class="m-section-head">
+        <h2 class="m-section-title">Turn it into a test</h2>
+        <span class="m-section-sub">Choose what your recording becomes.</span>
+      </div>
+      <nav class="m-write" aria-label="What the recording becomes">
+        <a th:each="c: done.write.choices" class="m-write-choice" th:href="c.href" th:attr="'aria-current': c.current, 'data-m-write': c.key">
+          <span class="m-write-label" th:text="c.label">API test</span>
+          <span class="m-write-said" th:text="c.said">Sends the calls your clicks made.</span>
+        </a>
+      </nav>
+      <div th:if="done.write.results" class="m-rows m-write-results" data-ka-section="manual.run.results">
+        <div th:if="done.write.ui" class="m-row" data-m-result="ui" th:attr="'data-m-status': done.write.ui.status">
+          <span th:class="done.write.ui.dot"></span>
+          <span class="m-row-main"><span class="m-row-title">UI test</span>
+            <span class="m-row-sub"><th:block th:text="done.write.ui.check">checks/x.js</th:block> · <th:block th:text="done.write.ui.words">written</th:block></span></span>
+          <a class="m-link" th:href="done.write.ui.href">Open</a>
+        </div>
+        <div th:if="done.write.api" class="m-row" data-m-result="api" th:attr="'data-m-status': done.write.api.status">
+          <span th:class="done.write.api.dot"></span>
+          <span class="m-row-main"><span class="m-row-title">API test</span>
+            <span class="m-row-sub"><th:block th:if="done.write.api.test"><th:block th:text="done.write.api.test">checks/x.feature</th:block> · </th:block><th:block th:text="done.write.api.words">being written</th:block><th:block th:if="done.write.api.error" th:text="': ' + done.write.api.error">: the model failed</th:block></span></span>
+          <a class="m-link" th:href="done.write.api.href">Open</a>
+        </div>
+      </div>
+      <div th:if="done.write.name" class="m-run-convert m-write-ui">
+        <span class="m-run-convert-name">
+          <span>checks/</span><input data-m-name aria-label="Name this test" spellcheck="false" autocomplete="off"
+                                     th:attr="'value': done.write.name.name"><span>.js</span>
+        </span>
+        <div class="m-run-convert-go">
+          <button type="button" class="m-btn m-btn--lg m-beacon" data-m-convert
+                  th:attr="'data-m-run': runId, 'data-m-choice': done.write.name.both, 'disabled': done.write.name.ai ? null : 'disabled'"
+                  onclick="kaManualRuns.convert(this)" th:text="done.write.name.both ? 'Write the UI test first' : 'Turn it into a test'">Turn it into a test</button>
+          <span th:if="done.write.name.ai" class="m-cost" th:text="done.write.name.both ? 'Uses AI. The API test comes next, from the same recording.' : 'Uses AI to write it. Replaying the test later is free.'">Uses AI to write it.</span>
+          <span th:unless="done.write.name.ai" class="m-run-noai">It needs an AI model, and this console has none.</span>
+        </div>
+        <p class="m-run-msg" data-m-msg role="alert"></p>
+      </div>
+      <div th:if="done.write.panel" class="m-calls" data-ka-section="manual.tests.new.traffic" data-m-live
+           th:attr="'data-m-source': done.write.source, 'data-m-captured': done.write.captured">
+        <p class="m-calls-summary" th:text="done.write.summary">28 calls were captured while you recorded: 5 kept, 23 left out.</p>
+        <p th:if="done.write.complete" class="m-calls-note" data-m-capture="complete">Everything the app sent while you recorded was captured.</p>
+        <div th:unless="done.write.complete" class="m-calls-gaps" data-m-capture="incomplete">
+          <b>The recording is incomplete</b>
+          <ul><li th:each="gap: done.write.gaps" th:text="gap">2 calls were still loading at Stop — not checked</li></ul>
+        </div>
+        <h3 class="m-calls-head" th:text="'The calls the test makes (' + done.write.keptN + ')'">The calls the test makes (5)</h3>
+        <div th:if="done.write.kept.length == 0" class="m-run-none">No call is kept. Keep one from the list below.</div>
+        <div th:if="done.write.kept.length > 0" class="m-rows m-calls-rows" data-m-kept>
+          <div th:each="r: done.write.kept" class="m-row m-row--act" th:attr="'data-m-call': r.id">
+            <span class="m-calls-n" th:attr="'title': r.method" th:text="r.verb">Sends</span>
+            <span class="m-row-main"><span class="m-row-title" th:text="r.title">After you clicked “Pay”</span>
+              <span class="m-row-sub"><th:block th:text="r.where">/demo/api/orders/(id)/pay</th:block> · <th:block th:text="r.status">200</th:block><th:block th:if="!!r.op"> · <span data-m-op th:text="r.op">matches payOrder</span></th:block><th:block th:if="!!r.note"> · <th:block th:text="r.note">you asked for this</th:block></th:block></span></span>
+            <span></span>
+            <button type="button" class="m-link m-calls-act" th:attr="'data-m-id': r.id" data-m-move="left" onclick="kaManualRuns.moveCall(this)">Leave this out</button>
+          </div>
+        </div>
+        <details class="m-calls-left" data-m-left-out>
+          <summary th:text="'Left out (' + done.write.leftN + ')'">Left out (23)</summary>
+          <th:block th:each="g: done.write.groups">
+            <h4 class="m-calls-group" th:attr="'data-m-left': g.code" th:text="g.label">4 calls to other sites</h4>
+            <div class="m-rows m-calls-rows">
+              <div th:each="r: g.rows" class="m-row m-row--act" th:attr="'data-m-call': r.id, 'data-m-calls': r.ids.join(' ')">
+                <span class="m-calls-n" th:attr="'title': r.method" th:text="r.verb">Reads</span>
+                <span class="m-row-main"><span class="m-row-title" th:text="r.where">/demo/api/stats</span>
+                  <span class="m-row-sub"><th:block th:text="r.after ? r.after : ''">after you clicked “Pay”</th:block><th:block th:if="r.times > 1" th:text="(r.after ? ' · ' : '') + r.times + ' times'"> · 7 times</th:block><th:block th:if="!!r.note" th:text="(r.after || r.times > 1 ? ' · ' : '') + r.note"> · on the same domain as the app</th:block></span></span>
+                <button th:if="r.site" type="button" class="m-link m-calls-act" th:attr="'data-m-host': r.site" onclick="kaManualRuns.keepSite(this)">Keep this site</button>
+                <span th:unless="r.site"></span>
+                <button th:unless="r.lost" type="button" class="m-link m-calls-act" th:attr="'data-m-id': r.ids[r.ids.length - 1]" data-m-move="kept" onclick="kaManualRuns.moveCall(this)">Keep this one</button>
+                <span th:if="r.lost"></span>
+              </div>
+            </div>
+          </th:block>
+        </details>
+        <div class="m-run-convert-go m-calls-go">
+          <a th:if="done.write.make.ok" class="m-btn m-btn--lg m-beacon" data-m-make th:href="done.write.make.href"
+             th:text="done.write.make.again ? 'Back to the API test' : 'Make the API test'">Make the API test</a>
+          <button th:unless="done.write.make.ok" type="button" class="m-btn m-btn--lg" data-m-make disabled="disabled">Make the API test</button>
+          <span th:if="done.write.make.ok" class="m-cost">The assistant writes it from the calls above and saves it once it passes. Uses AI.</span>
+          <span th:unless="done.write.make.ok" class="m-run-noai" th:text="done.write.make.why">It needs an AI model.</span>
+        </div>
+        <p class="m-run-msg" data-m-msg role="alert"></p>
+      </div>
+    </div>
+
+    <div th:if="done.thenApi" class="m-run-section" data-ka-section="manual.run.next">
+      <div class="m-summary m-summary--note">
+        <span class="m-dot m-dot--notrun"></span>
+        <div><div class="m-summary-title" th:text="done.thenApi.said">Next, the API test.</div></div>
+        <div class="m-summary-end"><a class="m-btn" data-m-then-api th:href="done.thenApi.href">Pick the calls for the API test</a></div>
+      </div>
+    </div>
+
+    <div th:if="done.did" class="m-run-section" data-ka-section="manual.run.checked">
+      <div class="m-section-head">
+        <h2 class="m-section-title">What you did</h2>
+        <span class="m-section-sub">The steps the AI turns into a test.</span>
+      </div>
+      <div th:if="done.did.length == 0" class="m-run-none">No steps were captured.</div>
+      <div th:if="done.did.length > 0" class="m-rows">
+        <div th:each="d: done.did" th:class="d.cls">
+          <span class="m-run-did-n" th:text="d.n">1</span>
+          <span class="m-row-title" th:text="d.text">Clicked “Save”</span>
+          <span></span>
+        </div>
+      </div>
+    </div>
+
+    <div th:if="done.showChecked" class="m-run-section" data-ka-section="manual.run.checked">
+      <div class="m-section-head">
+        <h2 class="m-section-title">What it checked</h2>
+        <span th:if="done.checksSub" class="m-section-sub" th:text="done.checksSub">4 passed · 0 failed</span>
+      </div>
+      <div th:if="done.checks.length == 0" class="m-run-none">This run recorded nothing it checked.</div>
+      <div th:if="done.checks.length > 0" class="m-rows m-run-rows">
+        <div th:each="k: done.checks" class="m-row" th:attr="'data-m-check-state': k.state">
+          <span th:class="k.dot" role="img" th:attr="'aria-label': k.state, 'title': k.state"></span>
+          <span class="m-row-main">
+            <span class="m-row-title" th:text="k.label">The Documents tab opens</span>
+            <details th:if="k.step" class="m-run-step" data-m-step><summary>The step as written</summary><code th:text="k.step">match response.status == 'paid'</code></details>
+          </span>
+          <span class="m-run-value" th:text="k.value">ok</span>
+        </div>
+      </div>
+      <p th:if="done.checksMore" class="m-run-more">
+        <span th:text="done.checksMore">3 more in the full report.</span>
+        <a th:if="done.report" th:href="done.report" target="_blank" rel="noopener">Open the full report</a>
+      </p>
+    </div>
+
+    <div th:if="done.proof" th:class="done.proof">
+      <div th:if="done.evidence" data-ka-section="manual.run.evidence">
+        <h2 class="m-run-label">Evidence</h2>
+        <div th:if="done.video || done.shots.length > 0" class="m-run-shots">
+          <button th:if="done.video" type="button" class="m-run-shot m-run-videothumb" onclick="kaRunBox('m-run-video')">
+            <span class="m-run-play" aria-hidden="true">▶</span><span>Watch the video</span>
+          </button>
+          <a th:each="sh: done.shots" class="m-run-shot" target="_blank" rel="noopener" onclick="return kaRunShot(this)"
+             th:attr="'href': sh.url, 'title': sh.title"><img loading="lazy" th:attr="'src': sh.url, 'alt': sh.title"></a>
+        </div>
+        <div th:if="done.report" class="m-run-proof-links">
+          <a class="m-link" th:href="done.report" target="_blank" rel="noopener">Open the full report ↗</a>
+        </div>
+      </div>
+      <div th:if="done.history" data-ka-section="manual.run.history">
+        <h2 class="m-run-label">Last runs</h2>
+        <div class="m-run-history">
+          <a th:each="h: done.history" th:href="h.href" th:attr="'title': h.title, 'aria-label': h.title, 'aria-current': h.current"><span th:class="h.dot"></span></a>
+        </div>
+        <p class="m-run-history-note" th:text="done.historyNote">Newest on the right.</p>
+      </div>
+    </div>
+
+    <div class="m-actions m-run-foot">
+      <button th:if="done.again" type="button" class="m-btn m-btn--lg" th:classappend="done.again.verify ? 'm-beacon' : ''" data-m-again
+              th:attr="'data-m-verify': done.again.verify, 'data-m-selector': done.again.selector, 'data-m-options': done.again.options, 'data-m-test': done.again.test"
+              onclick="kaManualRuns.again(this)" th:text="done.again.label">Run again</button>
+      <span th:if="done.again" class="m-run-free">Replaying uses no AI.</span>
+      <th:block th:if="done.written">
+        <span class="m-run-written">
+          <span th:if="done.written.said" th:text="done.written.said">Written by AI</span>
+          <a th:if="done.written.code" class="m-link" th:href="done.written.code" target="_blank" rel="noopener"
+             title="Opens in the developer console">Show the code ↗</a>
+          <button th:if="done.written.code &amp;&amp; done.written.del" type="button" class="m-link" data-m-delete
+                  th:attr="'data-m-test': done.written.path" onclick="kaManualRuns.deleteTest(this)">Delete</button>
+        </span>
+      </th:block>
+      <th:block th:if="done.retry">
+        <button th:if="done.retry.run" type="button" class="m-btn m-btn--lg m-beacon" data-m-convert
+                th:attr="'data-m-run': done.retry.run, 'data-m-name': done.retry.name, 'data-m-overwrite': done.retry.overwrite"
+                onclick="kaManualRuns.convert(this)">Try again</button>
+        <a class="m-link" th:href="done.retry.record" data-m-record-again>Record it again</a>
+        <span th:if="done.retry.run" class="m-cost" th:text="done.retry.overwrite ? 'Try again writes the test from the same recording, in place of ' + done.retry.path + '. Uses AI.' : 'Try again writes the test from the same recording. Uses AI.'">Try again writes the test from the same recording. Uses AI.</span>
+        <p class="m-run-msg" data-m-msg role="alert"></p>
+      </th:block>
+      <a th:if="done.askAgain" class="m-link" th:href="done.askAgain" data-m-ask-again>Ask for the change again</a>
+      <th:block th:if="done.convert">
+        <span class="m-run-convert-name">
+          <span>checks/</span><input data-m-name aria-label="Name this test" spellcheck="false" autocomplete="off"
+                                     th:attr="'value': done.convert.name"><span>.js</span>
+        </span>
+        <button type="button" class="m-btn m-btn--lg m-beacon" data-m-convert
+                th:attr="'data-m-run': runId, 'disabled': done.convert.ai ? null : 'disabled'"
+                onclick="kaManualRuns.convert(this)">Turn it into a test</button>
+        <span th:if="done.convert.ai" class="m-cost">Uses AI to write it. Replaying the test later is free.</span>
+        <span th:unless="done.convert.ai" class="m-run-noai">It needs an AI model, and this console has none. Start the console
+          with <span class="m-mono">ANTHROPIC_API_KEY</span>, <span class="m-mono">OPENAI_API_KEY</span> or
+          <span class="m-mono">OLLAMA_HOST</span> set; your steps stay saved here.</span>
+        <p class="m-run-msg" data-m-msg role="alert"></p>
+      </th:block>
+      <span class="m-run-coverage" data-ka-section="manual.run.coverage" data-m-live th:text="done.covered"></span>
+      <span th:if="done.link" hidden data-m-link-written th:attr="'data-m-meta': done.link"></span>
+    </div>
+    <dialog th:if="done.video" id="m-run-video" class="m-lightbox" aria-label="The run's video">
+      <button type="button" class="m-lightbox-x" aria-label="Close" onclick="kaRunBox(null)">×</button>
+      <video controls preload="none" th:attr="'src': done.video"></video>
+    </dialog>
+    <dialog th:if="done.shots.length > 0" id="m-run-shot" class="m-lightbox" aria-label="A screenshot">
+      <button type="button" class="m-lightbox-x" aria-label="Close" onclick="kaRunBox(null)">×</button>
+      <img alt="">
+    </dialog>
+  </th:block>
+</section>
+<script src="/pub/run-modal.js" ka:nocache="true"></script>
+<script src="/pub/manual-runs.js" ka:nocache="true"></script>
+<script>
+  // The evidence opens over the page: the video plays in a lightbox, a screenshot shows full size there.
+  // A click on the backdrop, the × or Escape closes it (and stops the video).
+  function kaRunBox(id) {
+    document.querySelectorAll('dialog.m-lightbox[open]').forEach(function (d) {
+      var v = d.querySelector('video');
+      if (v) v.pause();
+      d.close();
+    });
+    var box = id ? document.getElementById(id) : null;
+    if (box) {
+      box.showModal();
+      var video = box.querySelector('video');
+      if (video) { var p = video.play(); if (p && p.catch) p.catch(function () {}); }
+    }
+    return false;
+  }
+  function kaRunShot(a) {
+    var box = document.getElementById('m-run-shot');
+    if (!box) return true;
+    var img = box.querySelector('img');
+    img.src = a.getAttribute('href');
+    img.alt = a.getAttribute('title') || '';
+    return kaRunBox('m-run-shot');
+  }
+  document.addEventListener('click', function (e) {
+    if (e.target && e.target.matches && e.target.matches('dialog.m-lightbox')) kaRunBox(null);
+  });
+  document.addEventListener('close', function (e) {
+    var v = e.target && e.target.querySelector ? e.target.querySelector('video') : null;
+    if (v) v.pause();
+  }, true);
+  (function () {
+    var el = document.getElementById('watch-data');
+    var cfg = el ? JSON.parse(el.textContent || 'null') : null;
+    if (cfg) kaManualRuns.watch(cfg);
+    kaManualRuns.finishWritten();
+  })();
+</script>

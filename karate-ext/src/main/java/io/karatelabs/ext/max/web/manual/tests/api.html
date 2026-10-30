@@ -1,0 +1,935 @@
+<!--/* Manual mode — a .feature opened as an API test (/manual/tests/api?test=<path>[&scenario=<n>][&row=<n>][&run=<runId>],
+     api-workspace §8): the flow as cards, and what each call sent and got back in a run.
+     Reads, all server-side: apiTest.read(path) (the cards; an Outline flow read again bound to its row,
+     apiTest.read(path, {scenario, row})) · apiTest.exchanges(path, {runId}) (the run's
+     evidence; the newest run when ?run is absent) · runner.tests() (the test's row) · requirement.list() (the
+     words for its links, and the file a draft card's ids are saved in) · runner.envs() and runner.auth() (the env switcher and the sign-in chip) ·
+     apiTest.session(path, {scenario, row, session}) (the live session, api-workspace §4) · harness.get(runId) (how a run
+     that left no result for the file ended) · apiTest.config() and secret.list() (the auth preset form, §6). The island hands those
+     payloads to kaApiTest (pub/api-test.js) as read; the switcher posts /ui/runner/env, Try this call again and
+     Start over post /ui/apitest/{send,restart}.
+     Run kicks Runner.run with {session} over /api/eval (D98: run ops stay on the eval channel) and stays on the
+     page: on the run's end it reloads with ?run=<runId>. */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  // the side chat (api-workspace §5, §8): its frame, the gate's question (ApiTest.triage) and the last change
+  // (ApiTest.change); the turns load from /ui/apitest/chat by the chat id the tab keeps
+  (function () {
+    function safe(fn) { try { return fn(); } catch (e) { return null; } }
+    function isList(v) { return v != null && v.length != null && typeof v != 'string'; }
+    var wanted = request.param('test');
+    wanted = wanted ? String(wanted).replace(/^\/+/, '') : null;
+    var path = wanted && /\.feature$/.test(wanted) && safe(function () { return file.exists(wanted); }) ? wanted : null;
+    // a new test the chat ran red is not on disk: its question is asked here
+    var pending = !path && wanted && /\.feature$/.test(wanted) ? safe(function () { return apiTest.triage(wanted); }) : null;
+    if (pending && !pending.error && pending.state && pending.state != 'none') path = wanted;
+    _.fresh = wanted ? null : true;
+    var chat = safe(function () { return harness.chat(path || wanted ? { test: path || wanted } : {}); }) || {};
+    // a new test the chat holds a copy of (a migration's, one it is still writing): its chat is here
+    if (!path && wanted && /\.feature$/.test(wanted) && chat.test == wanted) path = wanted;
+    var triage = path ? safe(function () { return apiTest.triage(path); }) : null;
+    if (triage && triage.error) triage = null;
+    var change = path ? safe(function () { return apiTest.change(path); }) : null;
+    if (change && change.error) change = null;
+    var state = triage ? String(triage.state) : 'none';
+    var failing = triage && triage.failing ? triage.failing : null;
+    var answer = triage && triage.answer ? triage.answer : null;
+    var verify = triage && triage.verify ? triage.verify : null;
+    var answers = triage && isList(triage.answers) ? triage.answers : [];
+    var ask = null;
+    if (state == 'open') {
+      ask = { title: triage.unsaved ? 'The question could not be saved. Discard it to go on.' : 'Is this a bug in the API, or should the test change?',
+        plain: failing ? kaWords.expectation(failing.expected, failing.actual) : null,
+        failed: failing ? kaWords.short(failing.expected || 'a step', 160) : null,
+        got: failing && failing.actual ? kaWords.failure(failing.actual, 220) : null };
+    } else if (state == 'running') {
+      ask = { title: 'The assistant is checking its change…' };
+    } else if (state == 'verifying') {
+      ask = { title: 'Checking the suspected bug once more…' };
+    } else if (state == 'answered') {
+      ask = { title: triage.busy ? 'The assistant is working on your answer…'
+          : triage.message ? String(triage.message)
+          : verify ? 'The suspected bug did not show up at the same step, so nothing was saved.'
+          : answer && answer.choice == 'bug' ? 'You said it is a bug.'
+          : 'You said the test is wrong. Tell the assistant what to change: it saves the test only once it passes.' };
+    } else if (state == 'lost') {
+      ask = { title: String(triage.message) };
+    }
+    if (ask) {
+      ask.state = state;
+      ask.bug = answers.indexOf('bug') >= 0 ? true : null;
+      ask.test = answers.indexOf('test') >= 0 && !(answer && answer.choice == 'test') ? true : null;
+      ask.discard = answers.indexOf('discard') >= 0 ? true : null;
+      ask.recheck = answers.indexOf('recheck') >= 0 ? true : null;
+    }
+    _.ask = ask;
+    var KIND = { match_loosened: 'Loosened check', match_dropped: 'Check removed', status_dropped: 'Status check removed',
+      expected_dependency_changed: 'Expected value changed', request_input_changed: 'Request changed',
+      examples_row_removed: 'Data row removed', meaning_unknown: 'Locked step changed' };
+    _.change = null;
+    if (change && change.after) {
+      var flags = [];
+      var ws = isList(change.weakening) ? change.weakening : [];
+      for (var w = 0; w < ws.length; w++) {
+        flags.push({ label: KIND[ws[w].kind] || 'Weaker check', message: String(ws[w].message || ''),
+          was: ws[w].before ? 'Was: ' + ws[w].before : null });
+      }
+      _.change = { after: String(change.after), flags: flags, created: change.before == null ? true : null, bug: change.bug ? true : null, undoable: change.undoable ? true : null,
+        why: change.undoable ? null : state != 'none' ? 'Answer the question in the assistant panel first.'
+          : 'The test changed since then, so this can no longer be undone here.',
+        report: change.runId ? '/manual/runs/' + encodeURIComponent(String(change.runId)) : null };
+    }
+    _.model = chat.model === true ? true : null;
+    _.chatOpen = request.param('chat') == 'open' || state != 'none' || _.fresh ? true : null;
+    // Coverage's New API test (?req=<id>[,<id>…], or req repeated): the test the chat creates is linked to these
+    var reqParams = request.paramValues('req');
+    reqParams = isList(reqParams) ? reqParams : (request.param('req') ? [request.param('req')] : []);
+    var forReq = [];
+    for (var rp = 0; !wanted && rp < reqParams.length; rp++) {
+      String(reqParams[rp]).split(',').forEach(function (x) { x = kaWords.stampId(x.trim()); if (x && forReq.indexOf(x) < 0) forReq.push(x); });
+    }
+    // the requirements files each id is in, so a draft card whose ids a file already holds reads as saved
+    var held = {}, listed = safe(function () { return requirement.list(); });
+    for (var h = 0; isList(listed) && h < listed.length; h++) if (listed[h].file) held[String(listed[h].id)] = String(listed[h].file);
+    _.drafting = path && state == 'none' ? true : null;
+    // a recording's calls panel (Make the API test, ?from=<run id>): the chat's first message carries the calls the
+    // tester kept there (/ui/apitest/chat {from}); a chat already made from it is reattached, never started twice
+    var from = null;
+    var fromId = !wanted && request.param('from') ? String(request.param('from')) : null;
+    if (fromId) {
+      var picked = session && session.ui && session.ui.traffic ? session.ui.traffic[fromId] : null;
+      var fo = {};
+      if (picked && picked.moves && picked.moves.length) fo.moves = picked.moves;
+      if (picked && picked.hosts && picked.hosts.length) fo.hosts = picked.hosts;
+      var fs = safe(function () { return traffic.sift(fromId, fo); });
+      var again = picked && picked.chat ? safe(function () { return harness.chat({ chat: String(picked.chat) }); }) : null;
+      // the chat made from it already saved its test: that test's page is this one now
+      var turns0 = again && !again.error && again.turns ? again.turns : [];
+      for (var t0 = 0; t0 < turns0.length; t0++) {
+        var cs = turns0[t0].cards || [];
+        for (var k0 = 0; k0 < cs.length; k0++) {
+          if (cs[k0].kind == 'run' && cs[k0].created && cs[k0].saved && cs[k0].path) {
+            context.redirect('/manual/tests/api?test=' + encodeURIComponent(String(cs[k0].path)) + '&chat=open');
+          }
+        }
+      }
+      var n = fs && !fs.error && fs.counts ? fs.counts.kept : 0;
+      from = { source: fromId, ok: fs && !fs.error && n > 0 ? true : null, kept: n,
+        chat: again && !again.error ? String(again.chat) : null,
+        why: !fs ? 'The recording could not be read.' : fs.error ? String(fs.error) : n == 0 ? 'No call is kept, so there is nothing to test. Go back to the recording and keep a call.' : null,
+        back: '/manual/runs/' + encodeURIComponent(fromId) + '?write=api',
+        said: null,
+        message: 'Make an API test from my recording, with the ' + kaWords.plural(n, 'call', 'calls') + ' I kept.',
+        // New test's criteria go to the chat, which proposes them once their outcomes are asserted: never stamped here
+        req: forReq.length ? forReq : null };
+    }
+    if (from) from.said = from.ok ? 'From your recording: the assistant writes the test from the ' + kaWords.plural(from.kept, 'call', 'calls')
+        + ' you kept, runs it, and saves it once it passes.' : from.why;
+    _.from = from;
+    _.chatPane = { test: path, model: _.model, open: _.chatOpen, fresh: _.fresh, triage: triage, change: change, version: null,
+      req: forReq.length && !from ? forReq : null, held: held, from: from };
+  })();
+</script>
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'API test · Karate Agent');
+  (function () {
+    function safe(fn) { try { return fn(); } catch (e) { return null; } }
+    function isList(v) { return v != null && v.length != null && typeof v != 'string'; }
+    var ago = kaWords.ageInWords, fileName = kaWords.fileOf, stampId = kaWords.stampId;
+
+    var wanted = request.param('test');
+    wanted = wanted ? String(wanted).replace(/^\/+/, '') : null;
+    _.path = wanted;
+    _.title = wanted ? fileName(wanted) : 'API test';
+    _.missing = null;
+    _.unsaved = null;
+    _.found = null;
+    _.unreadable = null;
+    _.apiTest = null;
+    _.flow = null; _.flows = []; _.scenario = null; _.last = null; _.checks = null; _.proves = []; _.env = null; _.cannot = null;
+    _.envs = []; _.switchable = null; _.envListed = null; _.auth = null; _.authPreset = null;
+    _.shared = null; _.blocks = []; _.calls = []; _.selected = null; _.runAll = null; _.runFlow = null; _.live = null;
+    _.testHref = wanted ? '/manual/tests/edit?test=' + encodeURIComponent(wanted) : '/manual/tests';
+    _.forReq = [];
+    if (!wanted) {
+      _.title = 'New API test';
+      var asked = _.chatPane.req || (_.from && _.from.req) || [];
+      var listed0 = asked.length ? safe(function () { return requirement.list(); }) : null;
+      for (var a0 = 0; a0 < asked.length; a0++) {
+        var said0 = asked[a0];
+        for (var r0 = 0; isList(listed0) && r0 < listed0.length; r0++) {
+          if (String(listed0[r0].id) == asked[a0]) said0 = String(listed0[r0].title);
+          var cs0 = isList(listed0[r0].criteria) ? listed0[r0].criteria : [];
+          for (var c0 = 0; c0 < cs0.length; c0++) {
+            if (stampId(cs0[c0].stamp) == asked[a0]) said0 = String(cs0[c0].text);
+          }
+        }
+        _.forReq.push({ id: asked[a0], text: said0 });
+      }
+      return;
+    }
+    var read = /\.feature$/.test(wanted) ? safe(function () { return apiTest.read(wanted); }) : null;
+    if (!read || read.error) {
+      if (_.chatPane.test == wanted) _.unsaved = true; else _.missing = true;
+      return;
+    }
+    _.found = true;
+    _.chatPane.version = read.version ? String(read.version) : null;
+    var flows = isList(read.scenarios) ? read.scenarios : [];
+    // the links each flow carries, so a proposed link already made reads linked
+    _.chatPane.linked = {};
+    for (var lf = 0; lf < flows.length; lf++) _.chatPane.linked[flows[lf].index] = isList(flows[lf].req) ? flows[lf].req : [];
+    if (read.name) _.title = String(read.name);
+    context.setGlobal('pageTitle', _.title + ' · Karate Agent');
+    if (read.editable === false && !flows.length) _.unreadable = String(read.notEditable || 'it does not parse');
+
+    var picked = request.paramInt('scenario');
+    var at = 0;
+    for (var f = 0; f < flows.length; f++) { if (flows[f].index == picked) at = f; }
+    var flow = flows.length ? flows[at] : null;
+    var runId = request.param('run');
+    var base = '/manual/tests/api?test=' + encodeURIComponent(wanted);
+    _.flows = [];
+    for (var g = 0; flows.length > 1 && g < flows.length; g++) {
+      _.flows.push({ name: String(flows[g].name || 'Flow ' + (g + 1)), current: g == at ? 'page' : null,
+        href: base + '&scenario=' + flows[g].index });
+    }
+
+    // the run: the one the page just started (?run), else the newest that ran this file
+    var run = safe(function () { return runId ? apiTest.exchanges(wanted, { runId: String(runId) }) : apiTest.exchanges(wanted); });
+    if (run && run.error) run = null;
+    var execs = run && isList(run.scenarios) ? run.scenarios : [];
+
+    // an Outline whose rows all have a flat `row` is shown for one row (api-workspace §4): the URL's, else the run's
+    // first failing row, else its first that ran, else 0; its cards are the read bound to that row
+    var rows = [], computed = false;
+    var fc = flow && flow.outline && isList(flow.cards) ? flow.cards : [];
+    for (var k1 = 0; k1 < fc.length; k1++) {
+      if (fc[k1].kind != 'data table') continue;
+      if (fc[k1].computed) computed = true;
+      var tr = isList(fc[k1].rows) ? fc[k1].rows : [];
+      for (var k2 = 0; k2 < tr.length; k2++) { if (tr[k2].row != null) rows.push(tr[k2].row); }
+    }
+    var byRow = {}, exec = null, row = null;
+    for (var e = 0; flow && e < execs.length; e++) {
+      if (execs[e].index != flow.index) continue;
+      if (execs[e].row != null) byRow[execs[e].row] = execs[e];
+      if (!exec || (exec.status != 'failed' && execs[e].status == 'failed')) exec = execs[e];
+    }
+    if (rows.length && !computed) {
+      var asked = request.paramInt('row');
+      var ranFirst = null, failedFirst = null;
+      for (var k3 = 0; k3 < rows.length; k3++) {
+        var ex3 = byRow[rows[k3]];
+        if (ex3 && ranFirst == null) ranFirst = rows[k3];
+        if (ex3 && ex3.status == 'failed' && failedFirst == null) failedFirst = rows[k3];
+      }
+      row = asked != null && rows.indexOf(asked) >= 0 ? asked : failedFirst != null ? failedFirst : ranFirst != null ? ranFirst : 0;
+      exec = byRow[row] || null;
+      var boundRead = safe(function () { return apiTest.read(wanted, { scenario: flow.index, row: row }); });
+      if (boundRead && !boundRead.error && isList(boundRead.scenarios)) {
+        read = boundRead;
+        flow = read.scenarios[at];
+      }
+    }
+    _.flow = flow ? { index: flow.index, name: flow.name ? String(flow.name) : null } : null;
+    _.scenario = flow ? flow.index : null;
+    _.row = row;
+    // a run against since-edited steps shows no verdict on them
+    var changed = exec && exec.changed ? true : null;
+    var result = {};
+    if (exec && !changed) {
+      var bgr = isList(exec.background) ? exec.background : [];
+      for (var b = 0; b < bgr.length; b++) result['b' + bgr[b].step] = bgr[b];
+      var cr = isList(exec.cards) ? exec.cards : [];
+      for (var c = 0; c < cr.length; c++) result['s' + cr[c].step] = cr[c];
+    }
+
+    // the requirement behind each link, in its own words
+    var reqs = safe(function () { return requirement.list(); });
+    var crit = {};
+    for (var r = 0; isList(reqs) && r < reqs.length; r++) {
+      var cs = isList(reqs[r].criteria) ? reqs[r].criteria : [];
+      crit[reqs[r].id] = { label: String(reqs[r].title), req: String(reqs[r].id) };
+      for (var ci = 0; ci < cs.length; ci++) {
+        crit[stampId(cs[ci].stamp)] = { label: reqs[r].title + ' · criterion ' + cs[ci].id, text: String(cs[ci].text), req: String(reqs[r].id) };
+      }
+    }
+    _.proves = [];
+    var links = flow && isList(flow.req) ? flow.req : [];
+    for (var l = 0; l < links.length; l++) {
+      var hit = crit[links[l]] || null;
+      _.proves.push({ id: String(links[l]), label: hit ? hit.label : String(links[l]) + ' (not in the requirements)',
+        title: hit && hit.text ? hit.text : String(links[l]),
+        href: '/manual/coverage#req-' + encodeURIComponent(hit ? hit.req : String(links[l]).split('/')[0]) });
+    }
+    // a link stamped after the test's last run is not on the graph yet: Coverage counts it once a run carries it
+    _.uncounted = null;
+    if (_.proves.length) {
+      var mx = safe(function () { return requirement.matrix(); });
+      var counted = {};
+      var mrows = mx && isList(mx.requirements) ? mx.requirements : [];
+      for (var m1 = 0; m1 < mrows.length; m1++) {
+        var mcs = isList(mrows[m1].criteria) ? mrows[m1].criteria : [];
+        if (!mcs.length) counted[String(mrows[m1].id)] = String(mrows[m1].status);
+        for (var m2 = 0; m2 < mcs.length; m2++) counted[mrows[m1].id + '/' + mcs[m2].id] = String(mcs[m2].status);
+      }
+      var waiting = _.proves.filter(function (p) { return counted[p.id] != 'COVERED' && counted[p.id] != 'FAILING'; });
+      if (waiting.length) _.uncounted = 'Coverage counts ' + (waiting.length == 1 ? 'this link' : 'these links')
+          + ' once the test runs with ' + (waiting.length == 1 ? 'it' : 'them') + '. Run it now to count ' + (waiting.length == 1 ? 'it.' : 'them.');
+    }
+    var n = flow ? flow.checks || 0 : 0;
+    _.checks = !flow || kaWords.cannotRun(flow.unsupported) ? null : flow.checksAtLeast ? (n ? 'At least ' + kaWords.plural(n, 'check', 'checks') : null)
+        : n ? kaWords.plural(n, 'check', 'checks') : 'Not checking anything yet';
+
+    // the env the console runs under, the others it can switch to, and who the calls sign in as there
+    var envs = safe(function () { return runner.envs(); });
+    var auth = safe(function () { return runner.auth(); });
+    _.envs = isList(envs) ? envs : [];
+    _.env = auth && auth.env ? String(auth.env) : 'default';
+    _.switchable = _.envs.some(function (x) { return !x.current; }) ? true : null;
+    _.envListed = _.envs.some(function (x) { return x.current; }) ? true : null;
+    _.auth = auth && !auth.error ? kaWords.signIn(auth) : null;
+    _.authPreset = kaWords.authPreset(safe(function () { return apiTest.config(); }), safe(function () { return secret.list(); }),
+      auth && auth.env ? String(auth.env) : null, safe(function () { return file.list('**/*.feature'); }), _.auth);
+
+    // how the last run of this flow went, in one line
+    var tests = request.cache('manual.tests', function () { return runner.tests(); });
+    var listed = null;
+    for (var t = 0; isList(tests) && t < tests.length; t++) { if (tests[t].path == wanted) listed = tests[t]; }
+    var QUAL = { notasserted: 'it passed, but checks nothing', mockOnly: 'only a mock answered',
+      weakened: 'it passed on a weakened check, so Coverage does not count it until a person reviews it' };
+    var quals = [];
+    var qs = exec && isList(exec.qualifiers) ? exec.qualifiers : [];
+    for (var q = 0; q < qs.length; q++) quals.push(QUAL[qs[q]] || String(qs[q]));
+    var state = exec ? String(exec.status) : 'notrun';
+    // a run this page started that left no result for the file: say how it ended
+    var meta = !run && runId ? safe(function () { return harness.get(String(runId)); }) : null;
+    var ignored = isList(read.tags) && read.tags.indexOf('@ignore') >= 0;
+    var ended = !meta || !meta.status ? null : meta.status == 'empty'
+        ? 'Nothing ran: ' + (ignored ? 'this test is marked @ignore, so runs skip it.' : 'no flow in this test was selected.')
+        : meta.status == 'failed' ? 'The run failed before any step ran: ' + kaWords.failure(meta.error || 'see the run report', 220) : null;
+    if (ended && meta.status == 'failed') state = 'failed';
+    _.cannot = flow ? kaWords.cannotRun(flow.unsupported) : null;
+    _.last = {
+      dot: 'm-dot--' + (!changed && (state == 'passed' || state == 'failed') ? state : 'notrun'),
+      text: !exec ? (ended || (run ? (row != null ? 'This row' : 'This flow') + ' did not run in the last run.' : 'Not run yet. Run it to see what each call sends and gets back.'))
+          : (state == 'passed' ? 'Passed' : state == 'failed' ? 'Failed' : 'Did not finish')
+            + (listed && listed.lastRunAt && run && String(listed.lastRunId) == String(run.runId) ? ' ' + (ago(listed.lastRunAt) || '') : ''),
+      qualifiers: quals.length ? quals.join(' · ') : null,
+      changed: changed ? 'The test changed since this run. Run it again to see each call’s result.' : null,
+      report: run || ended ? '/manual/runs/' + encodeURIComponent(String(run ? run.runId : runId)) : null
+    };
+
+    // the cards, grouped as a tester reads them: each call with the checks and the values it remembers
+    function target(card) {
+      var parts = [];
+      var all = isList(card.path) ? card.path : [];
+      for (var p = 0; p < all.length; p++) {
+        var bits = String(all[p]).match(/'[^']*'|"[^"]*"|[^,]+/g) || [];
+        for (var k = 0; k < bits.length; k++) {
+          var s = String(bits[k]).trim();
+          if (!s) continue;
+          parts.push(/^['"]/.test(s) ? s.substring(1, s.length - 1).replace(/^\/+|\/+$/g, '') : '{' + s + '}');
+        }
+      }
+      var base = kaWords.address(card.url).replace(/\/+$/, '');
+      return parts.length ? base + '/' + parts.join('/') : base || '/';
+    }
+    function mark(status) {
+      return status == 'passed' ? 'm-dot--passed' : status == 'failed' ? 'm-dot--failed' : 'm-dot--notrun';
+    }
+    var nth = 0;   // one numbering for the Background's calls and the flow's
+    function blocks(cards, prefix) {
+      var out = [], call = null;
+      for (var i = 0; i < cards.length; i++) {
+        var cd = cards[i];
+        var key = prefix + cd.step;
+        var res = result[key] || null;
+        var st = res ? String(res.status) : null;
+        var err = res && res.error ? kaWords.failure(res.error, 220) : null;
+        if (cd.kind == 'call' && !cd.method) {
+          var says = [], code = [];
+          if (cd.url) says.push(/^['"]/.test(String(cd.url).trim()) ? 'Calls go to ' + kaWords.address(cd.url)
+              : 'Calls go to the address the project calls ' + cd.url);
+          if (isList(cd.path)) says.push('Path ' + target({ path: cd.path }));
+          var sh = kaWords.inputs('Headers', cd.headers), sq = kaWords.inputs('Query', cd.params);
+          if (sh) { says.push(sh.text); code.push(sh.code); }
+          if (sq) { says.push(sq.text); code.push(sq.code); }
+          if (cd.request) says.push('Body ' + kaWords.clip(cd.request, 120));
+          out.push({ kind: 'setup', key: key, title: 'Sets up the calls that follow', says: says, code: code.length ? code.join('\n') : null,
+            dot: mark(st), error: err });
+          call = null;
+          continue;
+        }
+        if (cd.kind == 'call') {
+          nth++;
+          var ex = res && isList(res.exchanges) && res.exchanges.length ? res.exchanges[res.exchanges.length - 1] : null;
+          call = { kind: 'call', key: key, n: nth, ex: ex ? kaWords.exchange(ex) : null, title: String(cd.title), method: cd.method ? String(cd.method).toUpperCase() : 'CALL',
+            target: target(cd), step: cd.step, end: cd.end, shared: prefix == 'b' ? true : null,
+            params: kaWords.inputs('Query', cd.params), headers: kaWords.inputs('Headers', cd.headers),
+            sends: cd.request ? kaWords.clip(cd.request, 120) : null, checks: [], remembers: [],
+            status: res && res.verdict ? String(res.verdict) : st, error: err, sent: ex ? true : null };
+          out.push(call);
+          continue;
+        }
+        if ((cd.kind == 'check' || cd.kind == 'remember') && call) {
+          if (cd.kind == 'check') call.checks.push({ text: kaWords.check(cd), dot: mark(st), error: err, step: cd.step });
+          else call.remembers.push(kaWords.remembers(cd.variable, cd.expression));
+          if (!call.error && err) call.error = err;
+          continue;
+        }
+        call = null;
+        if (cd.kind == 'data table') {
+          var grid = [], pick = row != null;
+          var cells = isList(cd.rows) ? cd.rows : [];
+          for (var gr = 0; gr < cells.length; gr++) {
+            var at1 = cells[gr].row, ran = pick ? byRow[at1] : null;
+            var rst = ran ? String(ran.status) : null;
+            grid.push({ cells: cells[gr].cells, row: at1 != null ? String(at1) : null,
+              href: pick ? base + '&scenario=' + flow.index + '&row=' + at1 + (runId ? '&run=' + encodeURIComponent(String(runId)) : '') : null,
+              current: pick && at1 == row ? 'true' : null, dot: mark(rst),
+              state: rst == 'passed' ? 'passed' : rst == 'failed' ? 'did not pass' : 'not run', notrun: pick && !ran ? true : null });
+          }
+          out.push({ kind: 'table', key: 'x' + (cd.block || 0), title: String(cd.title), head: isList(cd.header) ? cd.header : [],
+            rows: grid, pick: pick ? true : null, computed: cd.computed ? true : null });
+        } else {
+          out.push({ kind: cd.kind == 'check' ? 'check' : 'advanced', key: key,
+            title: cd.kind == 'check' ? kaWords.check(cd) : cd.kind == 'remember' ? kaWords.remembers(cd.variable, cd.expression)
+              : isList(cd.comments) && cd.comments.length ? String(cd.title) : kaWords.stepWords(isList(cd.steps) ? cd.steps[0] : ''),
+            steps: isList(cd.steps) ? cd.steps : null, dot: mark(st), error: err });
+        }
+      }
+      for (var o = 0; o < out.length; o++) {
+        if (out[o].kind == 'call') {
+          out[o].dot = mark(out[o].status);
+          if (out[o].ex) out[o].ex.dot = out[o].dot;
+          out[o].lone = out[o].error && !out[o].checks.some(function (k) { return k.error; }) ? true : null;
+          out[o].state = changed ? 'out of date — run again' : out[o].status == 'failed' ? 'did not pass' : out[o].status == 'passed' ? 'passed' : 'not run';
+        }
+      }
+      return out;
+    }
+    _.shared = read.background && isList(read.background.cards) && read.background.cards.length ? blocks(read.background.cards, 'b') : null;
+    _.blocks = flow ? blocks(isList(flow.cards) ? flow.cards : [], 's') : [];
+
+    // the call shown on the right first: the one that failed, else the first one sent, else the first
+    var calls = (_.shared || []).concat(_.blocks).filter(function (x) { return x.kind == 'call'; });
+    var first = null;
+    for (var s1 = 0; s1 < calls.length && !first; s1++) { if (calls[s1].status == 'failed' && calls[s1].sent) first = calls[s1]; }
+    for (var s2 = 0; s2 < calls.length && !first; s2++) { if (calls[s2].sent) first = calls[s2]; }
+    if (!first && calls.length) first = calls[0];
+    _.selected = first ? first.key : null;
+    _.calls = calls;
+
+    _.runAll = wanted;
+    _.runFlow = flows.length > 1 && flow ? wanted + ':' + flow.line : null;
+
+    // the live session a page Run leaves warm, on the row shown; an Outline with a computed block has none
+    var own = [];
+    for (var oc = 0; oc < calls.length; oc++) {
+      own.push({ key: calls[oc].key, n: calls[oc].n, title: calls[oc].title, step: calls[oc].step, shared: calls[oc].shared });
+    }
+    var sessionId = 'default';
+    var live = null;
+    var liveOpts = { outline: flow && flow.outline ? true : null, row: row, computed: computed ? true : null };
+    if (flow && _.blocks.some(function (x) { return x.kind == 'call'; }) && !computed) {
+      var so = { scenario: flow.index, session: sessionId };
+      if (row != null) so.row = row;
+      live = safe(function () { return apiTest.session(wanted, so); });
+      if (live && live.error) live = null;
+    }
+    if (computed && flow) live = { state: 'none' };
+    _.live = live ? kaWords.liveSession(live, own, liveOpts) : null;
+    _.apiTest = { path: wanted, scenario: flow ? flow.index : null, selected: _.selected, read: read, run: run || null,
+      envs: envs || null, auth: auth || null, session: computed ? null : live, sessionId: sessionId, row: row, calls: own,
+      live: liveOpts };
+  })();
+</script>
+<div ka:island="apiTest"/>
+<div ka:island="chatPane"/>
+<div ka:island="authPreset"/>
+<style>
+  .m-page.m-api { max-width: 1360px; }
+  .m-api-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; margin-top: 18px; font-size: 13.5px; color: var(--m-text-2); }
+  .m-api-meta-item { display: inline-flex; align-items: center; gap: 8px; }
+  .m-api-proves { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-top: 10px; font-size: 13.5px; }
+  .m-api-proves-label { color: var(--m-text-2); }
+  .m-api-slot { display: inline-flex; align-items: center; gap: 6px; }
+  .m-api-slot b { color: var(--m-ink); font-weight: 600; }
+  .m-api-env select.m-input { width: auto; padding: 4px 30px 4px 10px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+  .m-api-auth { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--m-surface); color: var(--m-ink); font-size: 13px; }
+  .m-api-path { font-size: 13px; color: var(--m-text-3); overflow-wrap: break-word; }
+  .m-api-runline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .m-api-flows { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 22px; font-size: 14px; }
+  .m-api-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; margin-top: 24px; align-items: start; }
+  @media (min-width: 1100px) { .m-api-grid { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); } }
+  .m-api-cards { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .m-api-shared-head { font-size: 12.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--m-text-3); }
+  .m-api-call { display: flex; flex-direction: column; gap: 10px; padding: 16px 20px; cursor: pointer; border: 1.5px solid transparent; text-align: left; }
+  .m-api-call:hover { background-color: var(--m-hover); }
+  .m-api-call[aria-current="true"] { border-color: var(--m-purple); }
+  .m-api-call:focus-visible { outline: 2px solid var(--m-purple); outline-offset: 2px; }
+  .m-api-call-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: baseline; }
+  .m-api-n { font-size: 12.5px; font-weight: 600; color: var(--m-text-3); }
+  .m-api-call-title { font-size: 15.5px; font-weight: 600; color: var(--m-ink); overflow-wrap: break-word; }
+  .m-api-call-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--m-text-2); white-space: nowrap; }
+  .m-api-req { display: flex; gap: 10px; align-items: baseline; font-size: 13.5px; min-width: 0; }
+  .m-api-method { font-family: var(--m-mono); font-size: 12px; font-weight: 500; padding: 2px 7px; border-radius: 6px; background: var(--m-purple-soft); color: var(--m-purple); }
+  .m-api-target { font-family: var(--m-mono); font-size: 12.5px; color: var(--m-text-2); overflow-wrap: break-word; min-width: 0; }
+  .m-api-lines { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 13.5px; }
+  .m-api-lines li { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 8px; align-items: baseline; overflow-wrap: break-word; }
+  .m-api-lines .m-dot { align-self: center; }
+  .m-api-small { font-family: var(--m-mono); font-size: 12px; color: var(--m-text-2); overflow-wrap: break-word; }
+  .m-api-err { display: block; font-size: 12.5px; color: var(--m-text-2); margin-top: 2px; white-space: pre-wrap; }
+  .m-api-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .m-api-locked { padding: 14px 20px; display: flex; flex-direction: column; gap: 8px; }
+  .m-api-locked-title { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
+  .m-api-code { margin: 0; font-family: var(--m-mono); font-size: 12px; line-height: 1.55; color: var(--m-text-2); white-space: pre-wrap; overflow-wrap: break-word; }
+  .m-api-table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+  .m-api-table th, .m-api-table td { text-align: left; padding: 5px 10px 5px 0; border-top: 1px solid var(--m-line); vertical-align: top; overflow-wrap: break-word; }
+  .m-api-table th { font-weight: 600; color: var(--m-text-2); border-top: 0; }
+  .m-api-examples-wrap { overflow-x: auto; min-width: 0; }
+  .m-api-examples th, .m-api-examples td { overflow-wrap: normal; word-break: normal; }
+  .m-api-examples tr[aria-current="true"] td { background: var(--m-purple-soft); }
+  .m-api-examples td:first-child, .m-api-examples th:first-child { padding-left: 6px; }
+  .m-api-rowlink { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .m-api-rownote { font-size: 12px; color: var(--m-text-3); }
+  .m-api-exchange { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 20px 22px; }
+  .m-api-ex-title { font-size: 15.5px; font-weight: 600; overflow-wrap: break-word; }
+  .m-api-statusline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; }
+  .m-api-statusline b { font-weight: 600; }
+  .m-api-url { font-family: var(--m-mono); font-size: 12.5px; color: var(--m-text-2); overflow-wrap: break-word; }
+  .m-api-switch { display: inline-flex; gap: 4px; padding: 3px; border-radius: 10px; background: var(--m-surface); }
+  .m-api-switch button { font: inherit; font-size: 13px; padding: 5px 12px; border: 0; border-radius: 8px; background: none; color: var(--m-text-2); cursor: pointer; }
+  .m-api-switch button[aria-pressed="true"] { background: var(--m-field); color: var(--m-ink); box-shadow: var(--m-card-shadow); }
+  .m-api-part { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .m-api-part-title { font-size: 12.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--m-text-3); }
+  .m-api-fold > summary { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; border-radius: 6px; }
+  .m-api-fold > summary::-webkit-details-marker { display: none; }
+  .m-api-fold > summary::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 0.15s; margin-right: 2px; }
+  .m-api-fold[open] > summary::before { transform: rotate(45deg); }
+  .m-api-fold > summary:hover { color: var(--m-ink); }
+  .m-api-fold > summary:focus-visible { outline: 2px solid var(--m-purple); outline-offset: 2px; }
+  .m-api-fold > .m-api-table { margin-top: 8px; }
+  .m-api-body { max-height: 520px; overflow: auto; min-width: 0; }
+  .m-api-body .m-api-code { color: var(--m-ink); }
+  .m-api-note { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--m-text-2); }
+  .m-api-actions-err { display: flex; align-items: baseline; gap: 8px; margin: 10px 0 0; font-size: 13.5px; overflow-wrap: break-word; }
+  .m-api-actions-err[hidden] { display: none; }
+  .m-api-actions-err .m-dot { align-self: center; }
+  .m-api-try { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .m-api-try-btn { padding: 6px 14px; font-size: 13px; }
+  .m-api-next { font-size: 12.5px; font-weight: 600; color: var(--m-purple); }
+  .m-api-session { display: flex; flex-direction: column; gap: 10px; padding: 16px 20px; }
+  .m-api-session-line { display: flex; align-items: baseline; gap: 10px; margin: 0; font-size: 14px; font-weight: 600; color: var(--m-ink); }
+  .m-api-session-line .m-dot { align-self: center; flex: none; }
+  .m-api-session .m-api-actions-err { margin: 0; }
+  .m-api-change { display: flex; flex-direction: column; gap: 10px; padding: 16px 20px; }
+  .m-api-flags { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+  .m-api-flags b { color: var(--m-red); font-weight: 600; }
+  .m-api-flags .m-api-small { display: block; }
+  .m-api-chat { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; min-width: 0; }
+  .m-api-chat-head { display: flex; align-items: center; gap: 10px; }
+  .m-api-chat-title { font-size: 15.5px; font-weight: 600; margin-right: auto; }
+  .m-api-chat-back { display: none; font-size: 13.5px; }
+  .m-api-chat-empty { display: flex; flex-direction: column; gap: 6px; padding: 14px; border-radius: var(--m-radius-sm); background: var(--m-surface); font-size: 13.5px; color: var(--m-text-2); }
+  .m-api-chat-empty b { color: var(--m-ink); }
+  .m-api-ask { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-radius: var(--m-radius-sm); border: 1.5px solid var(--m-purple); background: var(--m-purple-soft); }
+  .m-api-ask-title { margin: 0; font-size: 14.5px; font-weight: 600; }
+  .m-api-ask-act { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .m-api-ask-act .m-btn { padding: 7px 14px; font-size: 13.5px; }
+  .m-api-ticket { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--m-text-2); }
+  .m-api-ticket .m-input { padding: 6px 10px; font-size: 13.5px; }
+  .m-api-chat-log { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; min-height: 80px; flex: 1 1 auto; }
+  .m-api-turn { display: flex; flex-direction: column; gap: 8px; }
+  /* the reply asks the tester to tick: the boxes sit under it */
+  .m-api-turn > [data-m-card="links"] { order: 1; }
+  .m-api-msg { margin: 0; padding: 9px 12px; border-radius: 12px; background: var(--m-surface); font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: break-word; }
+  .m-api-msg--me { align-self: flex-end; max-width: 88%; background: var(--m-purple-soft); color: var(--m-ink); }
+  .m-api-tool { font-size: 13px; padding: 8px 10px; border: 1px solid var(--m-line); border-radius: 10px; min-width: 0; }
+  .m-api-tool summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+  .m-api-tool .m-api-code { max-height: 220px; overflow: auto; }
+  .m-api-draft { max-height: 260px; overflow: auto; }
+  .m-api-traffic-line { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--m-ink); }
+  .m-api-recs { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .m-api-fold > .m-api-recs { margin: 8px 0 4px 14px; }
+  .m-api-rec { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .m-api-rec-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .m-api-verb { font-family: inherit; background: none; padding: 0; color: var(--m-text-2); }
+  .m-api-rec-head .m-api-method, .m-api-rec-head b, .m-api-rec-head .m-api-small { flex: none; }
+  .m-api-rec-head .m-api-url { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-api-traffic summary { flex-wrap: nowrap; }
+  .m-api-traffic summary > span { min-width: 0; }
+  .m-api-traffic-gaps { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  .m-api-tool .m-check-row { font-size: 13px; margin-top: 4px; }
+  .m-api-compose { display: flex; flex-direction: column; gap: 8px; }
+  .m-api-say { resize: vertical; min-height: 64px; font-size: 14px; }
+  .m-api-chip { border: 0; cursor: pointer; font-family: inherit; }
+  .m-api-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+  .m-page.m-api .m-api-fab { display: none; }
+  .m-api-hint { font-size: 12.5px; line-height: 1.45; color: var(--m-text-2); }
+  .m-api-chat-log, .m-api-tool .m-api-code { scrollbar-color: var(--m-ring-soft) transparent; }
+  .m-api-unread { width: 8px; height: 8px; border-radius: 50%; background: var(--m-on-purple); }
+  .m-page.m-api--chat .m-api-ask-btn { display: none; }
+  /* 1440px and wider: a docked third track, sticky like .exchange */
+  @media (min-width: 1440px) {
+    .m-page.m-api.m-api--chat { max-width: none; display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 22px; align-items: start; }
+    .m-api--chat .m-api-chat { position: sticky; top: 16px; max-height: calc(100vh - 32px); }
+  }
+  /* 1100–1439px: a right drawer over the exchange column */
+  @media (min-width: 1100px) and (max-width: 1439px) {
+    .m-api-chat { position: fixed; top: 12px; right: 12px; bottom: 12px; width: 420px; z-index: 40; background: var(--m-bg); }
+  }
+  /* under 1100px: a full-height sheet over the page */
+  @media (max-width: 1099px) {
+    .m-api-chat { position: fixed; inset: 0; z-index: 40; border-radius: 0; background: var(--m-bg); }
+    .m-api-chat-back { display: inline; }
+    .m-page.m-api .m-api-ask-btn { display: none; }
+    .m-page.m-api .m-api-fab { display: inline-flex; position: fixed; right: 16px; bottom: 16px; z-index: 30; }
+  }
+</style>
+<section class="m-page m-api" data-ka-section="manual.tests.api" x-data="kaApiTest()" th:classappend="chatOpen ? 'm-api--chat' : ''" :class="{ 'm-api--chat': chatOpen }">
+  <div class="m-api-main">
+  <div data-ka-section="manual.tests.api.header">
+  <header class="m-head">
+    <div class="m-head-text">
+      <span class="m-eyebrow">API test</span>
+      <h1 class="m-title" th:text="title">Orders can be placed</h1>
+      <p th:if="flow &amp;&amp; flow.name &amp;&amp; flow.name != title" class="m-sub" th:text="flow.name">Place and pay</p>
+      <p th:if="path" class="m-api-path" th:text="path">checks/orders-api.feature</p>
+    </div>
+    <div class="m-head-end">
+      <a class="m-link" href="/manual/tests">All tests</a>
+      <a class="m-link" href="/manual/coverage">Coverage</a>
+      <button type="button" class="m-btn m-btn--ghost m-api-ask-btn" disabled="disabled" :disabled="false" x-show="!chatOpen" @click="openChat()">Ask the assistant</button>
+      <th:block th:if="found &amp;&amp; !unreadable">
+        <button th:if="runFlow" type="button" class="m-btn m-btn--ghost" th:attr="'data-m-api-run': runFlow" title="Runs only the flow shown below" disabled="disabled" :disabled="running" @click="run($el)">Run only this flow</button>
+        <button type="button" class="m-btn" th:attr="'data-m-api-run': runAll" title="Runs every flow in this test" disabled="disabled" :disabled="running" @click="run($el)">Run the test</button>
+      </th:block>
+    </div>
+  </header>
+
+  <th:block th:if="found">
+    <div class="m-api-meta">
+      <span class="m-api-meta-item m-api-runline" data-m-live-run>
+        <span th:class="'m-dot ' + last.dot" x-show="!running"></span><span class="m-dot m-dot--inflight" x-show="running" x-cloak></span>
+        <span x-show="!running" th:text="last.text">Passed 2 min ago</span><span x-show="running" x-cloak>Running… the page refreshes when it ends.</span>
+        <span th:if="last.qualifiers" th:text="'— ' + last.qualifiers">— it passed, but checks nothing</span>
+        <a th:if="last.report" class="m-link" th:href="last.report">Open run report</a>
+      </span>
+      <span th:if="last.changed" class="m-api-meta-item" th:text="last.changed">The test changed since this run.</span>
+      <span th:if="cannot" class="m-api-meta-item" th:text="cannot">This flow uses gRPC, which this console can’t run.</span>
+      <span th:if="checks" class="m-api-meta-item" th:text="checks">4 checks</span>
+      <label th:if="switchable" class="m-api-slot m-api-env" data-m-slot="env">Environment
+        <select class="m-input" aria-label="Environment" disabled="disabled" :disabled="running || switching" @change="switchEnv($el.value)">
+          <option th:unless="envListed" value="" disabled="disabled" selected="selected" th:text="env">default</option>
+          <option th:each="x: envs" th:value="x.name ? x.name : ''" th:text="x.name ? x.name : 'default'" th:attr="'selected': x.current ? 'selected' : null">qa</option>
+        </select>
+      </label>
+      <span th:unless="switchable" class="m-api-slot" data-m-slot="env">Environment <b th:text="env">default</b></span>
+      <span th:if="auth" class="m-api-auth" data-m-slot="auth" title="How the calls sign in" th:text="auth">Signs in with a token</span>
+    </div>
+    <th:block th:if="authPreset" th:insert="~{components/auth-preset :: authPreset}" th:with="open: false"></th:block>
+    <div class="m-api-proves">
+      <span class="m-api-proves-label" th:text="proves.length ? 'Proves' : 'Not linked to a requirement: Coverage lists the calls it makes, but counts no criterion as tested by it. Linking is optional.'">Proves</span>
+      <a th:each="p: proves" class="m-chip" th:href="p.href" th:text="p.label" th:attr="'title': p.title">Orders · criterion 1</a>
+    </div>
+    <p th:if="uncounted &amp;&amp; !unreadable" class="m-api-proves" data-m-uncounted=""><span th:text="uncounted">Coverage counts this link once the test runs with it.</span>
+      <button type="button" class="m-btn m-btn--ghost m-api-try-btn" th:attr="'data-m-api-run': runAll" disabled="disabled" :disabled="running" @click="run($el)">Run now</button></p>
+    <p class="m-api-actions-err" role="alert" x-show="err" x-cloak><span class="m-dot m-dot--xs m-dot--failed"></span><span x-text="err"></span></p>
+  </th:block>
+  </div>
+
+  <div th:if="fresh" class="m-section">
+    <div class="m-empty">
+      <div class="m-empty-title">A new API test</div>
+      <div th:unless="from" class="m-empty-sub">Tell the assistant the address of the API and a few notes on what it should do. It tries the calls, then writes the test with you.</div>
+      <div th:if="from" class="m-empty-sub" data-m-from="" th:attr="'data-m-source': from.source">
+        <th:block th:text="from.said">From your recording.</th:block>
+        <a class="m-link" th:href="from.back">Back to the calls</a></div>
+      <div th:if="forReq.length" class="m-empty-sub" data-m-for-req="" th:attr="'data-m-proposed': from ? 'true' : null"><th:block th:text="from ? 'The assistant asks you to link it to what it proves, once it checks each outcome:' : 'The test it writes is linked to what it proves:'">The test it writes is linked to what it proves:</th:block>
+        <th:block th:each="q: forReq"><br><b th:text="q.id">ORD-1/1</b> <span th:text="q.text">criterion</span></th:block></div>
+    </div>
+  </div>
+
+  <div th:if="unsaved" class="m-section" data-m-unsaved="">
+    <div class="m-empty">
+      <div class="m-empty-title">This test is not saved yet</div>
+      <div th:if="drafting" class="m-empty-sub">The assistant is writing it, in the assistant panel. It saves the test once it passes; until then nothing is saved.</div>
+      <div th:unless="drafting" class="m-empty-sub">The assistant wrote it and ran it, and it did not pass, so it was not saved. Answer the question in the assistant panel: if the test is wrong, the assistant fixes it and saves it once it passes; if it is a bug, it is saved marked as a suspected bug.</div>
+    </div>
+  </div>
+
+  <div th:if="missing" class="m-section">
+    <div class="m-empty">
+      <div class="m-empty-title">No API test at this path</div>
+      <div class="m-empty-sub">An API test is a .feature file. It may have been renamed or deleted. <a href="/manual/tests">See every test</a></div>
+    </div>
+  </div>
+
+  <th:block th:if="found">
+
+    <nav th:if="flows.length" class="m-tabs m-api-flows" aria-label="Flows in this test">
+      <a th:each="f: flows" class="m-tab" th:href="f.href" th:text="f.name" th:attr="'aria-current': f.current">Flow</a>
+    </nav>
+
+    <div th:if="unreadable" class="m-empty" style="margin-top: 24px">
+      <div class="m-empty-title">This file can't be shown as cards</div>
+      <div class="m-empty-sub"><span th:text="unreadable">it does not parse</span>. <a th:href="testHref">Back to the test</a></div>
+    </div>
+
+    <div th:unless="unreadable" class="m-api-grid">
+      <div class="m-api-cards" data-ka-section="manual.tests.api.cards">
+        <div th:if="change" class="m-card m-api-change" data-ka-section="manual.tests.api.change" aria-live="polite">
+          <p class="m-api-session-line"><span class="m-dot" th:classappend="change.bug || change.flags.length ? 'm-dot--failed' : 'm-dot--passed'"></span><span th:text="change.bug ? 'The assistant saved this test as a suspected bug' : change.created ? 'The assistant wrote this test' : 'The assistant changed this test'">The assistant changed this test</span></p>
+          <ul th:if="change.flags.length" class="m-api-flags">
+            <li th:each="f: change.flags"><b th:text="f.label">Loosened check</b> <span th:text="f.message">the check was loosened</span><span th:if="f.was" class="m-api-small" th:text="f.was">Was: …</span></li>
+          </ul>
+          <p th:unless="change.flags.length" class="m-api-note" th:text="change.bug ? 'It failed again at the same step, so it was saved as a suspected bug. No check was weakened.' : 'It passed before it was saved. No check was weakened.'">It passed before it was saved. No check was weakened.</p>
+          <div class="m-api-try">
+            <button type="button" class="m-btn m-btn--ghost m-api-try-btn" disabled="disabled" th:attr="'data-m-undo': change.after, 'data-m-can': change.undoable ? 'true' : 'false'" :disabled="!!busy || running || $el.dataset.mCan !== 'true'" @click="undo($el)" th:text="change.created ? 'Undo: delete this test' : 'Undo this change'">Undo this change</button>
+            <a th:if="change.report" class="m-link" th:href="change.report">Open the run that checked it</a>
+          </div>
+          <p th:if="change.why" class="m-api-note" th:text="change.why">Answer the question first.</p>
+          <p class="m-api-actions-err" role="alert" x-show="undoErr" x-cloak><span class="m-dot m-dot--xs m-dot--failed"></span><span x-text="undoErr"></span></p>
+        </div>
+        <div th:if="live" class="m-card m-api-session" data-ka-section="manual.tests.api.session" aria-live="polite">
+          <p class="m-api-session-line"><span th:class="'m-dot m-dot--' + live.dot" :class="dotClass(live().dot)"></span><span th:text="live.text" x-text="live().text">Ready</span></p>
+          <p class="m-api-note" th:text="live.sends" th:attr="'style': live.sends ? null : 'display: none'" x-show="live().sends" x-text="live().sends">Start over sends these calls again</p>
+          <div th:attr="'style': live.start ? null : 'display: none'" x-show="live().start">
+            <button type="button" class="m-btn m-btn--ghost" disabled="disabled" :disabled="!!busy || running" @click="startOver()"><span x-show="busy !== 'restart'">Start over</span><span x-show="busy === 'restart'" style="display: none">Starting over…</span></button>
+          </div>
+          <p class="m-api-actions-err" role="alert" x-show="sessErr" x-cloak><span class="m-dot m-dot--xs m-dot--failed"></span><span x-text="sessErr"></span></p>
+        </div>
+        <th:block th:if="shared">
+          <span class="m-api-shared-head">Done at the start of every flow</span>
+          <th:block th:each="b: shared"><th:block th:insert="~{components/api-card :: apiCard}" th:with="b: b"></th:block></th:block>
+          <span class="m-api-shared-head" style="margin-top: 10px">This flow</span>
+        </th:block>
+        <div th:if="!blocks.length" class="m-empty">
+          <div class="m-empty-title">This flow has no calls yet</div>
+          <div class="m-empty-sub">Add the calls in the developer console, or ask the AI once it is connected here.</div>
+        </div>
+        <th:block th:each="b: blocks"><th:block th:insert="~{components/api-card :: apiCard}" th:with="b: b"></th:block></th:block>
+      </div>
+
+      <div class="m-card m-api-exchange" data-ka-section="manual.tests.api.exchange" aria-live="polite">
+        <p th:if="!calls.length" class="m-api-note">This flow sends no calls.</p>
+        <div th:each="c: calls" class="m-api-part" th:attr="'data-m-exchange': c.key, 'style': c.key == selected ? null : 'display: none'"
+             x-data="{ k: null }" x-init="k = $el.dataset.mExchange" x-show="sel === $el.dataset.mExchange">
+          <div class="m-api-ex-title" th:text="'Call ' + c.n + ' · ' + c.title">Call 1 · Sign in</div>
+          <template x-if="tried[k] &amp;&amp; tried[k].ex">
+            <div class="m-api-part" data-m-tried="">
+              <p class="m-api-note">Sent again from this page; the run report keeps the run’s exchange.</p>
+              <div class="m-api-statusline">
+                <span class="m-dot" :class="dotClass(tried[k].dot)"></span><b x-text="tried[k].ex.status"></b>
+                <span x-show="tried[k].ex.ms" x-text="tried[k].ex.ms"></span>
+                <span x-show="tried[k].ex.mock">· a karate mock answered</span>
+              </div>
+              <div class="m-api-url"><span x-text="tried[k].ex.method"></span> <span x-text="tried[k].ex.url"></span></div>
+              <div class="m-api-switch" role="group" aria-label="Show">
+                <button type="button" :aria-pressed="side == 'got' ? 'true' : 'false'" @click="side = 'got'">What came back</button>
+                <button type="button" :aria-pressed="side == 'sent' ? 'true' : 'false'" @click="side = 'sent'">What was sent</button>
+              </div>
+              <template x-for="part in [{ id: 'got', body: tried[k].ex.gotBody, headers: tried[k].ex.gotHeaders, cut: tried[k].ex.cut }, { id: 'sent', body: tried[k].ex.sentBody, headers: tried[k].ex.sentHeaders, cut: null }]" :key="tried[k].seq + part.id">
+                <div class="m-api-part" x-show="side == part.id">
+                  <span class="m-api-part-title">Body</span>
+                  <div x-show="part.body" class="m-api-body" x-init="$nextTick(() => grid($el))"><pre class="m-api-code" x-text="part.body"></pre></div>
+                  <p x-show="!part.body" class="m-api-note">No body.</p>
+                  <p x-show="part.cut" class="m-api-note" x-text="part.cut"></p>
+                  <details x-show="part.headers.length" class="m-api-fold"><summary class="m-api-part-title" x-text="'Headers (' + part.headers.length + ')'"></summary>
+                    <table class="m-api-table"><tbody><template x-for="h in part.headers"><tr><th x-text="h.name"></th><td x-text="h.value"></td></tr></template></tbody></table>
+                  </details>
+                </div>
+              </template>
+            </div>
+          </template>
+          <p class="m-api-note" style="display: none" x-show="tried[k] &amp;&amp; !tried[k].ex" x-text="tried[k] ? 'This call sent nothing. ' + (tried[k].lone || '') : ''"></p>
+          <div class="m-api-part" x-show="!tried[k]">
+          <th:block th:if="c.ex">
+            <div class="m-api-statusline">
+              <span th:class="'m-dot ' + c.ex.dot"></span><b th:text="c.ex.status">200 OK</b>
+              <span th:if="c.ex.ms" th:text="c.ex.ms">84ms</span>
+              <span th:if="c.ex.mock">· a karate mock answered</span>
+            </div>
+            <div class="m-api-url"><span th:text="c.ex.method">POST</span> <span th:text="c.ex.url">http://…</span></div>
+            <div class="m-api-switch" role="group" aria-label="Show">
+              <button type="button" :aria-pressed="side == 'got' ? 'true' : 'false'" @click="side = 'got'">What came back</button>
+              <button type="button" :aria-pressed="side == 'sent' ? 'true' : 'false'" @click="side = 'sent'">What was sent</button>
+            </div>
+            <div class="m-api-part" data-m-side="got" x-show="side == 'got'">
+              <span class="m-api-part-title">Body</span>
+              <div th:if="c.ex.gotBody" class="m-api-body" x-init="grid($el)"><pre class="m-api-code" th:text="c.ex.gotBody">{}</pre></div>
+              <p th:unless="c.ex.gotBody" class="m-api-note">No body.</p>
+              <p th:if="c.ex.cut" class="m-api-note" th:text="c.ex.cut">Showing the first part</p>
+              <details th:if="c.ex.gotHeaders.length" class="m-api-fold"><summary class="m-api-part-title" th:text="'Headers (' + c.ex.gotHeaders.length + ')'">Headers</summary>
+                <table class="m-api-table"><tbody><tr th:each="h: c.ex.gotHeaders"><th th:text="h.name">Content-Type</th><td th:text="h.value">application/json</td></tr></tbody></table>
+              </details>
+            </div>
+            <div class="m-api-part" data-m-side="sent" x-show="side == 'sent'" style="display: none">
+              <span class="m-api-part-title">Body</span>
+              <div th:if="c.ex.sentBody" class="m-api-body" x-init="grid($el)"><pre class="m-api-code" th:text="c.ex.sentBody">{}</pre></div>
+              <p th:unless="c.ex.sentBody" class="m-api-note">No body.</p>
+              <details th:if="c.ex.sentHeaders.length" class="m-api-fold"><summary class="m-api-part-title" th:text="'Headers (' + c.ex.sentHeaders.length + ')'">Headers</summary>
+                <table class="m-api-table"><tbody><tr th:each="h: c.ex.sentHeaders"><th th:text="h.name">Content-Type</th><td th:text="h.value">application/json</td></tr></tbody></table>
+              </details>
+            </div>
+          </th:block>
+          <p th:unless="c.ex" class="m-api-note" th:text="last.changed ? 'The test changed since the last run. Run it again to see what this call sends and gets back.' : last.report ? 'This call was not sent in the last run.' : 'Run the test to see what this call sends and gets back.'">Run the test</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </th:block>
+  </div>
+
+  <aside class="m-card m-api-chat" data-ka-section="manual.tests.api.chat" aria-label="Assistant" th:attr="'style': chatOpen ? null : 'display: none'" x-show="chatOpen">
+    <div class="m-api-chat-head">
+      <button type="button" class="m-link m-api-chat-back" @click="closeChat()">Back to the test</button>
+      <span class="m-api-chat-title">Assistant</span>
+      <button type="button" class="m-chip-x" aria-label="Close the assistant" title="Close; the chat is kept" @click="closeChat()">×</button>
+    </div>
+    <div th:unless="model" class="m-api-chat-empty" data-m-nomodel="">
+      <b>No AI model is connected.</b>
+      <span>The assistant needs one to try calls and write this test. Connect a model in Settings, then come back to this page.</span>
+      <a class="m-link" href="/settings">Open Settings</a>
+    </div>
+    <div th:if="ask" class="m-api-ask" th:attr="'data-m-triage': ask.state" role="group" aria-label="The open question">
+      <p class="m-api-ask-title" th:text="ask.title">Is this a bug in the API, or should the test change?</p>
+      <p th:if="ask.plain" class="m-api-note" data-m-plain="" th:text="ask.plain">Expected the response's status to be “paid”, got “pending”.</p>
+      <th:block th:unless="ask.plain">
+        <p th:if="ask.failed" class="m-api-note"><b>Did not pass:</b> <span th:text="ask.failed">match response.status == 'paid'</span></p>
+        <p th:if="ask.got" class="m-api-note"><b>It got:</b> <span th:text="ask.got">created</span></p>
+      </th:block>
+      <details th:if="ask.plain" class="m-api-fold"><summary class="m-api-hint">The step that failed</summary>
+        <pre class="m-api-code" th:text="ask.failed">match response.status == 'paid'</pre>
+        <p th:if="ask.got" class="m-api-note" th:text="ask.got">Got “pending”, expected “paid”</p>
+      </details>
+      <label th:if="ask.bug" class="m-api-ticket">Bug ticket, if there is one <input class="m-input" aria-label="Bug ticket" placeholder="e.g. ORD-142" x-model="ticket"></label>
+      <div class="m-api-ask-act">
+        <button th:if="ask.bug" type="button" class="m-btn" disabled="disabled" :disabled="!!answering" @click="answer('bug')">It’s a bug</button>
+        <button th:if="ask.test" type="button" class="m-btn m-btn--ghost" disabled="disabled" :disabled="!!answering" @click="answer('test')">The test is wrong</button>
+        <button th:if="ask.recheck" type="button" class="m-btn m-btn--ghost" disabled="disabled" :disabled="!!answering" @click="recheck()">Check it again</button>
+        <button th:if="ask.discard" type="button" class="m-link" disabled="disabled" :disabled="!!answering" @click="answer('discard')" title="Nothing is saved; the test stays as it is">Discard</button>
+      </div>
+      <p class="m-api-actions-err" role="alert" x-show="askErr" x-cloak><span class="m-dot m-dot--xs m-dot--failed"></span><span x-text="askErr"></span></p>
+    </div>
+    <p class="m-api-note" x-show="notice" x-text="notice" x-cloak></p>
+    <p class="m-api-note" x-show="reconnecting" x-cloak>Reconnecting…</p>
+    <div th:if="model" class="m-api-chat-log" x-ref="log" aria-live="polite">
+      <p th:if="model" class="m-api-note" x-show="!turns.length" th:text="found ? 'Ask for what you need in your own words, or pick a suggestion below.' : 'Ask for what you need in your own words.'">Ask for what you need in your own words.</p>
+      <template x-for="t in turns" :key="t.turn">
+        <div class="m-api-turn">
+          <p class="m-api-msg m-api-msg--me" x-show="t.message" x-text="t.kind === 'report' ? 'You ran the test and it did not pass.' : t.message"></p>
+          <template x-if="callsOf(t).length > 3">
+            <details class="m-api-tool m-api-fold" data-m-calls="">
+              <summary class="m-api-hint" x-text="callsOf(t).length + ' calls sent. Show them'"></summary>
+              <template x-for="c in callsOf(t)" :key="c.n">
+                <details class="m-api-fold">
+                  <summary><span class="m-api-method" x-text="c.method"></span> <span class="m-api-url" x-text="c.url"></span> <b x-text="c.status"></b></summary>
+                  <div class="m-api-part" x-show="c.sent"><span class="m-api-part-title">What was sent</span><pre class="m-api-code" x-text="c.sent"></pre></div>
+                  <div class="m-api-part" x-show="c.got"><span class="m-api-part-title">What came back</span><pre class="m-api-code" x-text="c.got"></pre></div>
+                </details>
+              </template>
+            </details>
+          </template>
+          <template x-for="c in shownCards(t)" :key="c.n">
+            <div class="m-api-tool" :data-m-card="c.kind">
+              <template x-if="c.kind === 'call'">
+                <details class="m-api-fold">
+                  <summary><span class="m-api-method" x-text="c.method"></span> <span class="m-api-url" x-text="c.url"></span> <b x-text="c.status"></b> <span class="m-api-small" x-show="c.ms" x-text="c.ms + ' ms'"></span></summary>
+                  <div class="m-api-part" x-show="c.sent"><span class="m-api-part-title">What was sent</span><pre class="m-api-code" x-text="c.sent"></pre></div>
+                  <div class="m-api-part" x-show="c.got"><span class="m-api-part-title">What came back</span><pre class="m-api-code" x-text="c.got"></pre></div>
+                </details>
+              </template>
+              <template x-if="c.kind === 'run'">
+                <p class="m-api-session-line"><span class="m-dot" :class="c.status === 'green' ? 'm-dot--passed' : 'm-dot--failed'"></span><span x-text="runWords(c) + (c.times > 1 ? ' ×' + c.times : '')"></span></p>
+              </template>
+              <template x-if="c.kind === 'config'">
+                <p class="m-api-session-line"><span class="m-dot m-dot--notrun"></span><span :title="c.name" x-text="kaWords.setting(c)"></span></p>
+              </template>
+              <template x-if="c.kind === 'bug'">
+                <p class="m-api-session-line"><span class="m-dot" :class="c.saved ? 'm-dot--failed' : 'm-dot--notrun'"></span><span x-text="c.saved ? 'Saved as a suspected bug: it failed again at the same step.' : 'Not saved: the bug did not show up at the same step.'"></span></p>
+              </template>
+              <template x-if="c.kind === 'links'">
+                <div class="m-api-part">
+                  <span class="m-api-part-title">Which of these does the test prove?</span>
+                  <p class="m-api-hint" data-m-optional="">Linking is up to you: the test is saved either way. Coverage counts it only for what you tick.</p>
+                  <template x-for="it in c.items" :key="it.tag">
+                    <label class="m-check-row"><input type="checkbox" class="m-checkbox" :value="it.tag" :checked="carries(c, it) || (ticks[c.n] || []).indexOf(it.tag) >= 0" :disabled="carries(c, it)" @change="tick(c.n, it.tag, $el.checked)" :aria-label="it.label"><span><b x-text="it.label"></b> <span class="m-api-hint" x-text="it.text || ''"></span></span></label>
+                  </template>
+                  <template x-for="s in (c.skipped || [])" :key="s.text || s"><p class="m-api-hint" data-m-skipped="" :title="s.text || s" x-text="kaWords.notChecked(s)"></p></template>
+                  <div><button type="button" class="m-btn m-btn--ghost m-api-try-btn" :disabled="!(ticks[c.n] || []).length || !!busy || !!linked[c.n]" @click="link(c)" x-text="linkLabel(c)"></button></div>
+                </div>
+              </template>
+              <template x-if="c.kind === 'traffic'">
+                <div class="m-api-part m-api-traffic" x-data="{ w: kaWords.traffic(c.sift) }">
+                  <span class="m-api-part-title">From your recording</span>
+                  <p class="m-api-traffic-line" data-m-kept-line="" x-text="w.keptLine"></p>
+                  <ul class="m-api-recs" data-m-kept="">
+                    <template x-for="r in w.kept" :key="r.id">
+                      <li class="m-api-rec"><span class="m-api-rec-head"><span class="m-api-method m-api-verb" :title="r.method" x-text="r.verb"></span><span class="m-api-url" :title="r.where" x-text="r.where"></span><b x-text="r.status"></b></span>
+                        <span class="m-api-hint m-api-rec-why" x-show="r.after || r.op || r.note" x-text="[r.after, r.op, r.note].filter(Boolean).join(' · ')"></span></li>
+                    </template>
+                  </ul>
+                  <p class="m-api-traffic-line" data-m-left-line="" x-show="w.left" x-text="w.leftLine"></p>
+                  <template x-for="g in w.groups" :key="g.code">
+                    <details class="m-api-fold" :data-m-left="g.code">
+                      <summary class="m-api-hint"><span x-text="g.label"></span></summary>
+                      <ul class="m-api-recs">
+                        <template x-for="r in g.rows" :key="r.id">
+                          <li class="m-api-rec"><span class="m-api-rec-head"><span class="m-api-method m-api-verb" x-show="r.method" :title="r.method" x-text="r.verb"></span><span class="m-api-url" :title="r.where" x-text="r.where"></span><b x-text="r.status"></b><span class="m-api-small" x-show="r.times > 1" x-text="r.times + ' times'"></span></span>
+                            <span class="m-api-hint m-api-rec-why" x-show="r.after || r.note" x-text="[r.after, r.note].filter(Boolean).join(' · ')"></span></li>
+                        </template>
+                      </ul>
+                    </details>
+                  </template>
+                  <div class="m-api-traffic-gaps" data-m-gaps="" x-show="w.gaps.length">
+                    <b>The recording is incomplete</b>
+                    <ul class="m-api-lines"><template x-for="gap in w.gaps"><li><span class="m-dot m-dot--notrun"></span><span x-text="gap"></span></li></template></ul>
+                  </div>
+                  <p class="m-api-hint">To change which calls the test makes, tell the assistant, e.g. “keep the analytics call”.</p>
+                </div>
+              </template>
+              <template x-if="c.kind === 'draft'">
+                <div class="m-api-part">
+                  <span class="m-api-part-title">New criteria to check</span>
+                  <p class="m-api-hint">The assistant wrote these from what you said. Read them, then save them. They stay marked as a draft until someone approves them.</p>
+                  <template x-for="r in draftItems(c.markdown)" :key="r.id">
+                    <div class="m-api-part"><b x-text="r.id + ' · ' + r.title"></b>
+                      <ul class="m-api-lines"><template x-for="k in r.criteria"><li><span></span><span x-text="k"></span></li></template></ul>
+                    </div>
+                  </template>
+                  <details class="m-api-fold"><summary class="m-api-hint">Show the file text</summary><pre class="m-api-code m-api-draft" x-text="c.markdown"></pre></details>
+                  <div><button type="button" class="m-btn m-btn--ghost m-api-try-btn" :disabled="!!savedAs(c)" @click="saveDraft(c)" x-text="savedAs(c) ? 'Saved' : 'Save to requirements/' + c.file"></button></div>
+                  <p class="m-api-note" x-show="savedAs(c)" x-text="savedAs(c)"></p>
+                </div>
+              </template>
+            </div>
+          </template>
+          <p class="m-api-msg" x-show="t.reply"><template x-for="(part, i) in kaWords.pageLinks(t.reply)" :key="i"><span><a x-show="part.href" class="m-link" :href="part.href" x-text="part.label"></a><span x-show="!part.href" x-text="part.text"></span></span></template></p>
+          <p class="m-api-note" data-m-working="" x-show="t.status === 'running'"><span class="m-dot m-dot--inflight"></span> <span x-text="t.step || 'Working…'">Working…</span></p>
+          <p class="m-api-note" x-show="t.error" x-text="t.error"></p>
+        </div>
+      </template>
+    </div>
+    <div th:if="model" class="m-api-chips" role="group" aria-label="Suggestions">
+      <button th:if="found" type="button" class="m-chip m-api-chip" disabled="disabled" :disabled="waiting" @click="chip('Add checks to this test for what each call returns.')">Add checks</button>
+      <button th:if="found" type="button" class="m-chip m-api-chip" disabled="disabled" :disabled="waiting" @click="chip('Make a negative case: a call this API should refuse.')">Make a negative case</button>
+      <button th:if="found" type="button" class="m-chip m-api-chip" disabled="disabled" :disabled="waiting" @click="explain()">Explain this response</button>
+    </div>
+    <form th:if="model" class="m-api-compose" @submit.prevent="ask()">
+      <textarea class="m-input m-api-say" rows="3" aria-label="Message to the assistant" placeholder="e.g. The API is at https://… — sign in, place an order, pay it" x-model="draft" @keydown.enter.meta.prevent="ask()" @keydown.enter.ctrl.prevent="ask()"></textarea>
+      <div class="m-api-try"><button type="submit" class="m-btn" disabled="disabled" :disabled="waiting || !draft.trim()"><span x-show="!waiting">Send</span><span x-show="waiting" x-cloak>Working…</span></button>
+        <span class="m-api-hint">Every change runs before it is saved, and can be undone.</span></div>
+      <p class="m-api-actions-err" role="alert" x-show="chatErr" x-cloak><span class="m-dot m-dot--xs m-dot--failed"></span><span x-text="chatErr"></span></p>
+    </form>
+  </aside>
+  <button type="button" class="m-btn m-api-fab" x-show="!chatOpen" x-cloak @click="openChat()" th:attr="'data-m-unread': ask ? 'true' : null" :data-m-unread="unread || hasQuestion ? 'true' : null">Ask the assistant<span class="m-api-unread" x-show="unread || hasQuestion" aria-label="new"></span></button>
+</section>
+
+<script src="/pub/json-table.js" ka:nocache="true"></script>
+<script src="/pub/run-modal.js" ka:nocache="true"></script>
+<script src="/pub/api-test.js" ka:nocache="true"></script>
+<script src="/pub/auth-preset.js" ka:nocache="true"></script>

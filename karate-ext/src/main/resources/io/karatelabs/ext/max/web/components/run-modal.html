@@ -1,0 +1,213 @@
+<!--/* The shared RUN-KICKOFF modal (D132/D58) — one reusable kickoff surface opened from the
+     top of the Runs and Checks pages (and auto-opened on /runs when a hand-off carries query params).
+     Include once per page:
+       <th:block th:insert="~{components/run-modal :: runModal}"></th:block>
+     plus the three SSR islands the factory reads (#llm-data / #pickables-data / #activeRun-data) in the
+     page's own ka:scope global block. Open it from anywhere via kaRunModalOpen({file?, goal?, req?})
+     (pub/run-modal.js); the split-button "run now" path is kaRunNow({file}).
+
+     The lanes, picked by what's chosen: a SET — .feature and checks/*.js chips in any mix, or a folder /
+     "all" — is the headless SUITE (Runner.run, D281); a *.karate.js is the LAUNCH orchestrator; a typed
+     goal (empty picker) and/or a .md is the autonomous LOOP (the free-form exploratory run). */-->
+<div th:fragment="runModal" x-data="runModal()" x-show="open" x-cloak
+     class="fixed inset-0 z-50 bg-slate-950/60 flex items-start justify-center p-4 sm:p-8 overflow-y-auto"
+     @ka-run-modal-open.window="show($event.detail)"
+     data-ka-run-modal x-init="$nextTick(() => { $el.dataset.kaReady = 'true'; window.dispatchEvent(new Event('ka-run-modal-ready')); })"
+     @click.self="close()"
+     @keydown.escape.window="if (open) close()">
+  <div class="w-full max-w-3xl my-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-xl" data-ka-section="runs.modal">
+
+    <div class="flex items-start justify-between">
+      <div>
+        <h1 class="text-base font-semibold text-slate-900 dark:text-slate-100">Start a run<!--
+          D124 context-sensitive "?" — a same-origin deep-link into the Help deep-dive. -->
+          <a href="/help#run" title="What is a run? Open the Help deep-dive"
+             class="inline-flex items-center justify-center w-4 h-4 ml-1 align-middle rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold no-underline hover:ring-1 hover:ring-indigo-400">?</a></h1>
+        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Pick the <code>.feature</code> files and <code>.js</code> checks to run — they mix in one <b>set</b> — or a whole <b>folder</b>; or drive the <b>autonomous loop</b> — type a goal, or pick a saved <code>.md</code> prompt from anywhere in the project.</p>
+      </div>
+      <button type="button" @click="close()" title="close (Esc)"
+              class="-mt-1 -mr-1 shrink-0 h-8 w-8 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 text-xl leading-none">×</button>
+    </div>
+
+    <!-- single-user (D48): one observable browser, so one browser run at a time — a set with a check
+         holds the same lease for its whole run. A feature-only set is headless and still allowed. -->
+    <div x-show="activeRun" x-cloak class="mt-3 flex items-center gap-2 rounded-lg border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+      <span>⚠ A run is already in flight (<span class="font-mono font-semibold" x-text="activeRun"></span>) — this container is single-user (one browser run at a time). A feature-only set is fine; finish or stop it before anything that drives the browser.</span>
+      <a :href="'/runs/' + encodeURIComponent(activeRun)" class="ml-auto shrink-0 font-medium underline hover:no-underline">open it →</a>
+    </div>
+
+    <!-- the requirement anchor (D96) — set by a Requirements-tab Explore hand-off; the run's evidence
+         (steps, screenshots) attributes to this requirement in the traceability graph -->
+    <div x-show="req" x-cloak class="mt-2 inline-flex items-center gap-1.5 rounded-full bg-indigo-50 dark:bg-indigo-950/40 px-2.5 py-1 text-xs text-indigo-700 dark:text-indigo-300">
+      <span>anchored to</span>
+      <span class="font-mono font-semibold" x-text="req"></span>
+      <span class="text-indigo-400">— evidence attributes to this requirement</span>
+      <button type="button" @click="req=''" title="remove the anchor" class="ml-1 text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-200">×</button>
+    </div>
+
+    <!-- goal + the subtle prompt-history dropdown (localStorage, last few prompts — a sanctioned exception) -->
+    <div class="relative mt-3">
+      <textarea x-model="goal" rows="7" @keydown.meta.enter="runRun()" :disabled="starting || kind()!=='loop'"
+                @focus="histOpen = history.length > 0" @blur="setTimeout(() => { histOpen = false }, 200)"
+                :placeholder="kind()==='suite' ? 'a set of features and checks — set tags/env below, no prompt'
+                              : (kind()==='launch' ? 'a .karate.js orchestrator — runs headless via Runner.launch, no prompt'
+                              : (file ? 'optional — leave this empty and the .md file IS the goal; type here and it rides along as hints instead' : 'e.g. open the cart, apply coupon SAVE10, and confirm the total dropped'))"
+                class="w-full text-sm rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"></textarea>
+      <div x-show="histOpen" x-cloak
+           class="absolute z-10 mt-0.5 w-full max-h-48 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg">
+        <template x-for="h in history" :key="h">
+          <div class="flex items-center px-3 py-1.5 text-xs hover:bg-indigo-50 dark:hover:bg-indigo-950/40 cursor-pointer text-slate-600 dark:text-slate-300"
+               @mousedown.prevent="goal = h; histOpen = false">
+            <span class="truncate flex-1" x-text="h"></span>
+            <button type="button" title="remove" @mousedown.prevent.stop="dropHistory(h)"
+                    class="ml-2 px-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">×</button>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- the picker block: the mixed .feature + checks/*.js chip set + a typeahead; "Run ALL" runs the
+         whole project. A folder / .md / .karate.js pick is single-leaf (it clears the set). -->
+    <div class="mt-3">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-medium text-slate-600 dark:text-slate-300">Files <span class="text-slate-400 font-normal">— pick features and checks for a set, or a single folder/note</span></span>
+        <button type="button" @click="runAll()" :disabled="starting"
+                title="run every .feature and checks/*.js under the project (recurses, honors tags/env)"
+                class="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline disabled:opacity-40">Run ALL ▶</button>
+      </div>
+      <!-- the set: one ordered chip row, features and checks together -->
+      <div x-show="selected.length" x-cloak class="mt-1.5 flex flex-wrap gap-1.5">
+        <template x-for="p in selected" :key="p">
+          <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-mono"
+                :class="p.endsWith('.js') ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300'">
+            <span x-text="p"></span>
+            <button type="button" @click="toggleMember(p)" title="remove" class="opacity-60 hover:opacity-100">×</button>
+          </span>
+        </template>
+      </div>
+      <!-- single-pick badge (a folder selector, a .md note, a .karate.js orchestrator) -->
+      <div x-show="file && !selected.length" x-cloak class="mt-1.5">
+        <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-mono"
+              :class="kind()==='suite' ? 'bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300' : (kind()==='launch' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300')">
+          <span x-text="file"></span>
+          <button type="button" @click="file=''" title="clear" class="opacity-60 hover:opacity-100">×</button>
+        </span>
+      </div>
+      <!-- the typeahead (the veriquant flow-picker pattern): type to filter, click a match to pick/toggle -->
+      <div class="relative mt-1.5" @click.outside="fileOpen = false">
+        <input id="ka-file" type="text" x-model="query" :disabled="starting" spellcheck="false" autocomplete="off"
+               @focus="fileOpen = true" @click="fileOpen = true" @input="fileOpen = true" @keydown.escape="fileOpen = false"
+               @keydown.enter.prevent="if (filteredFiles.length) pick(filteredFiles[0])"
+               placeholder="type to filter *.feature + *.js (the set) / *.md (goal)"
+               class="w-full text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <div x-show="fileOpen && filteredFiles.length" x-cloak
+             class="absolute left-0 z-10 mt-0.5 w-full max-h-56 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg">
+          <template x-for="p in filteredFiles" :key="p.name">
+            <button type="button" @mousedown.prevent="pick(p)"
+                    class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-indigo-50 dark:hover:bg-indigo-950/40">
+              <span x-show="p.type === 'feature' || p.type === 'js'" class="shrink-0 text-[11px]" x-text="selected.includes(p.name) ? '☑' : '☐'"></span>
+              <span class="font-mono text-xs truncate flex-1 text-slate-700 dark:text-slate-200" x-text="p.name"></span>
+              <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                    :class="p.type === 'feature' ? 'bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300' : (p.type === 'md' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300')"
+                    x-text="p.type === 'feature' ? 'feature' : (p.type === 'js' ? 'check' : (p.type === 'launch' ? 'orchestrator' : 'goal (LLM)'))"></span>
+            </button>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-600 dark:text-slate-300">
+      <label class="inline-flex items-center gap-1.5 cursor-pointer shrink-0">
+        <input type="checkbox" x-model="watchLive" class="rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500">
+        watch live
+      </label>
+      <!-- Run with AI = the heal mode (D163): run the check; if it has drifted, let the LLM re-drive the
+           flow and repair the .js back to honest green. One check alone; flips the primary to "Run with AI". -->
+      <label x-show="soloCheck()" x-cloak class="inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+             title="Run the check; if it fails, AI re-drives the flow and repairs it back to green (heal mode)">
+        <input type="checkbox" x-model="runWithAi" class="rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500">
+        Run with AI
+      </label>
+      <!-- record video: the browser lanes (loop / heal) film the bot they drive -->
+      <label x-show="kind()==='loop' || (soloCheck() && runWithAi)" class="inline-flex items-center gap-1.5 cursor-pointer shrink-0">
+        <input type="checkbox" x-model="record" class="rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500">
+        record video
+      </label>
+      <!-- a set that can drive the container display gets ONE video timeline for the whole run (D281) -->
+      <label x-show="canVideo() && !runWithAi" x-cloak class="inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+             title="record the container display for the whole set — one video across every member">
+        <input type="checkbox" x-model="video" class="rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500">
+        record video
+      </label>
+      <!-- provider · model combos — BOTH are passed to Harness.explore (a provider pick alone used to
+           silently run the default model). Only meaningful for the loop. The picked combo is testable
+           in place (D63): a key that is set says nothing about whether that provider·model ANSWERS, and
+           the kickoff is the last moment before a run burns on a 401. Shared kaProviderTest factory
+           (pub/eval.js) — the same preflight the Settings rows run. -->
+      <div x-show="combos.length && kind()==='loop'" x-data="kaProviderTest(() => combos[combo])" class="shrink-0">
+        <div class="inline-flex items-center gap-1.5">
+          <label class="inline-flex items-center gap-1.5">
+            LLM
+            <select x-model.number="combo" class="rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500">
+              <template x-for="(c, i) in combos" :key="i">
+                <option :value="i" x-text="c.label + (c.def ? ' (default)' : '')"></option>
+              </template>
+            </select>
+          </label>
+          <button type="button" @click="test()" :disabled="busy" title="check this provider · model answers"
+                  class="rounded border border-slate-300 dark:border-slate-600 px-2 py-1 text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
+                  x-text="busy ? 'Testing…' : 'Test'">Test</button>
+        </div>
+        <!-- the verdict, on the picker it belongs to: the provider's own words (full body on hover),
+             the derived operator sentence beneath -->
+        <div x-show="res" x-cloak class="mt-1 max-w-md text-[11px] leading-snug">
+          <div :class="res && res.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'"
+               :title="(res && res.error) || ''" x-text="verdict()"></div>
+          <div x-show="res && res.hint" class="mt-0.5 text-amber-700 dark:text-amber-400" x-text="(res && res.hint) || ''"></div>
+        </div>
+      </div>
+      <!-- the autonomous loop's iteration ceiling → Harness.explore maxIterations (default 50); only the
+           loop has turns (a suite runs to completion, a check is one deterministic replay) -->
+      <label x-show="kind()==='loop'" class="inline-flex items-center gap-1.5 shrink-0"
+             title="max LLM turns before the run stops (the iteration budget; default 50)">max turns
+        <input type="number" min="1" max="200" x-model.number="maxTurns"
+               class="w-16 font-mono rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"></label>
+      <span x-show="!combos.length && kind()==='loop'" class="text-slate-400 shrink-0">no LLM keys detected — autonomous runs will fail until one is set</span>
+    </div>
+
+    <!-- set advanced fields — tags / env / threads / formal; a feature-only set is headless + concurrent,
+         so NOT blocked by the single-user browser gate -->
+    <div x-show="kind()==='suite'" x-cloak class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-600 dark:text-slate-300">
+      <label class="inline-flex items-center gap-1.5">tags
+        <input type="text" x-model="tags" spellcheck="false" placeholder="@smoke, ~@slow"
+               class="w-36 font-mono rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"></label>
+      <label class="inline-flex items-center gap-1.5">env
+        <input type="text" x-model="env" spellcheck="false" placeholder="karate.env"
+               class="w-28 font-mono rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"></label>
+      <!-- a set with a check runs sequentially — the engine forces threads=1 (D281), so don't offer it -->
+      <label x-show="!hasCheck()" class="inline-flex items-center gap-1.5">threads
+        <input type="number" min="1" max="16" x-model.number="threads"
+               class="w-16 font-mono rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"></label>
+      <span x-show="hasCheck()" x-cloak class="text-slate-400">threads 1 — a set with a check runs one member at a time</span>
+      <label class="inline-flex items-center gap-1.5 cursor-pointer" title="count this run in the RTM (vs dev noise)">
+        <input type="checkbox" x-model="formal" class="rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500">formal
+      </label>
+    </div>
+
+    <div class="mt-4 flex items-center gap-2">
+      <!-- a set runs through the suite lane (headless, or leasing the one browser slot for its checks), so
+           only the live lanes (heal / loop / launch) are gated by the single-user browser lock -->
+      <button @click="runRun()" :disabled="!canRun() || starting || (!!activeRun && (kind()!=='suite' || hasCheck()))"
+              :title="activeRun ? 'a browser run is already in flight — single-user, one at a time' : ''"
+              class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+              x-text="starting ? 'Starting…' : ((soloCheck() && runWithAi) ? 'Run with AI ▶' : (kind()==='suite' ? 'Run ▶' : (kind()==='launch' ? 'Launch ▶' : 'Run autonomous ▶')))"></button>
+      <!-- live runs are LLM-driven: hand your LLM this prompt and it drives the browser over
+           /api/eval — the run streams in like any other run. The uber prompt lives at /connect. -->
+      <button @click="copyLlmPrompt()" title="copy a prompt that lets any LLM drive this browser live"
+              class="rounded-lg border border-slate-300 dark:border-slate-600 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
+              x-text="copied ? 'copied ✓' : 'Copy LLM prompt'"></button>
+      <span x-show="err" class="text-xs text-rose-600 dark:text-rose-400" x-text="err"></span>
+    </div>
+  </div>
+  <script src="/pub/run-modal.js" ka:nocache="true"></script>
+</div>

@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<!--
+  The console shell (D88 — SSR-first on karate-markup). karate-core's ServerRequestHandler renders each
+  page's content template, then wraps it here via `<main th:utext="content">` (the slot). This is the ONE
+  common header across every console page (home · runs · run · flows · future rules/cases/reports) —
+  it replaces the old per-page nav.js. The `<head>` chrome (Tailwind/Alpine/eval.js, dark-mode pre-paint)
+  lives here once; content pages are pure fragments. /api/* and /pub/* are never shell-wrapped.
+-->
+<!--/* Manual mode (/manual/*) swaps the header for the dark rail: nav with the backend's counts and the
+     release verdict pinned at its foot; /manual/choose is bare (the mode picker). The scope sits at document
+     level so its values reach <body>. The counts are the rail global's — paths, folders and memory, never a
+     parse — and every read goes through request.cache under the keys below, so a Manual page that needs the same
+     one reads it once per request (content renders before this shell):
+       manual.readiness → requirement.readiness()   manual.rail.tests → rail.tests()   manual.rail.runs → rail.runs()
+       manual.rail.campaigns → rail.campaigns()   manual.rail.reason → rail.reason(readiness)
+     /manual/rail renders this shell alone, its nav and project those of the page named by ?from= — what a
+     page whose only live section is the rail refreshes from (pub/manual.js). */-->
+<script ka:scope="global">
+  (function () {
+    var path = request.path;
+    if (path == '/manual/rail') {
+      var from = request.param('from') ? String(request.param('from')) : '/manual';
+      path = from == '/manual' || from.indexOf('/manual/') == 0 ? from : '/manual';
+    }
+    var manual = path == '/manual' || path.indexOf('/manual/') == 0;
+    var bare = path == '/manual/choose';
+    _.manual = manual;
+    _.manualShell = manual && !bare;
+    _.manualBare = bare;
+    _.bodyClass = manual ? (bare ? 'm-body m-body--bare' : 'm-body')
+        : 'bg-slate-50 text-slate-800 antialiased dark:bg-slate-900 dark:text-slate-200';
+    _.railNav = null;
+    _.railActive = null;
+    _.railVerdict = null;
+    _.railLive = null;
+    _.railProject = null;
+    _.railProjects = null;
+    _.railHasWork = null;
+    _.docTitle = String(context.getGlobal('pageTitle', 'Karate Agent'));
+    if (!manual || bare) return;
+
+    function read(key, globalName, fn) {
+      var g = context.getGlobal(globalName);
+      if (!g) return null;
+      try { return request.cache(key, function () { return fn(g); }); } catch (e) { return null; }
+    }
+    var rd = read('manual.readiness', 'requirement', function (g) { return g.readiness(); });
+    // the Tests count is every test the Tests screen lists, both engines — check.list() is the .js half (D134)
+    var tests = read('manual.rail.tests', 'rail', function (g) { return g.tests(); });
+    var runs = read('manual.rail.runs', 'rail', function (g) { return g.runs(); });
+    var campaigns = read('manual.rail.campaigns', 'rail', function (g) { return g.campaigns(); });
+
+    // no requirement graph yet → the verb answers an error envelope, not a state
+    var state = (rd && rd.state) ? String(rd.state) : null;
+    var criteria = state && rd.totals ? rd.totals.criteria : null;
+    // the order a tester works in: what must be true (Coverage), the tests that prove it, the campaigns
+    // that launch them together, and the runs they produce
+    _.railNav = [
+      { key: 'home', label: 'Home', href: '/manual', count: null },
+      { key: 'coverage', label: 'Coverage', href: '/manual/coverage',
+        count: criteria ? criteria.covered + '/' + criteria.total : '0/0' },
+      { key: 'tests', label: 'Tests', href: '/manual/tests',
+        count: tests != null ? String(tests) : '0' },
+      { key: 'campaigns', label: 'Campaigns', href: '/manual/campaigns',
+        count: campaigns != null ? String(campaigns) : '0' },
+      { key: 'runs', label: 'Runs', href: '/manual/runs',
+        count: (runs && runs.count != null) ? String(runs.count) : '0' }
+    ];
+    // the project every screen reads heads the rail; its Change lists the work folder's projects (Work.list) to
+    // switch to, each said by what it holds; with none selected the rail says so. A folder with no marker is not
+    // set up yet, which is not the same as empty: it may hold an existing suite.
+    var wk = context.getGlobal('work');
+    function holds(p) {
+      if (!p.project) return 'Not set up yet';
+      var m = [], marks = p.markers || [];
+      for (var mk = 0; mk < marks.length; mk++) m.push(String(marks[mk]));
+      var what = [];
+      if (m.indexOf('requirements') >= 0) what.push('requirements');
+      if (m.indexOf('checks') >= 0) what.push('tests');
+      if (m.indexOf('rulebooks') >= 0) what.push('rules');
+      if (m.indexOf('openapi.yaml') >= 0) what.push('an API spec');
+      if (!what.length) return 'A project';
+      var s = what.length == 1 ? what[0] : what.slice(0, -1).join(', ') + ' and ' + what[what.length - 1];
+      return s.charAt(0).toUpperCase() + s.substring(1);
+    }
+    var cur = null;
+    try {
+      cur = wk ? wk.current() : null;
+      _.railHasWork = cur ? true : null;
+      _.railProject = cur && !cur.noProject ? String(cur.name) : null;
+    } catch (e) { cur = null; }
+    // a listing that fails leaves the project named; only the chooser goes without its list
+    try {
+      var listed = wk ? wk.list() : null, projects = [], openListed = false;
+      for (var pj = 0; listed && listed.length && pj < listed.length; pj++) {
+        if (listed[pj].current) openListed = true;
+        projects.push({ name: String(listed[pj].name), path: String(listed[pj].path),
+          current: listed[pj].current ? true : null, meta: holds(listed[pj]) });
+      }
+      // a project anchored deeper than the work folder's first level is still the one open: it heads the list
+      if (_.railProject && !openListed) {
+        projects.unshift({ name: _.railProject, path: String(cur.root), current: true, meta: holds(cur) });
+      }
+      _.railProjects = projects.length ? projects : null;
+    } catch (e) { _.railProjects = null; }
+    // a tab names the project it shows
+    if (_.railProject) _.docTitle = _.docTitle.replace(' · Karate Agent', ' · ' + _.railProject + ' · Karate Agent');
+    var active = 'home';
+    if (path.indexOf('/manual/tests') == 0) active = 'tests';
+    else if (path.indexOf('/manual/campaign') == 0) active = 'campaigns';
+    else if (path.indexOf('/manual/runs') == 0) active = 'runs';
+    else if (path.indexOf('/manual/coverage') == 0 || path.indexOf('/manual/requirements') == 0
+        || path.indexOf('/manual/matrix') == 0) active = 'coverage';
+    _.railActive = active;
+
+    // the verdict is the backend's own: its state, and why — the clause its sentence ends with, worded once on the
+    // server (rail.reason, off the counts behind it); the sentence is the tooltip
+    var why = state ? read('manual.rail.reason', 'rail', function (g) { return g.reason(rd); }) : null;
+    _.railVerdict = {
+      state: state || 'NONE',
+      label: state == 'READY' ? 'Ready' : state == 'CONDITIONAL' ? 'Conditional'
+          : state == 'NOT_READY' ? 'Not ready' : 'No verdict yet',
+      dot: state == 'READY' ? 'm-dot--passed' : state == 'NOT_READY' ? 'm-dot--failed' : 'm-dot--notrun',
+      sentence: state ? String(rd.verdict) : null,
+      note: state ? (why ? why + '.' : null) : 'Import your requirements on Coverage to get one.'
+    };
+
+    var inFlight = (runs && runs.inFlight) ? runs.inFlight : [];
+    var liveId = (runs && runs.active) ? runs.active : (inFlight.length ? inFlight[0] : null);
+    _.railLive = liveId ? {
+      href: '/manual/runs/' + encodeURIComponent(liveId),
+      label: inFlight.length > 1 ? inFlight.length + ' runs in flight' : 'Run in flight'
+    } : null;
+  })();
+</script>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title th:text="docTitle">Karate Agent</title>
+  <!-- ALL assets are vendored in the jar (offline/airgap correctness, zero CDN):
+       compiled tailwind.css (darkMode selector lives in etc/web-assets/tailwind.config.js) +
+       pinned Alpine. Rebuild with `bash etc/web-assets/build.sh`. ka:nocache appends
+       ?ts=<lastModified> at render time so a rebuilt asset busts the browser cache. -->
+  <link rel="stylesheet" href="/pub/tailwind.css" ka:nocache="true">
+  <link th:if="manual" rel="stylesheet" href="/pub/manual.css" ka:nocache="true">
+  <link th:if="manual" rel="icon" type="image/svg+xml" href="/pub/karate-logo.svg">
+  <script>
+    // resolve theme before paint (no flash): saved override, else OS preference. ONE key —
+    // 'karate-theme' — shared with every karate report page (coverage, RTM), so the served
+    // artifacts follow the console's dark mode (same origin → same localStorage).
+    (function () {
+      var t = localStorage.getItem('karate-theme') ||
+        (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+    function kaToggleTheme() {
+      var t = (document.documentElement.getAttribute('data-theme') === 'dark') ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('karate-theme', t);
+      var b = document.getElementById('ka-theme-btn'); if (b) b.textContent = t === 'dark' ? '☀' : '☾';
+    }
+  </script>
+  <!-- D115 — minimal prose styling for a View.overlay() markdown body (Tailwind's preflight strips list
+       markers + margins; restore just enough for a readable explanation, scoped to the overlay). -->
+  <style>
+    .ka-md p { margin: .4rem 0; }
+    .ka-md ul { list-style: disc; margin: .5rem 0 .5rem 1.25rem; }
+    .ka-md ol { list-style: decimal; margin: .5rem 0 .5rem 1.25rem; }
+    .ka-md li { margin: .15rem 0; }
+    .ka-md code { font-family: ui-monospace, monospace; font-size: .85em; background: rgba(99,102,241,.14); padding: .05rem .3rem; border-radius: .25rem; }
+    .ka-md a { color: #6366f1; text-decoration: underline; }
+    .ka-md h1, .ka-md h2, .ka-md h3 { font-weight: 600; margin: .6rem 0 .3rem; }
+  </style>
+  <script defer src="/pub/vendor/alpine.min.js" ka:nocache="true"></script>
+  <script src="/pub/eval.js" ka:nocache="true"></script>
+  <script src="/pub/lightbox.js" ka:nocache="true"></script>
+  <th:block th:if="manual"><script src="/pub/manual-words.js" ka:nocache="true"></script><script src="/pub/manual.js" ka:nocache="true"></script></th:block>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased dark:bg-slate-900 dark:text-slate-200" th:class="bodyClass">
+
+  <th:block th:if="!manual">
+  <!-- the common header (SSR — active section derived from request.path) -->
+  <header class="flex items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-700 px-5 py-3">
+    <div class="flex items-center gap-3">
+      <!-- the brand row — logo + "Agent", the veriquant shell convention -->
+      <a href="/" class="flex items-center gap-2 text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+        <img src="/pub/karate-logo.svg" alt="Karate" width="22" height="22"/>
+        <span>Agent</span>
+      </a>
+      <nav class="flex items-center gap-1 text-sm">
+        <a href="/requirements" class="px-2.5 py-1 rounded-md"
+           th:classappend="(request.path == '/requirements') ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-medium' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'">Requirements</a>
+        <!-- "Rules" is the nav label; the route, JSAPI (Rule.*), and the rulebooks/ folder keep the
+             "rulebook" name internally — this is a console-label change only. -->
+        <a href="/rulebooks" class="px-2.5 py-1 rounded-md"
+           th:classappend="(request.path == '/rulebooks' || request.path.indexOf('/rulebooks/') == 0) ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-medium' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'">Rules</a>
+        <!-- No Casebooks tab (D121 — the Rulebook owns its scenarios; the standalone Casebook collection,
+             the /casebooks route + page, and the Case.* JSAPI are retired. Scenarios live in the rulebook
+             (scenarios.json), read at test time with read(), oracle via Rule.execute). -->
+        <!-- No API tab (D193) — the API docs surface is the CHECKS explorer's API lens: artifact
+             viewers mount inside the one project tree; tabs are aggregate business entry points only. -->
+        <a href="/checks" class="px-2.5 py-1 rounded-md"
+           th:classappend="(request.path == '/checks' || request.path.indexOf('/checks/') == 0) ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-medium' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'">Checks</a>
+        <a href="/runs" class="px-2.5 py-1 rounded-md"
+           th:classappend="(request.path == '/runs' || request.path.indexOf('/runs/') == 0) ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-medium' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'">Runs</a>
+        <a href="/reports" class="px-2.5 py-1 rounded-md"
+           th:classappend="(request.path == '/reports') ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-medium' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'">Reports</a>
+      </nav>
+    </div>
+    <!-- right-side utility cluster — secondary/global items, set apart from the primary nav above:
+         Help · Connect now; Settings (D104/D105) slots in last on the right, same active-state pattern;
+         then the light/dark toggle. This is the home for app-level (not workspace-content) tabs. -->
+    <nav class="flex items-center gap-1 text-sm">
+      <!-- the project-picker chip (D126) — the active project; click to re-anchor on /work. The name is
+           read from the `work` global in the shell (context.getGlobal); absent (a minimal profile) → "Projects". -->
+      <a href="/work" title="Switch project (re-anchor the workspace)"
+         class="flex items-center gap-1 px-2.5 py-1 rounded-md font-mono text-xs"
+         th:classappend="(request.path == '/work') ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-medium' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'">
+        <span>📁</span>
+        <span th:text="(context.getGlobal('work') != null) ? context.getGlobal('work').current().name : 'Projects'">Projects</span>
+        <span class="text-[9px] opacity-60">▾</span>
+      </a>
+      <span class="mx-1 text-slate-300 dark:text-slate-600">|</span>
+      <!-- the plain-language console for manual testers (its own chrome under /manual) -->
+      <a href="/manual" class="px-2.5 py-1 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800">Manual mode</a>
+      <a href="/help" class="px-2.5 py-1 rounded-md"
+         th:classappend="(request.path == '/help') ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-medium' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'">Help</a>
+      <a href="/connect" class="px-2.5 py-1 rounded-md"
+         th:classappend="(request.path == '/connect') ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-medium' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'">Connect</a>
+      <!-- D104/D105 — Settings (read-only status): last on the right, a gear, same active-state pattern -->
+      <a href="/settings" title="Settings (read-only status)" class="px-2 py-1 rounded-md text-base leading-none"
+         th:classappend="(request.path == '/settings') ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-medium' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'">⚙</a>
+      <!-- D115 — the steering INDICATOR + per-tab follow/pin toggle for the presentation control plane.
+           HIDDEN by default (display:none); it appears only while an assistant is actively steering, so its
+           mere presence signals "an assistant is controlling this view". Following = connected (indigo);
+           pinned = you've taken manual control / disconnected (amber) — stays visible so you can reconnect.
+           Per-tab state in sessionStorage (never localStorage — shared across tabs would pin them all), so a
+           NEW tab/window/session never inherits a pin. Glyph + colour + visibility synced by kaView.syncPinUi(). -->
+      <button id="ka-pin-btn" type="button" style="display:none"
+              onclick="window.kaView && window.kaView.toggle()"
+              class="ml-1 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium leading-none"></button>
+      <button id="ka-theme-btn" onclick="kaToggleTheme()" title="toggle light/dark"
+              class="ml-1 text-base leading-none text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">☾</button>
+    </nav>
+  </header>
+
+  <!-- D186 — app-wide "no project" nudge: when the ceiling is empty every content tab renders blank, so
+       route the user to create one. Suppressed on /work itself (which shows the full Get-started hero). -->
+  <div th:if="context.getGlobal('work') != null && context.getGlobal('work').current().noProject && request.path != '/work'"
+       class="mx-auto max-w-5xl px-6 mt-4">
+    <a href="/work" class="flex items-center gap-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-4 py-2.5 text-sm text-amber-800 dark:text-amber-200 no-underline hover:bg-amber-100 dark:hover:bg-amber-900/40">
+      <span>📁</span>
+      <span>No project selected — <span class="font-medium underline">create or pick a project</span> first to see anything here.</span>
+    </a>
+  </div>
+
+  <main id="main-content" th:utext="content">content</main>
+  </th:block>
+
+  <!--/* The Manual chrome: the dark rail (nav + the backend's verdict, pinned) beside the page. The rail is
+       data-m-live — pub/manual.js swaps it with a fresh render when a run starts, settles or folds into the
+       project graph. */-->
+  <div th:if="manualShell" class="m-shell" data-ka-section="manual">
+    <aside class="m-rail" data-ka-section="manual.rail" data-m-live aria-label="Manual mode">
+      <a class="m-rail-logo" href="/manual"><img src="/pub/karate-logo.svg" alt="" width="20" height="20"><span>AGENT</span></a>
+      <!--/* the project every screen reads; Change opens the chooser below (pub/manual.js kaManual.project). A work
+           folder with nothing to choose sends you to create one, on the developer console's /work (D186). */-->
+      <button th:if="railHasWork && (railProject || railProjects)" type="button" class="m-rail-project" data-m-project
+              onclick="kaManual.project()" aria-haspopup="dialog"
+              th:attr="'title': railProject ? railProject + ' · change the project' : 'Choose a project'">
+        <span class="m-rail-project-label">Project</span>
+        <span class="m-rail-project-row">
+          <span class="m-rail-project-name" th:text="railProject ? railProject : 'None selected'">boutique</span>
+          <span class="m-rail-project-go" th:text="railProject ? 'Change' : 'Choose'">Change</span>
+        </span>
+      </button>
+      <a th:if="railHasWork && !railProject && !railProjects" class="m-rail-project" data-m-project href="/work">
+        <span class="m-rail-project-label">Project</span>
+        <span class="m-rail-project-row">
+          <span class="m-rail-project-name">None yet</span>
+          <span class="m-rail-project-go">Create</span>
+        </span>
+      </a>
+      <nav class="m-rail-nav">
+        <a th:each="n: railNav" class="m-nav-item" th:href="n.href"
+           th:attr="'data-m-nav': n.key, 'aria-current': (n.key == railActive) ? 'page' : null">
+          <span th:if="n.key == railActive" class="m-nav-pill" aria-hidden="true"></span>
+          <span th:text="n.label">Home</span>
+          <span th:if="n.count" class="m-nav-count" th:attr="'data-m-count': n.key" th:text="n.count">0</span>
+        </a>
+      </nav>
+      <div class="m-rail-foot">
+        <!-- D115 steering indicator: hidden until an assistant steers this view -->
+        <button id="ka-pin-btn" type="button" style="display:none" class="m-rail-pin"
+                onclick="window.kaView && window.kaView.toggle()"></button>
+        <div class="m-rail-rule"></div>
+        <a class="m-verdict" href="/manual/coverage" data-ka-section="manual.rail.verdict"
+             th:attr="'data-state': railVerdict.state, 'title': railVerdict.sentence">
+          <div class="m-verdict-line">
+            <span th:class="'m-dot ' + railVerdict.dot"></span>
+            <span class="m-verdict-state" th:text="railVerdict.label">Not ready</span>
+          </div>
+          <p th:if="railVerdict.note" class="m-verdict-note" th:text="railVerdict.note">reason</p>
+        </a>
+        <a th:if="railLive" class="m-rail-inflight" th:href="railLive.href">
+          <span class="m-dot m-dot--live"></span>
+          <span th:text="railLive.label">Run in flight</span>
+          <span class="m-rail-inflight-go">Watch →</span>
+        </a>
+        <div class="m-rail-rule m-rail-rule--gap"></div>
+        <div class="m-rail-switch">
+          <!--/* Home's first-case guide on this project, back on screen (pub/manual.js kaManual.guide) */-->
+          <button type="button" class="m-rail-guide" data-m-guide-show onclick="kaManual.guide()">Show the guide</button>
+          <a href="/manual/choose">Switch mode</a>
+        </div>
+      </div>
+    </aside>
+    <!--/* the project chooser: the work folder's projects (Work.list); a pick is Work.use, and every open tab
+         reloads onto it. Outside the live rail, so a refresh never closes it under the pointer. */-->
+    <dialog th:if="railHasWork" id="m-project" class="m-dialog" aria-labelledby="m-project-title">
+      <div class="m-dialog-card">
+        <span class="m-eyebrow">Project</span>
+        <h2 id="m-project-title" class="m-dialog-title">Choose a project</h2>
+        <p class="m-dialog-text">Every screen shows one project. Pick another and the whole console switches to it: every open tab follows.</p>
+        <p class="m-dialog-text m-project-busy" data-m-project-busy hidden>A run is in progress. Change the project once it has ended. <a href="/manual/runs" data-m-project-watch>Watch it</a></p>
+        <ul th:if="railProjects" class="m-project-list">
+          <li th:each="p: railProjects">
+            <button type="button" class="m-project-item" onclick="kaManual.useProject(this)"
+                    th:attr="'data-m-project-use': p.path, 'aria-current': p.current ? 'true' : null, 'title': p.path">
+              <span class="m-project-text">
+                <span class="m-project-name" th:text="p.name">boutique</span>
+                <span class="m-project-meta" th:text="p.meta">Requirements and tests</span>
+              </span>
+              <span th:if="p.current" class="m-project-here">Open now</span>
+            </button>
+          </li>
+        </ul>
+        <p th:unless="railProjects" class="m-dialog-text">The work folder holds no project yet.</p>
+        <p class="m-dialog-err" data-m-project-err role="alert" hidden></p>
+        <div class="m-dialog-actions">
+          <a th:unless="railProjects" class="m-btn" href="/work">Create a project</a>
+          <button type="button" class="m-quiet" onclick="this.closest('dialog').close()">Cancel</button>
+          <a th:if="railProjects" class="m-link" href="/work" target="_blank" rel="noopener">Add or remove projects ↗</a>
+        </div>
+      </div>
+    </dialog>
+    <div class="m-content">
+      <button th:if="railHasWork && !railProject && railProjects" type="button" class="m-nudge" onclick="kaManual.project()">
+        <span>No project selected. Choose one to see anything here.</span>
+        <span class="m-nudge-go">Choose a project →</span>
+      </button>
+      <a th:if="railHasWork && !railProject && !railProjects" class="m-nudge" href="/work">
+        <span>No project yet. Create one to see anything here.</span>
+        <span class="m-nudge-go">Create a project →</span>
+      </a>
+      <main id="main-content" class="m-main" th:utext="content">content</main>
+    </div>
+  </div>
+
+  <!--/* the mode picker: full-bleed, no rail */-->
+  <main th:if="manualBare" id="main-content" th:utext="content">content</main>
+
+  <!-- D132 — the app-wide completion-toast host: a run that settles while you're on another page pops
+       a dismissible toast here (the "submit and check back later" path). Stacked, newest on top. -->
+  <div id="ka-toasts" class="fixed bottom-4 right-4 z-50 flex flex-col-reverse gap-2 w-80 max-w-[calc(100vw-2rem)]"></div>
+
+  <script>
+    // sync the toggle glyph to the pre-painted theme
+    (function () { var b = document.getElementById('ka-theme-btn');
+      if (b) b.textContent = document.documentElement.getAttribute('data-theme') === 'dark' ? '☀' : '☾'; })();
+
+    // A run that settles while you're elsewhere pops a dismissible toast with its verdict + a link —
+    // the "submit-async and check back later" path (D132). Suppressed on the run's own page (you're
+    // already watching it). Auto-dismisses; click the × to close sooner.
+    function kaRunToast(d) {
+      if (!d || !d.runId) return;
+      // Manual mode opens a run on its own page, in its own style: a dot and plain text, no shadow
+      var manual = document.body.classList.contains('m-body');
+      var url = (manual ? '/manual/runs/' : '/runs/') + encodeURIComponent(d.runId);
+      if (location.pathname === url) return;   // already watching this run — no toast
+      var failed = d.status === 'failed' || d.status === 'error' || (d.failed | 0) > 0;
+      // a run that ended before an answer is not a green one
+      var cut = !failed && /^(stopped|terminated|interrupted|blocked)$/.test(d.status || '');
+      var host = document.getElementById('ka-toasts');
+      if (!host) return;
+      var summary = (d.total != null)
+        ? ((d.passed | 0) + '/' + (d.total | 0) + ' passed' + ((d.failed | 0) ? ' · ' + (d.failed | 0) + ' failed' : ''))
+        : (d.error ? String(d.error).slice(0, 80) : (failed ? 'did not pass' : cut ? 'ended before it finished' : 'completed'));
+      var el = document.createElement('div');
+      if (manual) {
+        // the Runs ledger's marks, never merged; green only for a run that passed tests; one that tested
+        // nothing (a recording, a written test not yet replayed) finishes on the grey ring
+        var mark = failed ? ['m-dot--failed', 'Run failed'] : cut ? ['m-dot--stopped', 'Run stopped']
+          : d.status === 'completed' ? (d.total ? ['m-dot--passed', 'Tests passed'] : ['m-dot--notrun', 'Run finished'])
+          : ['m-dot--notrun', 'Nothing ran'];
+        el.className = 'm-toast';
+        var dot = document.createElement('span');
+        dot.className = 'm-dot ' + mark[0];
+        var main = document.createElement('div');
+        main.className = 'm-toast-main';
+        var title = document.createElement('div');
+        title.textContent = mark[1];
+        var sub = document.createElement('div');
+        sub.className = 'm-toast-sub';
+        var why = { stopped: 'stopped before it finished', terminated: 'hit its limit',
+          interrupted: 'interrupted — the console restarted', blocked: 'blocked — it could not go on',
+          empty: 'no test matched' };
+        sub.textContent = (d.total != null || d.error) ? summary : (why[d.status] || (failed ? 'did not pass' : 'done'));
+        var open = document.createElement('a');
+        open.href = url;
+        open.textContent = 'Open';
+        var x = document.createElement('button');
+        x.className = 'm-toast-x';
+        x.setAttribute('aria-label', 'dismiss');
+        x.textContent = '×';
+        x.addEventListener('click', function () { el.remove(); });
+        main.appendChild(title); main.appendChild(sub); main.appendChild(open);
+        el.appendChild(dot); el.appendChild(main); el.appendChild(x);
+        host.appendChild(el);
+        setTimeout(function () { el.remove(); }, 12000);
+        return;
+      }
+      el.className = 'rounded-lg border shadow-lg px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 ' +
+        (failed ? 'border-rose-300 dark:border-rose-700' : cut ? 'border-amber-300 dark:border-amber-700'
+          : 'border-emerald-300 dark:border-emerald-700');
+      el.innerHTML =
+        '<div class="flex items-start gap-2">' +
+          '<span class="' + (failed ? 'text-rose-500' : cut ? 'text-amber-500' : 'text-emerald-500') + ' shrink-0">'
+            + (failed ? '✗' : cut ? '■' : '✓') + '</span>' +
+          '<div class="min-w-0 flex-1">' +
+            '<div class="font-medium text-slate-800 dark:text-slate-100">Run ' + (failed ? 'failed' : cut ? d.status : 'finished') + '</div>' +
+            '<div class="text-xs text-slate-500 dark:text-slate-400 truncate">' + summary + '</div>' +
+            '<a class="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline" href="' + url + '">view run ↗</a>' +
+          '</div>' +
+          '<button class="shrink-0 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 leading-none" aria-label="dismiss">&times;</button>' +
+        '</div>';
+      el.querySelector('button').addEventListener('click', function () { el.remove(); });
+      host.appendChild(el);
+      setTimeout(function () { el.remove(); }, 12000);
+    }
+
+    // D115 — the presentation control plane CLIENT: the assistant steers the human's view (P27 —
+    // guide attention, never author through the UI). The typed steering vocabulary resolves the SAME
+    // page/section-registry ids the LLM addresses (the data-ka-section attributes). Two lines (P27/D101):
+    // the vocabulary is curated (never arbitrary HTML/JS), and callout/overlay TEXT renders AS DATA
+    // (textContent — never instruction-position). New chrome uses inline styles (no new Tailwind class
+    // → no asset rebuild). Steering applies only when this tab FOLLOWS (the per-tab pin toggle above).
+    window.kaView = (function () {
+      var FOLLOW_KEY = 'ka-view-follow';
+      // the retained steering this tab has already shown, per verb (canonical JSON; sessionStorage like the
+      // follow flag): a reconnect replays the snapshot, so only an event that differs is a NEW assistant action
+      var SEEN_KEY = 'ka-view-seen';
+      // "an assistant is currently steering" — drives the INDICATOR's visibility (the pin shows ONLY while
+      // true). Set by a retained steering event (incl. the snapshot replayed on connect); cleared by
+      // `view-clear`. A fresh tab/session starts false → the pin is hidden until an assistant actually steers.
+      var steeringActive = false;
+      // the last retained navigate/highlight/overlay — cached even while PINNED, so un-pinning (reconnect)
+      // can converge this tab onto the assistant's current view without a server round-trip.
+      var snap = {};
+      function following() { return sessionStorage.getItem(FOLLOW_KEY) !== 'pinned'; }
+      function setFollow(f) { sessionStorage.setItem(FOLLOW_KEY, f ? 'follow' : 'pinned'); syncPinUi(); }
+      function seen() { try { return JSON.parse(sessionStorage.getItem(SEEN_KEY) || '{}'); } catch (e) { return {}; } }
+      function saveSeen(s) { try { sessionStorage.setItem(SEEN_KEY, JSON.stringify(s)); } catch (e) {} }
+      function markSeen(name, d) { var s = seen(); s[name] = JSON.stringify(d); saveSeen(s); }
+      // pinned, and the assistant has acted since — the indicator says so until the tab follows again
+      function behind() { return !!seen().behind; }
+      function setBehind(b) { var s = seen(); if (b) s.behind = true; else delete s.behind; saveSeen(s); }
+      // Motion marks an assistant action or a hand-over, plays once, and never changes the end state, so
+      // prefers-reduced-motion just skips it. Web Animations + inline styles: no new Tailwind class.
+      function calm() { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+      function play(el, frames, opts) {
+        if (!el || !el.animate || calm()) return null;
+        try { return el.animate(frames, opts); } catch (e) { return null; }
+      }
+      function fadeRemove(el, ms) {
+        var a = play(el, [{ opacity: 1 }, { opacity: 0 }], { duration: ms, easing: 'ease-in', fill: 'forwards' });
+        if (a) a.onfinish = function () { el.remove(); }; else el.remove();
+      }
+      var INDIGO = '99,102,241', AMBER = '217,119,6';
+      // a ring rippling out of the indicator: indigo = the assistant just acted on this view; amber = it acted
+      // while you hold manual control (click to follow it). At most three ripples, then still.
+      function ripple(rgb, times) {
+        var btn = document.getElementById('ka-pin-btn');
+        if (!btn || btn.style.display === 'none') return;
+        if (btn.kaRipple) btn.kaRipple.cancel();
+        btn.kaRipple = play(btn, [{ boxShadow: '0 0 0 0 rgba(' + rgb + ',.55)' }, { boxShadow: '0 0 0 8px rgba(' + rgb + ',0)' }],
+          { duration: 1100, iterations: times, easing: 'ease-out' });
+      }
+      function toggle() {
+        var nowFollowing = !following();
+        if (nowFollowing) setBehind(false);
+        setFollow(nowFollowing);
+        if (nowFollowing) applySnapshot();   // reconnect → catch up to the assistant's current view
+      }
+      function syncPinUi(enter) {
+        var btn = document.getElementById('ka-pin-btn'); if (!btn) return;
+        if (!steeringActive) {                                   // idle → hidden (no indicator)
+          if (btn.style.display === 'none') return;
+          var out = play(btn, [{ opacity: 1 }, { opacity: 0, transform: 'scale(.9)' }], { duration: 160, easing: 'ease-in', fill: 'forwards' });
+          if (!out) { btn.style.display = 'none'; return; }
+          btn.kaOut = out;
+          out.onfinish = function () { if (!steeringActive) btn.style.display = 'none'; out.cancel(); if (btn.kaOut === out) btn.kaOut = null; };
+          return;
+        }
+        if (btn.kaOut) { btn.kaOut.cancel(); btn.kaOut = null; }
+        var appearing = btn.style.display === 'none';
+        btn.style.display = '';
+        if (enter && appearing) play(btn, [{ opacity: 0, transform: 'scale(.9)' }, { opacity: 1, transform: 'none' }], { duration: 200, easing: 'ease-out' });
+        var pinned = !following();
+        // a CSS-colourable dot + label (NOT an emoji — colour emoji ignore CSS `color`, so indigo/amber
+        // would never show). indigo = following/connected · amber = pinned/manual/disconnected.
+        var colour = pinned ? '#d97706' : '#6366f1';
+        btn.style.transition = calm() ? '' : 'color .2s ease, border-color .2s ease';
+        btn.style.color = colour;
+        btn.style.borderColor = colour;
+        btn.textContent = (pinned ? '● Manual' : '● Guided');
+        btn.title = !pinned ? 'An assistant is guiding this view — click to take manual control'
+          : behind() ? 'The assistant has moved on — click to follow it again'
+          : 'You have manual control of this view — click to let the assistant guide it again';
+      }
+      function sectionEl(anchor) {
+        if (!anchor) return null;
+        // JSON.stringify quotes + escapes the id into a valid CSS attribute-selector value (and avoids a
+        // literal section-tag string here, which the D141 registry lint would otherwise scan as a tag).
+        return document.querySelector('[data-ka-section=' + JSON.stringify(anchor) + ']');
+      }
+      // Is the open tab ALREADY at `route`? Guards a redundant navigate AND — critically — an assign
+      // LOOP: a retained navigate snapshot replays on every reconnect, so if this wrongly returns false
+      // for a URL we're already on, the tab re-assigns → reloads → reconnects → forever. A query-string
+      // route (e.g. /checks?file=x) must match the FULL path+search exactly, because location.pathname
+      // drops the ?query and would never compare equal to a query-bearing target (the infinite-refresh bug).
+      function samePath(route) {
+        if (!route) return true;
+        var target = route.split('{')[0];                 // drop a registry {param} placeholder
+        if ((location.pathname + location.search) === target) return true;   // already exactly here
+        if (target.indexOf('?') >= 0) return false;       // query-bearing: only an exact full match is "same"
+        var base = target.replace(/\/$/, '');
+        return base === '' || location.pathname === base || location.pathname.indexOf(base + '/') === 0;
+      }
+      var RING = '0 0 0 3px rgba(99,102,241,.9), 0 0 0 9px rgba(99,102,241,.25)';
+      // the ring lands with one ripple (where the assistant is pointing) and fades out instead of blinking
+      // off. A third shadow, transparent at the end, carries the ripple, so the frames settle on RING.
+      var LAND = [
+        { boxShadow: '0 0 0 3px rgba(99,102,241,0), 0 0 0 9px rgba(99,102,241,0), 0 0 0 3px rgba(99,102,241,.6)' },
+        { boxShadow: '0 0 0 3px rgba(99,102,241,.9), 0 0 0 9px rgba(99,102,241,.25), 0 0 0 12px rgba(99,102,241,.35)', offset: .3 },
+        { boxShadow: '0 0 0 3px rgba(99,102,241,.9), 0 0 0 9px rgba(99,102,241,.25), 0 0 0 28px rgba(99,102,241,0)' }];
+      // el.kaRing keeps the element's own box-shadow/transition while any ring (transient or persistent) holds it
+      function ringOn(el) {
+        var r = el.kaRing || (el.kaRing = { shadow: el.style.boxShadow, transition: el.style.transition, holds: 0 });
+        r.holds++;
+        clearTimeout(r.fade);
+        if (r.land) r.land.cancel();
+        el.style.transition = 'none';           // the ripple owns the entrance
+        el.style.boxShadow = RING;
+        r.land = play(el, LAND, { duration: 800, easing: 'ease-out' });
+      }
+      function ringOff(el) {
+        var r = el.kaRing;
+        if (!r || --r.holds > 0) return;       // another ring still holds it
+        if (r.land) r.land.cancel();
+        el.style.transition = calm() ? r.transition : 'box-shadow .3s ease';
+        el.style.boxShadow = r.shadow;
+        r.fade = setTimeout(function () { el.style.transition = r.transition; el.kaRing = null; }, 320);
+      }
+      // a TRANSIENT pulse — lights the ring then fades (a momentary "look here", used by navigate's
+      // in-page scroll + callout). NOT the persistent highlight below.
+      function spotlight(el) {
+        if (!el) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        ringOn(el);
+        setTimeout(function () { ringOff(el); }, 2600);
+      }
+      // the PERSISTENT highlight — at most one at a time. The ring stays lit until the assistant moves it
+      // (next highlight), routes away, or calls View.clear() — so a guided tour can point at a section and
+      // leave it pointed-out while it explains. (callout is the transient counterpart.)
+      var hlEl = null;
+      function clearHighlight() {
+        if (!hlEl) return;
+        ringOff(hlEl);
+        hlEl = null;
+      }
+      // G4 — an optional sub-target inside the section: a diagram node id or a source line. layout.html
+      // doesn't know a page's internals (a diagram node, a CodeMirror line), so it re-dispatches the typed
+      // {node, line} to the page as a `ka-view-target` window event; the page maps it to its own plumbing
+      // (rulebook-page.js → jumpTo/kd-flash for a node, cmEditor.gotoLine for a line). No-op if no page listens.
+      function subTarget(d) {
+        if (!d || (d.node == null && d.line == null)) return;
+        try { window.dispatchEvent(new CustomEvent('ka-view-target', { detail: { node: d.node, line: d.line, anchor: d.anchor || d.id } })); } catch (e) {}
+      }
+      function highlight(d) {
+        clearHighlight();                       // one persistent highlight — move the ring
+        if (!d) return;
+        var el = sectionEl(d.anchor || d.id);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          hlEl = el;
+          ringOn(el);
+        }
+        subTarget(d);                           // point INSIDE (diagram node / source line) — page-handled
+      }
+      function navigate(d) {
+        if (!d) return;
+        // A route still carrying a `{param}` is unroutable (the server refuses to emit one — G5 —
+        // but guard client-side too): never assign a broken `/rulebooks/` — just try an in-page pulse.
+        if (d.route && d.route.indexOf('{') < 0 && !samePath(d.route)) { location.assign(d.route); return; }
+        spotlight(sectionEl(d.anchor || d.id));   // same-page: a transient pulse to show where it scrolled
+        subTarget(d);
+      }
+      function callout(d) {
+        if (!d || !d.text) return;
+        subTarget(d);
+        var el = sectionEl(d.anchor || d.id);
+        var bubble = document.createElement('div');
+        bubble.style.cssText = 'position:fixed;z-index:60;max-width:18rem;padding:.6rem .8rem;border-radius:.5rem;' +
+          'background:#4f46e5;color:#fff;font-size:.8rem;line-height:1.35;box-shadow:0 6px 24px rgba(0,0,0,.3);';
+        bubble.textContent = d.text; // AS DATA — never HTML (P27/D101)
+        document.body.appendChild(bubble);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          var r = el.getBoundingClientRect();
+          bubble.style.top = Math.max(8, r.top - 8) + 'px';
+          bubble.style.left = Math.min(window.innerWidth - 300, Math.max(8, r.left)) + 'px';
+          spotlight(el);
+        } else { bubble.style.top = '5rem'; bubble.style.right = '1rem'; }
+        play(bubble, [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 200, easing: 'ease-out' });
+        setTimeout(function () { fadeRemove(bubble, 200); }, 6000);
+      }
+      // a dismissal by the human or View.clear fades; a replacing overlay drops the old one at once (the id
+      // goes first, so the replacement never finds one that is still fading)
+      function dismissOverlay(fade) {
+        var o = document.getElementById('ka-view-overlay'); if (!o) return;
+        o.removeAttribute('id');
+        if (fade) fadeRemove(o, 150); else o.remove();
+      }
+      function overlay(d) {
+        dismissOverlay();
+        if (!d) return;
+        var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+        var back = document.createElement('div');
+        back.id = 'ka-view-overlay';
+        back.style.cssText = 'position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;' +
+          'background:rgba(15,23,42,.45);';
+        var card = document.createElement('div');
+        card.style.cssText = 'max-width:32rem;width:calc(100vw - 2rem);max-height:80vh;overflow:auto;border-radius:.75rem;' +
+          'padding:1.25rem 1.4rem;box-shadow:0 20px 60px rgba(0,0,0,.35);background:' + (dark ? '#1e293b' : '#fff') +
+          ';color:' + (dark ? '#e2e8f0' : '#1e293b') + ';';
+        if (d.title) {
+          var h = document.createElement('div');
+          h.style.cssText = 'font-weight:600;font-size:1rem;margin-bottom:.5rem;';
+          h.textContent = d.title; card.appendChild(h);
+        }
+        var body = document.createElement('div');
+        body.className = 'ka-md';   // scoped prose styling (head <style>) for the marked-rendered markdown
+        body.style.cssText = 'font-size:.875rem;line-height:1.55;';
+        renderMarkdown(body, d.body || '');   // formatted (lazy vendored marked, the help/checks recipe)
+        card.appendChild(body);
+        var x = document.createElement('button');
+        x.textContent = 'Dismiss';
+        x.style.cssText = 'margin-top:1rem;padding:.35rem .85rem;border-radius:.4rem;background:#4f46e5;color:#fff;font-size:.8rem;';
+        x.addEventListener('click', function () { dismissOverlay(true); });
+        card.appendChild(x);
+        back.appendChild(card);
+        back.addEventListener('click', function (e) { if (e.target === back) dismissOverlay(true); });
+        document.body.appendChild(back);
+        play(back, [{ opacity: 0 }, { opacity: 1 }], { duration: 180, easing: 'ease-out' });
+        play(card, [{ opacity: 0, transform: 'translateY(8px) scale(.98)' }, { opacity: 1, transform: 'none' }], { duration: 220, easing: 'ease-out' });
+      }
+      // render LLM markdown into `el` as formatted text — the established lazy-marked recipe (help/checks),
+      // falling back to plain text. This is display content for the human, not instruction-position (P27).
+      function renderMarkdown(el, text) {
+        function done() { try { el.innerHTML = window.marked.parse(text); } catch (e) { el.style.whiteSpace = 'pre-wrap'; el.textContent = text; } }
+        if (window.marked) { done(); return; }
+        var sc = document.createElement('script');
+        sc.src = '/pub/vendor/marked.min.js';
+        sc.onload = done;
+        sc.onerror = function () { el.style.whiteSpace = 'pre-wrap'; el.textContent = text; };
+        document.head.appendChild(sc);
+      }
+      function applyOne(name, d) {
+        if (name === 'navigate' || name === 'open') navigate(d);
+        else if (name === 'highlight') highlight(d);
+        else if (name === 'callout') callout(d);
+        else if (name === 'overlay') overlay(d);
+      }
+      // re-apply the cached retained steering (un-pin / reconnect → converge to the current view)
+      function applySnapshot() {
+        ['navigate', 'highlight', 'overlay'].forEach(function (k) { if (snap[k]) markSeen(k, snap[k]); });
+        if (snap.navigate) navigate(snap.navigate);
+        if (snap.highlight) highlight(snap.highlight);
+        if (snap.overlay) overlay(snap.overlay);
+      }
+      // dispatch one steering event; returns true if it was a steering verb. A RETAINED verb
+      // (navigate/highlight/overlay/open) marks the assistant as actively steering → the indicator
+      // appears; it is cached for reconnect even while pinned. A pinned tab swallows the apply, and a
+      // NEW action it swallows turns the indicator amber-rippling: the assistant has moved on.
+      function steer(name, raw) {
+        if (['navigate', 'highlight', 'callout', 'overlay', 'open'].indexOf(name) < 0) return false;
+        var d; try { d = JSON.parse(raw); } catch (e) { return true; }
+        var replayed = name === 'navigate' || name === 'highlight' || name === 'overlay';   // the hub's snapshot verbs
+        var fresh = !replayed || seen()[name] !== JSON.stringify(d);
+        if (name === 'navigate' || name === 'highlight' || name === 'overlay' || name === 'open') {
+          var starting = !steeringActive;
+          steeringActive = true;
+          if (name !== 'open') { snap[name] = d; }   // open is transient (not retained server-side)
+          syncPinUi(fresh && starting);
+        }
+        if (!following()) {                        // pinned — swallow the apply (already cached for reconnect)
+          if (replayed) markSeen(name, d);         // announced once: a reconnect's replay of it stays quiet
+          if (fresh) { setBehind(true); syncPinUi(); ripple(AMBER, 3); }
+          return true;
+        }
+        if (replayed) markSeen(name, d);
+        applyOne(name, d);
+        if (fresh) ripple(INDIGO, 1);
+        return true;
+      }
+      // the assistant ended the session (View.clear) — dismiss everything, drop the snapshot, and reset to
+      // the idle/following/hidden state so a later steering session starts clean (and no stale indicator).
+      function onClear() {
+        dismissOverlay(true);
+        clearHighlight();
+        snap = {};
+        steeringActive = false;
+        try { sessionStorage.removeItem(SEEN_KEY); } catch (e) {}
+        sessionStorage.setItem(FOLLOW_KEY, 'follow');
+        syncPinUi();
+      }
+      return { following: following, toggle: toggle, syncPinUi: syncPinUi, steer: steer, onClear: onClear };
+    })();
+    (function () { if (window.kaView) window.kaView.syncPinUi(); })();
+
+    // the over-cap rejection (D115) — too many tabs share the one control channel; this tab is rejected
+    // (the live tabs keep steering). Close our own EventSource (no reconnect) + show a static banner.
+    function kaTabLimitBanner() {
+      if (document.getElementById('ka-tab-limit')) return;
+      var b = document.createElement('div');
+      b.id = 'ka-tab-limit';
+      b.style.cssText = 'position:fixed;bottom:1rem;left:1rem;z-index:60;max-width:22rem;padding:.6rem .8rem;' +
+        'border-radius:.5rem;background:#b45309;color:#fff;font-size:.8rem;line-height:1.35;box-shadow:0 6px 24px rgba(0,0,0,.3);';
+      b.textContent = 'Too many console tabs open — this tab will not follow the assistant. Close another tab and reload to reconnect.';
+      document.body.appendChild(b);
+    }
+
+    // D126 — the app-wide CONTROL CHANNEL (the remote-control foundation). Every console page subscribes
+    // to the global SSE stream and honors a small, typed, curated UI-control vocabulary:
+    //   `reanchor` → the server switched project (Work.use) → reload onto it.        [system]
+    //   `complete` → a run settled → pop the completion toast (D132).                [system]
+    //   navigate/highlight/callout/overlay/open → steer the human's view (D115/P27). [steering — follow-gated]
+    //   `view-clear` → the assistant ended steering → dismiss + hide the indicator.   [system]
+    //   `tab-limit` → this tab is over the control-channel cap → stop following.      [system]
+    (function () {
+      if (!window.karate || !window.karate.events) return;
+      var src = null;
+      function open() {
+        if (src) return;
+        src = window.karate.events(function (name, raw) {
+          if (window.kaManual) window.kaManual.onEvent(name, raw);   // Manual chrome: refresh its live sections
+          if (name === 'reanchor') {   // system — every tab honors; a Manual tab says where it went (pub/manual.js)
+            if (window.kaManual && window.kaManual.onReanchor) window.kaManual.onReanchor(raw); else location.reload();
+            return;
+          }
+          if (name === 'complete') {
+            var d; try { d = JSON.parse(raw); } catch (e) { return; }
+            kaRunToast(d);
+            return;
+          }
+          if (name === 'tab-limit') { close(); kaTabLimitBanner(); return; }
+          if (name === 'view-clear') { if (window.kaView) window.kaView.onClear(); return; }   // system
+          if (window.kaView && window.kaView.steer(name, raw)) return;   // steering — follow-gated
+        }, {});
+      }
+      function close() { if (src) { try { src.close(); } catch (e) {} src = null; } }
+      open();
+      // D131 — close the SSE the moment the page is hidden / navigated away (incl. entering bfcache)
+      // so it FREES the browser's HTTP/1.1 per-origin connection slot. Otherwise every navigation
+      // leaks an open /api/events EventSource; ~6 of them exhaust the pool and page loads stall.
+      window.addEventListener('pagehide', close);
+      // Restored from bfcache → reopen so the control channel keeps working.
+      window.addEventListener('pageshow', function (e) { if (e.persisted) open(); });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,837 @@
+<!--/* The Checks editor (D88, SSR shell + rich client island) — a VS Code-style project explorer over the
+     serve project, plus an editor for any text file. A content fragment: layout.html provides
+     <head>/header/theme. This is the sanctioned rich client island the D88 rule allows (CodeMirror 6 +
+     the /ui/checks page-data channel — D98, never /api/eval).
+
+     The tree is a UNIFIED project tree (one root; checks/ is the recommended folder, default-expanded).
+     It is the reusable kaFileTree widget (components/file-tree.html + pub/file-tree.js): it lazy-loads
+     one folder level at a time (File.ls) and owns all filesystem CRUD; selecting a file dispatches a
+     window `ka-file-open` event carrying a resolved VIEW id. This editor listens and renders the file —
+     the seam a future session uses to swap in a per-folder right-pane view (rules / requirement / …).
+
+     CodeMirror loads from the vendored /pub/vendor/cm.js bundle (offline-safe; rebuild via
+     etc/web-assets/build.sh).
+
+     LENSES (D193): a lens is a FILTER over the one project tree — never a replacement sidebar. The
+     badge + popover is the LAST item on the explorer's own header (after Collapse all, inside the
+     file-tree fragment): All · API (content-sniffed specs, /ui/apidocs) · Req · Rul · Feat (globs via
+     /ui/checks/glob) · Coll (Postman collections — soon). Picking one dispatches `ka-lens-filter`
+     with {files, dirs, hint}; the tree hides non-matching rows but keeps FOLDERS intact, so every
+     file/folder operation (create, rename, drag, upload, run) works identically in every lens. The
+     viewer ASSOCIATION is lens-independent: an OpenAPI spec opened from any lens defaults to the docs
+     view; per-file TABS come from fileTabs (the file type decides its views — Source is always the
+     editable tab). Future lenses (coverage, flow) add a `lenses` row + a viewer here — never a nav tab.
+
+     Control-plane contract (View.* / D115 / D141): the deep-links ?file=<project-root path> (the tree's
+     openPath honours it) + ?lens=<id>, and the data-ka-section anchors checks / checks.sidebar /
+     checks.lens / checks.editor / checks.preview / checks.api(.operations/.components) / checks.asset /
+     checks.output stay addressable for View.highlight. */-->
+<script ka:scope="global">
+  // The run-kickoff modal's SSR data (D132/D58) — built EXACTLY like the /runs picker so the name forms
+  // match: every runnable (.js check, *.karate.js orchestrator, .feature) is PROJECT-ROOT relative — the
+  // form Runner.run and Runner.launch both resolve; only a .md goal is checks-relative (Harness.explore
+  // resolves checks/ first). The LLM combos + the in-flight run snapshot (single-user,
+  // D48). The TREE no longer SSRs a file list — it lazy-loads via /ui/checks/ls, so page load stays off
+  // the eval lock.
+  _.llm = harness.providers();
+  _.activeRun = harness.runs().active || '';
+  var pickables = [];
+  var jsChecks = check.list();
+  for (var pj = 0; pj < jsChecks.length; pj++) {
+    var pn = 'checks/' + jsChecks[pj].name;
+    pickables.push({ name: pn, type: pn.substring(pn.length - 10) == '.karate.js' ? 'launch' : 'js' });
+  }
+  // ANY project .md is a usable goal prompt (Harness.explore resolves checks/ first, then the project
+  // root); file.list already prunes target/ + runs/. Only a checks/ file is named checks-relative.
+  var mdFiles = file.list('**/*.md');
+  for (var pm = 0; pm < mdFiles.length; pm++) {
+    pickables.push({ name: mdFiles[pm].indexOf('checks/') === 0 ? mdFiles[pm].substring(7) : mdFiles[pm], type: 'md' });
+  }
+  var feats2 = file.list('**/*.feature');
+  for (var pf = 0; pf < feats2.length; pf++) {
+    pickables.push({ name: feats2[pf], type: 'feature' });            // project-root relative
+  }
+  _.pickables = pickables;
+
+  // the active project's folder name — shown as the explorer header label (VS Code-style), instead of a
+  // generic "PROJECT". Read from the shell `work` global; absent (minimal profile) → "PROJECT".
+  var _work = context.getGlobal('work');
+  _.projectName = (_work != null && _work.current() != null) ? _work.current().name : 'PROJECT';
+</script>
+<div ka:island="llm"/>
+<div ka:island="activeRun"/>
+<div ka:island="pickables"/>
+<div ka:island="projectName"/>
+
+  <!-- the file-type icon sprite (components/icons.html), referenced by <use> in the tree -->
+  <th:block th:insert="~{components/icons :: sprite}"></th:block>
+
+  <!-- the reusable tree factory — a CLASSIC script so kaFileTree exists before Alpine scans x-data -->
+  <script src="/pub/file-tree.js" ka:nocache="true"></script>
+  <script src="/pub/lifecycle-pane.js" ka:nocache="true"></script>
+
+  <!-- Alpine factories — classic scripts so they exist when Alpine scans x-data -->
+  <script>
+    // the tree widget's config (the fragment does x-data="kaFileTree(window['checksTreeConfig']())")
+    function checksTreeConfig() {
+      var rootLabel = 'PROJECT';
+      // the island serializes a bare string unquoted, so JSON.parse may throw — fall back to the raw text
+      var _pn = document.getElementById('projectName-data');
+      if (_pn) { var _t = (_pn.textContent || '').trim(); try { rootLabel = JSON.parse(_t) || rootLabel; } catch (e) { rootLabel = _t || rootLabel; } }
+      return {
+        rootLabel: rootLabel,               // the active project's folder name (SSR island)
+        initialOpen: ['checks'],            // checks/ is the recommended folder — open it by default
+        storeKey: 'checks',
+        lens: true,                         // host the lens badge + popover on the explorer header (D193)
+        // the forward hook: map a node → the right-pane VIEW id. Today editor/markdown/binary; a later
+        // session maps e.g. a rulebook/ folder → 'rules' without touching the tree.
+        viewFor: function (n) {
+          if (n.dir) return 'folder';
+          var e = (n.name.split('.').pop() || '').toLowerCase();
+          if (e === 'md') return 'markdown';
+          var BIN = ['pdf','png','jpg','jpeg','gif','webp','ico','bmp','zip','gz','tar','jar','woff','woff2','ttf','otf','mp4','mov','webm','mp3','wav','exe','bin','dat'];
+          if (BIN.indexOf(e) >= 0) return 'binary';
+          return 'editor';
+        }
+      };
+    }
+
+    function checksEditor() {
+      return {
+        // ----- the open file (the right pane) -----
+        selected: '', selectedBinary: false, selectedImage: false,
+        dirty: false, pendingDoc: null,
+        output: '', stale: false, err: '',
+        viewMode: 'source', previewHtml: '',
+        theme: document.documentElement.getAttribute('data-theme'),
+        // ----- the pane shell (resizable + collapsible nav) -----
+        navW: 288, navCollapsed: false, dragging: false,
+        // ----- lenses (D193): a FILTER over the one project tree, picked from the badge + popover the
+        //       explorer header hosts (cfg.lens — the badge markup lives in components/file-tree.html
+        //       and resolves this state up the Alpine scope chain). Picking a lens dispatches
+        //       `ka-lens-filter` {files, dirs, hint}; the tree hides non-matching rows, keeps folders,
+        //       and every file op stays identical. 'api' = content-sniffed specs (/ui/apidocs/specs);
+        //       the glob lenses resolve via /ui/checks/glob. The viewer ASSOCIATION is lens-independent —
+        //       a spec opened from the All tree renders the docs view too. Future lenses add a row here. -----
+        lens: 'all', lensOpen: false, specs: [], specsLoaded: false,
+        lenses: [
+          { id: 'all',  label: 'All',  hint: 'the full project tree' },
+          { id: 'api',  label: 'API',  hint: 'OpenAPI specs, rendered as docs' },
+          { id: 'req',  label: 'Req',  glob: 'requirements/**/*.md', hint: 'requirements markdown' },
+          { id: 'rul',  label: 'Rul',  glob: 'rulebooks/**/*',       hint: 'rulebook artifacts' },
+          { id: 'feat', label: 'Feat', glob: '**/*.feature',         hint: 'karate features' },
+          { id: 'coll', label: 'Coll', hint: 'Postman collections',  soon: true },
+        ],
+        // ----- the API docs viewer (the API lens's right pane — openapi.md §The API docs surface) -----
+        selectedSpec: false, apiModel: null, lc: null,
+        openReq: {}, openResp: {}, openComp: {},
+
+        init() {
+          // restore pane prefs
+          var w = parseInt(localStorage.getItem('checks:nav:w') || '288', 10);
+          if (!isNaN(w)) this.navW = Math.min(560, Math.max(180, w));
+          this.navCollapsed = localStorage.getItem('checks:nav:collapsed') === '1';
+          // restore the lens (deep-link ?lens= wins — the control plane / a copied URL steers it)
+          var lp = new URLSearchParams(location.search).get('lens');
+          this.setLens(lp || localStorage.getItem('checks:lens') || 'all', true);
+
+          window.addEventListener('cm-dirty', () => { this.dirty = true; });
+          // a file opened BEFORE CodeMirror (async module) finished loading parks its source in pendingDoc
+          window.addEventListener('cm-ready', () => {
+            if (this.pendingDoc != null) { window.cmEditor.setDoc(this.pendingDoc, this.selected); this.pendingDoc = null; }
+          });
+          // the tree owns selection — it dispatches ka-file-open with the resolved view + flags
+          window.addEventListener('ka-file-open', (e) => this.onOpen(e.detail || {}));
+          // the tree's context-menu Run hands a path here
+          window.addEventListener('ka-file-run', (e) => this.runPath((e.detail || {}).path, (e.detail || {}).dir));
+        },
+
+        // ----- lenses -----
+        lensById(id) { return this.lenses.find((l) => l.id === id) || this.lenses[0]; },
+        get lensLabel() { return this.lensById(this.lens).label; },
+        async setLens(l, restoring) {
+          if (l === 'files') l = 'all';   // pre-badge stored value
+          if (l === 'rules') l = 'rul';   // pre-filter stored value
+          const def = this.lensById(l);
+          if (def.soon) return;
+          this.lens = def.id;
+          if (!restoring) localStorage.setItem('checks:lens', this.lens);
+          let detail = null;   // All = no filter
+          if (this.lens === 'api') {
+            if (!this.specsLoaded) await this.loadSpecs();
+            detail = this.lensFilterFrom(this.specs.map((s) => s.path), def.hint);
+          } else if (def.glob) {
+            try {
+              const list = await (await fetch('/ui/checks/glob?pattern=' + encodeURIComponent(def.glob))).json();
+              detail = this.lensFilterFrom(Array.isArray(list) ? list : [], def.hint);
+            } catch (e) { this.err = String(e); return; }
+          }
+          // dispatch on the next task: on a fresh page this init runs before the nested tree's, and
+          // the tree registers its ka-lens-filter listener synchronously at the top of ITS init
+          setTimeout(() => window.dispatchEvent(new CustomEvent('ka-lens-filter', { detail })), 0);
+        },
+        // a flat path list → the tree's filter shape: the files plus every ANCESTOR dir (so the tree
+        // can keep real folders visible + auto-expanded — a lens filters, it never flattens)
+        lensFilterFrom(paths, hint) {
+          const files = {}, dirs = {};
+          paths.forEach((p) => {
+            files[p] = 1;
+            const parts = p.split('/'); parts.pop();
+            let acc = '';
+            parts.forEach((seg) => { acc = acc ? acc + '/' + seg : seg; dirs[acc] = 1; });
+          });
+          return { files, dirs, hint };
+        },
+        async loadSpecs() {
+          try {
+            const list = await (await fetch('/ui/apidocs/specs')).json();
+            this.specs = Array.isArray(list) ? list : [];
+            this.specsLoaded = true;
+          } catch (e) { this.err = String(e); }
+        },
+
+        // ----- open a file the tree selected -----
+        async onOpen(d) {
+          // auto-commit an unsaved text edit before switching (local single-user authoring, D48)
+          if (this.dirty && this.selected && !this.selectedBinary) { await this.save(); }
+          this.err = ''; this.stale = false; this.output = '';
+          this.selectedSpec = false; this.apiModel = null;
+          if (d.closed) { this.selected = ''; this.selectedBinary = false; this.selectedImage = false;
+            this.dirty = false; if (window.cmEditor) window.cmEditor.setDoc(''); return; }
+          this.selected = d.path; this.selectedBinary = !!d.binary; this.selectedImage = !!d.image;
+          if (d.binary) { this.dirty = false; if (window.cmEditor) window.cmEditor.setDoc(''); return; }
+          const out = await (await fetch('/ui/checks/read?name=' + encodeURIComponent(d.path))).json();
+          if (out && out.error) { this.err = out.error; return; }
+          if (window.cmEditor) { window.cmEditor.setDoc(out.content, d.name); } else { this.pendingDoc = out.content; }
+          this.dirty = false;
+          // the viewer association (D193): an OpenAPI spec defaults to the rendered docs view — same
+          // content sniff the /ui/apidocs discovery uses, so the two never disagree
+          var ext = (this.selected.split('.').pop() || '').toLowerCase();
+          var head = String(out.content || '').substring(0, 2000);
+          this.selectedSpec = ['yaml', 'yml', 'json'].indexOf(ext) >= 0
+            && (head.indexOf('openapi') >= 0 || head.indexOf('swagger') >= 0);
+          if (this.selectedSpec) { this.viewMode = 'preview'; this.loadApiModel(); }
+          else if (this.isMd()) { this.viewMode = 'preview'; this.renderPreview(out.content); }
+          else { this.viewMode = 'source'; }
+        },
+        isMd() { return !!this.selected && this.selected.endsWith('.md') && !this.selectedSpec; },
+        isSpec() { return this.selectedSpec; },
+        // ----- per-file tabs (D193): the file type decides its views; Source is ALWAYS the editable
+        //       tab. A file with one view shows no tabs. Future viewers (rulebook, postman, …) add
+        //       their entry here — the toolbar renders whatever this returns. -----
+        get fileTabs() {
+          if (!this.selected || this.selectedBinary) return [];
+          if (this.isSpec()) return [{ id: 'preview', label: 'API Docs' }, { id: 'source', label: 'Source' }];
+          if (this.isMd()) return [{ id: 'preview', label: 'View' }, { id: 'source', label: 'Source' }];
+          return [];
+        },
+        openTab(id) { if (id === 'source') { this.viewMode = 'source'; } else { this.showPreview(); } },
+
+        // ----- the API docs viewer (fed by /ui/apidocs — D98, never /api/eval) -----
+        async loadApiModel() {
+          this.apiModel = null; this.lc = null; this.openReq = {}; this.openResp = {}; this.openComp = {};
+          try {
+            const out = await (await fetch('/ui/apidocs/model?spec=' + encodeURIComponent(this.selected))).json();
+            if (out && out.error) { this.err = String(out.error); return; }
+            this.apiModel = out;
+            this.lc = window.kaLifecycleView(out.lifecycle);
+          } catch (e) { this.err = String(e); }
+        },
+        // group operations by detected REST resource, else first tag, else a catch-all
+        get apiGroups() {
+          if (!this.apiModel) return [];
+          const by = {}; const order = [];
+          (this.apiModel.operations || []).forEach((op) => {
+            const key = op.resource || (op.tags && op.tags.length ? op.tags[0] : 'operations');
+            if (!by[key]) { by[key] = []; order.push(key); }
+            by[key].push(op);
+          });
+          return order.map((k) => ({ name: k, ops: by[k] }));
+        },
+        methodClass(m) {
+          return {
+            GET: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400',
+            POST: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-400',
+            PUT: 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400',
+            PATCH: 'bg-violet-50 text-violet-700 dark:bg-violet-950/50 dark:text-violet-400',
+            DELETE: 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400',
+          }[m] || 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300';
+        },
+        statusClass(s, negative) {
+          if (negative) return String(s).charAt(0) === '5'
+            ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400'
+            : 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400';
+          return String(s).charAt(0) === '2'
+            ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400'
+            : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300';
+        },
+        pretty(v) { return v === undefined ? '' : JSON.stringify(v, null, 2); },
+        // the four statuses plus applied (playground.md §7), never collapsed into one colour
+        outcomeClass(o) {
+          return {
+            applied: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400',
+            refused: 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400',
+            unavailable: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
+            errored: 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400',
+            notreached: 'border border-dashed border-slate-300 text-slate-500 dark:border-slate-600 dark:text-slate-400',
+          }[o] || '';
+        },
+        outcomeText(o) { return window.kaLifecycleOutcomeText(o); },
+        flowJump(ev) {
+          const node = ev.target.closest('[data-op]');
+          if (node) this.apiJump(node.getAttribute('data-op'));
+        },
+        apiAnchor(opId) { return 'op-' + String(opId).replace(/[^\w-]/g, '_'); },
+        apiJump(opId) {
+          const el = document.getElementById(this.apiAnchor(opId));
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        },
+
+        async save() {
+          if (!this.selected || this.selectedBinary) return;
+          const body = window.cmEditor ? window.cmEditor.getDoc() : '';
+          const out = await (await fetch('/ui/checks/write', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: this.selected, content: body })
+          })).json();
+          if (out && out.error) {
+            if (String(out.error).indexOf('changed on disk') >= 0) { this.stale = true; return; }
+            this.err = String(out.error); return;
+          }
+          this.dirty = false; this.stale = false;
+        },
+        async reloadFromDisk() {
+          this.stale = false; this.dirty = false;
+          const out = await (await fetch('/ui/checks/read?name=' + encodeURIComponent(this.selected))).json();
+          if (out && out.error) { this.err = out.error; return; }
+          if (window.cmEditor) window.cmEditor.setDoc(out.content, this.selected);
+          if (this.isMd() && this.viewMode === 'preview') this.renderPreview(out.content);
+        },
+
+        async showPreview() {
+          // a spec's View = the rendered API docs (save first so the model reflects the buffer)
+          if (this.isSpec()) { if (this.dirty) await this.save(); this.viewMode = 'preview'; await this.loadApiModel(); return; }
+          this.viewMode = 'preview'; this.renderPreview();
+        },
+        async renderPreview(src) {
+          const text = src != null ? src : (window.cmEditor ? window.cmEditor.getDoc() : (this.pendingDoc || ''));
+          try {
+            if (!window.marked) {
+              await new Promise((res, rej) => {
+                const sc = document.createElement('script');
+                sc.src = '/pub/vendor/marked.min.js'; sc.onload = res; sc.onerror = rej;
+                document.head.appendChild(sc);
+              });
+            }
+            this.previewHtml = window.marked.parse(text);
+          } catch (e) {
+            this.previewHtml = '<pre>' + text.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</pre>';
+          }
+        },
+
+        // ----- run (toolbar Run, the ▾ dialog, and the tree's context-menu Run) -----
+        // a .feature runs PROJECT-ROOT relative (Runner.run); .js/.md ride `check` (checks-relative,
+        // so strip a leading checks/) — matching the run-kickoff modal's name forms.
+        // a *.karate.js orchestrator keeps its project-root name — Runner.launch resolves against the
+        // project root, so a checks-relative name would miss the file; a .js check / .md goal is
+        // checks-relative (Check.run / Harness.explore resolve checks/ first)
+        runDetail(path) {
+          if (!path) return {};
+          if (path.endsWith('.feature')) return { path: path };
+          return { check: path.endsWith('.karate.js') ? path : path.replace(/^checks\//, '') };
+        },
+        runnable(path) { return !!path && /\.(js|md|feature)$/.test(path); },
+        // a folder is a set (D281) — it has no single obvious lane, so it lands in the one kickoff
+        // surface preselected as the selector rather than running blind
+        async runPath(path, dir) {
+          if (dir) { kaRunModalOpen({ path: path.replace(/\/$/, '') + '/' }); return; }
+          if (!this.runnable(path)) return;
+          if (path === this.selected && this.dirty) await this.save();
+          kaRunNow(this.runDetail(path));
+        },
+        async runDialog() {
+          if (!this.runnable(this.selected)) return;
+          if (this.dirty) await this.save();
+          kaRunModalOpen(this.runDetail(this.selected));
+        },
+
+        // ----- pane shell -----
+        startDrag(ev) {
+          this.dragging = true;
+          const startX = ev.clientX, startW = this.navW;
+          const move = (e) => { this.navW = Math.min(560, Math.max(180, startW + (e.clientX - startX))); };
+          const up = () => {
+            this.dragging = false; document.body.style.userSelect = '';
+            document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+            localStorage.setItem('checks:nav:w', String(this.navW));
+          };
+          document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+          document.body.style.userSelect = 'none';
+        },
+        resetNav() { this.navW = 288; localStorage.removeItem('checks:nav:w'); },
+        toggleNav() { this.navCollapsed = !this.navCollapsed; localStorage.setItem('checks:nav:collapsed', this.navCollapsed ? '1' : ''); },
+
+        toggleTheme() {
+          this.theme = this.theme === 'dark' ? 'light' : 'dark';
+          document.documentElement.setAttribute('data-theme', this.theme);
+          localStorage.setItem('karate-theme', this.theme);
+        }
+      };
+    }
+  </script>
+
+  <!-- the editor fills the viewport below the shell header (≈3.3rem) -->
+  <!-- NO x-init: Alpine auto-invokes init() on the x-data object (x-init would double-run it) -->
+  <div x-data="checksEditor()" x-cloak class="flex flex-col" style="height:calc(100vh - 3.3rem)" data-ka-section="checks">
+
+    <div class="flex-1 flex min-h-0">
+
+      <!-- the file explorer (resizable, collapsible) -->
+      <aside x-show="!navCollapsed" :style="'width:' + navW + 'px'"
+             class="shrink-0 border-r border-slate-200 dark:border-slate-700 flex flex-col min-h-0"
+             data-ka-section="checks.sidebar">
+        <!-- ONE tree in every lens (D193): a lens only filters it (ka-lens-filter), so folders stay
+             visible and every file/folder operation works identically. The lens badge + popover is
+             the last item on the tree's own header (components/file-tree.html, cfg.lens). -->
+        <th:block th:insert="~{components/file-tree :: fileTree}" th:with="cfg:'checksTreeConfig'"></th:block>
+      </aside>
+      <!-- drag handle: 1px line + a wider invisible hit area; double-click resets -->
+      <div x-show="!navCollapsed" role="separator" aria-orientation="vertical"
+           @mousedown="startDrag($event)" @dblclick="resetNav()"
+           class="w-1 cursor-col-resize bg-slate-200 dark:bg-slate-800 hover:bg-indigo-400 dark:hover:bg-indigo-500 transition relative shrink-0">
+        <div class="absolute inset-y-0 -left-1 -right-1"></div>
+      </div>
+      <!-- collapsed: a slim rail to re-open the explorer -->
+      <button x-show="navCollapsed" @click="toggleNav()" title="Show explorer"
+              class="w-7 shrink-0 border-r border-slate-200 dark:border-slate-700 flex items-start justify-center pt-2 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-50 dark:hover:bg-slate-800">
+        <svg class="w-4 h-4"><use href="#ic-panel"></use></svg>
+      </button>
+
+      <!-- editor + output -->
+      <main class="flex-1 flex flex-col min-w-0">
+
+        <!-- toolbar (h-11 matches the explorer header so the two read as one bar) -->
+        <div class="flex items-center gap-2 px-3 h-11 border-b border-slate-200 dark:border-slate-700">
+          <!-- collapse toggle — only while the nav is OPEN; when collapsed the slim rail re-opens it -->
+          <button x-show="!navCollapsed" @click="toggleNav()" title="Hide explorer"
+                  class="shrink-0 p-1 rounded text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800">
+            <svg class="w-4 h-4"><use href="#ic-panel"></use></svg></button>
+          <!-- the LENS badge + popover (D193) moved INTO the explorer header — see
+               components/file-tree.html (cfg.lens); the state it drives still lives here. -->
+          <span class="text-sm text-slate-700 dark:text-slate-300 truncate" x-text="selected || 'select a file'"></span>
+          <span x-show="dirty" class="shrink-0 text-[11px] text-amber-600 dark:text-amber-400">● modified</span>
+          <!-- per-file tabs (D193): the file type decides its views (fileTabs) — .md → View|Source,
+               a spec → API Docs|Source; Source is ALWAYS the editable tab. One view = no tabs. -->
+          <div x-show="fileTabs.length" class="ml-2 flex rounded-md border border-slate-300 dark:border-slate-600 overflow-hidden text-xs shrink-0">
+            <template x-for="(t, ti) in fileTabs" :key="t.id">
+              <button @click="openTab(t.id)"
+                      :class="(viewMode===t.id ? 'bg-indigo-600 text-white' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700') + (ti ? ' border-l border-slate-300 dark:border-slate-600' : '')"
+                      class="px-2.5 py-1" x-text="t.label"></button>
+            </template>
+          </div>
+          <span class="ml-auto"></span>
+          <button @click="save()" :disabled="!selected || selectedBinary || !dirty"
+                  class="rounded-md border border-slate-300 dark:border-slate-600 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40">Save</button>
+          <!-- split button: Run ▶ runs now → live view; ▾ opens the modal to customize options -->
+          <div class="inline-flex rounded-md overflow-hidden">
+            <button @click="runPath(selected)" :disabled="!runnable(selected)" title="run now → live view"
+                    class="bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">Run ▶</button>
+            <button @click="runDialog()" :disabled="!runnable(selected)" title="run with options…"
+                    class="bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-500 border-l border-indigo-400/40 disabled:opacity-40">▾</button>
+          </div>
+        </div>
+
+        <!-- stale-conflict panel (File write-after-read guard) -->
+        <div x-show="stale" class="mx-4 mt-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-800 dark:text-amber-200 flex items-center justify-between">
+          <span>This file changed on disk since you opened it.</span>
+          <button @click="reloadFromDisk()" class="font-medium underline">Reload from disk</button>
+        </div>
+        <div x-show="err" class="mx-4 mt-3 rounded-lg border border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 px-3 py-2 text-xs text-rose-700 dark:text-rose-300" x-text="err"></div>
+
+        <!-- a binary artifact: shown, not edited (the file tree's ⓘ popover has the copy-path affordance). -->
+        <div x-show="selectedBinary" class="flex-1 min-h-0 flex items-center justify-center bg-white dark:bg-slate-900 px-6 text-center" data-ka-section="checks.asset">
+          <div>
+            <div class="text-3xl">📎</div>
+            <div class="mt-2 text-sm text-slate-700 dark:text-slate-300" x-text="selected"></div>
+            <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">Binary file — not editable here.</div>
+          </div>
+        </div>
+
+        <!-- markdown HTML view (the default for .md files) -->
+        <div x-show="!selectedBinary && isMd() && viewMode==='preview'" x-html="previewHtml" data-ka-section="checks.preview"
+             class="md-body flex-1 min-h-0 overflow-auto bg-white dark:bg-slate-900 px-6 py-4 text-sm text-slate-700 dark:text-slate-300"></div>
+
+        <!-- the API docs viewer (the View tab for a spec — D193; openapi.md §The API docs surface):
+             operations grouped by resource, samples, and every declared error path as a visible row.
+             opId anchors are the D40/D39/flow-diagram layering seam. -->
+        <div x-show="!selectedBinary && isSpec() && viewMode==='preview'" data-ka-section="checks.api"
+             class="flex-1 min-h-0 overflow-y-auto bg-white dark:bg-slate-900 px-6 py-4">
+          <template x-if="apiModel">
+            <div>
+              <!-- header chips + the group jump index -->
+              <div class="flex items-center gap-2 flex-wrap mb-3">
+                <span class="text-sm font-medium text-slate-800 dark:text-slate-200" x-text="apiModel.title"></span>
+                <span x-show="apiModel.version" class="text-[10px] rounded px-1.5 py-0.5 bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400" x-text="'v' + apiModel.version"></span>
+                <span x-show="apiModel.baseUrl" class="text-[11px] font-mono text-slate-400 dark:text-slate-500" x-text="apiModel.baseUrl"></span>
+                <span class="text-[10px] rounded px-1.5 py-0.5 bg-indigo-50 text-indigo-600 dark:bg-indigo-950/40 dark:text-indigo-400"
+                      x-text="apiModel.operationCount + ' operations'"></span>
+                <a href="/checks/crosswalk" title="oasdiff's check catalog against Openapi.diff"
+                   class="ml-auto text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline">oasdiff crosswalk</a>
+              </div>
+              <div class="flex items-center gap-1.5 flex-wrap mb-4">
+                <template x-for="g in apiGroups" :key="'chip-' + g.name">
+                  <button type="button" @click="apiJump(g.ops[0].opId)"
+                          class="text-[11px] rounded-full border border-slate-200 dark:border-slate-700 px-2.5 py-0.5 text-slate-600 dark:text-slate-300 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-400"
+                          x-text="g.name + ' (' + g.ops.length + ')'"></button>
+                </template>
+              </div>
+
+
+              <!-- the lifecycle pane (playground.md §7) — read-only here; the report and the app render
+                   the same payload in the same order: disclosure · flow · what next · per operation · lists -->
+              <template x-if="lc">
+                <section class="mb-6" data-ka-section="checks.api.lifecycle">
+                  <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-2">lifecycle</h2>
+                  <p x-show="lc.unavailable" data-lc-unavailable class="text-xs text-slate-500 dark:text-slate-400"
+                     x-text="lc.unavailable ? 'No lifecycle pane for ' + lc.rule + ' — ' + lc.unavailable.code + ': ' + lc.unavailable.reason : ''"></p>
+                  <template x-if="!lc.unavailable">
+                    <div class="space-y-3">
+                      <div>
+                        <div data-lc-disclosure class="text-[11px] font-mono text-slate-600 dark:text-slate-300 break-all" x-text="lc.line"></div>
+                        <p class="text-[11px] text-slate-400 dark:text-slate-500" x-text="lc.boundary"></p>
+                        <p x-show="lc.drift.drift" class="text-xs text-amber-700 dark:text-amber-400" x-text="'projection drift — ' + (lc.drift.reason || '')"></p>
+                      </div>
+                      <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-3" data-lc-flow>
+                        <div class="flex items-center gap-3 mb-2">
+                          <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500" x-text="'flow — ' + lc.flow.edges.length + ' edges between ' + lc.flow.nodes.length + ' operations'"></span>
+                          <label class="ml-auto text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1 cursor-pointer"><input type="checkbox" class="kd-labels-on"> edge labels</label>
+                        </div>
+                        <div class="kd-flow overflow-x-auto" @click="flowJump($event)" x-html="lc.flow.svg"></div>
+                        <p class="mt-2 text-[11px] text-slate-500 dark:text-slate-400" x-text="lc.flow.caption"></p>
+                        <p class="text-[11px] text-slate-500 dark:text-slate-400" x-text="'Derived reads, listed, not drawn: ' + lc.flow.reads.join(', ')"></p>
+                        <details class="mt-2 text-[11px]">
+                          <summary class="cursor-pointer text-indigo-600 dark:text-indigo-400" x-text="'edges (' + lc.flow.edges.length + ')'"></summary>
+                          <template x-for="e in lc.flow.edges" :key="e.from + '>' + e.to">
+                            <div class="py-1 border-b border-slate-100 dark:border-slate-800" data-lc-edge>
+                              <span class="font-mono text-slate-800 dark:text-slate-200" x-text="e.from + ' → ' + e.to"></span>
+                              <span x-show="e.sequence.length" class="ml-2 text-slate-500" x-text="'sequences: ' + e.sequence.join(', ')"></span>
+                              <details x-show="e.walk.length" class="inline-block ml-2 align-top">
+                                <summary class="cursor-pointer text-slate-500" x-text="'walk paths: ' + e.walk.length"></summary>
+                                <div class="font-mono text-slate-500 break-all" x-text="e.walk.join(', ')"></div>
+                              </details>
+                            </div>
+                          </template>
+                        </details>
+                      </div>
+                      <div data-lc-states>
+                        <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-1">what next, by state</div>
+                        <template x-for="st in lc.states" :key="st.state">
+                          <details class="mb-1 rounded-lg border border-slate-100 dark:border-slate-800" :data-lc-state="st.state">
+                            <summary class="px-2.5 py-1.5 cursor-pointer text-xs">
+                              <span class="font-mono font-semibold text-slate-800 dark:text-slate-200" x-text="st.state"></span>
+                              <span class="ml-1 text-slate-400" x-text="st.worlds + ' worlds'"></span>
+                              <template x-for="c in st.counts" :key="c.outcome">
+                                <span class="ml-1 text-[10px] rounded px-1.5 py-0.5" :class="outcomeClass(c.outcome)" x-text="c.outcome + ' ' + c.n"></span>
+                              </template>
+                              <span x-show="st.noneEnabled" class="ml-1 text-slate-500">no command enabled in this state</span>
+                            </summary>
+                            <div class="px-2.5 pb-2">
+                              <template x-for="c in st.commands" :key="c.command">
+                                <div class="py-1 border-t border-slate-100 dark:border-slate-800 text-[11px] flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                                  <span class="font-mono font-semibold text-slate-800 dark:text-slate-200 w-28 shrink-0" x-text="c.command"></span>
+                                  <span class="font-mono text-slate-400 w-28 shrink-0" x-text="c.operation || '—'"></span>
+                                  <span class="text-slate-400 w-24 shrink-0" x-text="c.inputs.length ? 'in: ' + c.inputs.join(', ') : 'no input'"></span>
+                                  <div class="flex-1 min-w-0 space-y-0.5">
+                                    <template x-for="o in c.outcomes">
+                                      <div><span class="text-[10px] rounded px-1.5 py-0.5" :class="outcomeClass(o.outcome)" x-text="o.outcome"></span>
+                                        <span class="text-slate-500 dark:text-slate-400 break-all" x-text="outcomeText(o)"></span></div>
+                                    </template>
+                                  </div>
+                                </div>
+                              </template>
+                            </div>
+                          </details>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+                </section>
+              </template>
+
+              <template x-for="g in apiGroups" :key="g.name">
+                <section class="mb-6" data-ka-section="checks.api.operations">
+                  <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-2" x-text="g.name"></h2>
+                  <template x-for="op in g.ops" :key="op.opId">
+                    <div :id="apiAnchor(op.opId)" class="mb-4 rounded-xl border border-slate-200 dark:border-slate-700 p-4 scroll-mt-4">
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <span class="text-[11px] font-bold rounded px-2 py-0.5" :class="methodClass(op.method)" x-text="op.method"></span>
+                        <span class="font-mono text-sm text-slate-900 dark:text-slate-100" x-text="op.path"></span>
+                        <span class="text-xs text-slate-400 dark:text-slate-500 font-mono" x-text="op.opId"></span>
+                        <span x-show="op.crud" class="text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400" x-text="op.crud"></span>
+                      </div>
+                      <p x-show="op.summary" class="mt-1.5 text-sm text-slate-600 dark:text-slate-400" x-text="op.summary"></p>
+
+                      <!-- request sample (from the request-body schema — the generated, schema-valid instance) -->
+                      <div x-show="op.requestSample !== undefined" class="mt-2">
+                        <button type="button" @click="openReq[op.opId] = !openReq[op.opId]"
+                                class="text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+                                x-text="(openReq[op.opId] ? '▾' : '▸') + ' request sample'"></button>
+                        <pre x-show="openReq[op.opId]" class="mt-1 rounded-lg bg-slate-50 dark:bg-slate-800 p-3 text-[11px] font-mono text-slate-700 dark:text-slate-300 overflow-x-auto" x-text="pretty(op.requestSample)"></pre>
+                      </div>
+
+                      <!-- responses — EVERY declared status, the negative paths visible, not buried -->
+                      <div class="mt-3 space-y-1">
+                        <template x-for="r in op.responses" :key="op.opId + '-' + r.status">
+                          <div class="rounded-lg border px-2.5 py-1.5"
+                               :class="r.negative ? 'border-amber-200 dark:border-amber-900/60' : 'border-slate-100 dark:border-slate-800'">
+                            <div class="flex items-center gap-2">
+                              <span class="text-[10px] font-bold rounded px-1.5 py-0.5" :class="statusClass(r.status, r.negative)" x-text="r.status"></span>
+                              <span class="text-xs text-slate-600 dark:text-slate-400" x-text="r.description || ''"></span>
+                              <button x-show="r.sample !== undefined" type="button"
+                                      @click="openResp[op.opId + r.status] = !openResp[op.opId + r.status]"
+                                      class="ml-auto text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline"
+                                      x-text="openResp[op.opId + r.status] ? 'hide sample' : 'sample'"></button>
+                            </div>
+                            <pre x-show="openResp[op.opId + r.status]" class="mt-1.5 rounded bg-slate-50 dark:bg-slate-800 p-2.5 text-[11px] font-mono text-slate-700 dark:text-slate-300 overflow-x-auto" x-text="pretty(r.sample)"></pre>
+                          </div>
+                        </template>
+                      </div>
+                      <!-- the operation's lifecycle: its transition classes, refusals and errors under each state -->
+                      <template x-if="lc && lc.ops && lc.ops[op.opId]">
+                        <details class="mt-3 rounded-lg border border-indigo-100 dark:border-indigo-900/60" :data-lc-op="op.opId">
+                          <summary class="px-2.5 py-1.5 cursor-pointer text-xs">
+                            <span class="font-semibold text-indigo-600 dark:text-indigo-400">lifecycle</span>
+                            <span class="ml-1 text-slate-500 dark:text-slate-400"
+                                  x-text="lc.ops[op.opId].command + ' · ' + lc.ops[op.opId].tuples + ' tuples · ' + lc.ops[op.opId].refusals + ' refusals · ' + lc.ops[op.opId].errors + ' errors'"></span>
+                            <span x-show="lc.ops[op.opId].req" class="ml-1 text-[10px] rounded px-1.5 py-0.5 bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400 font-mono" x-text="lc.ops[op.opId].req"></span>
+                          </summary>
+                          <div class="px-2.5 pb-2 space-y-1">
+                            <template x-for="st in lc.ops[op.opId].states" :key="st.state">
+                              <details class="rounded border border-slate-100 dark:border-slate-800" :data-lc-op-state="st.state">
+                                <summary class="px-2 py-1 cursor-pointer text-[11px]">
+                                  <span class="font-mono font-semibold text-slate-700 dark:text-slate-300" x-text="'from ' + st.state"></span>
+                                  <span class="ml-1 text-slate-400" x-text="st.tuples.length + ' tuples · ' + (st.refusals.length + st.errors.length) + ' refusal/error rows'"></span>
+                                </summary>
+                                <div class="px-2 pb-1.5 text-[11px] space-y-1">
+                                  <template x-for="row in st.tuples" :key="row.t.id">
+                                    <div class="py-1 border-t border-slate-100 dark:border-slate-800" :data-lc-tuple="row.t.id">
+                                      <span class="text-[10px] rounded px-1.5 py-0.5" :class="outcomeClass('applied')">applied</span>
+                                      <span class="font-mono text-slate-700 dark:text-slate-300" x-text="row.t.argsClass + '  ' + row.t.fromStates.join('/') + ' → ' + row.t.toStates.join('/')"></span>
+                                      <span class="ml-1 text-[10px] rounded px-1.5 py-0.5 bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400" x-text="row.t.grade"></span>
+                                      <span x-show="row.t.witness" class="text-[10px] rounded px-1.5 py-0.5 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300" x-text="'witness: ' + row.t.witness"></span>
+                                      <span class="ml-1 font-mono text-slate-400" x-text="row.t.id"></span>
+                                      <div class="text-slate-500 dark:text-slate-400 break-all"
+                                           x-text="'members ' + row.t.members.map((m) => m.from + '→' + m.to).join(', ') + (row.t.differing.length ? ' · differing ' + row.t.differing.join(', ') : '') + (row.t.maskedFields.length ? ' · masked ' + row.t.maskedFields.join(', ') : '') + (row.t.sequences.length ? ' · sequences ' + row.t.sequences.join(', ') : '')"></div>
+                                      <div x-show="row.values" class="text-slate-400 break-all" x-text="row.values"></div>
+                                    </div>
+                                  </template>
+                                  <template x-for="row in st.refusals.concat(st.errors)" :key="row.r.stage + (row.r.reason || row.r.message)">
+                                    <div class="py-1 border-t border-slate-100 dark:border-slate-800">
+                                      <span class="text-[10px] rounded px-1.5 py-0.5" :class="outcomeClass(row.r.status)" x-text="row.r.status"></span>
+                                      <span class="text-slate-600 dark:text-slate-300 break-all" x-text="outcomeText(row.r) + ' · ×' + row.r.count + ' · from ' + row.r.fromStates.join('/')"></span>
+                                      <div x-show="row.values" class="text-slate-400 break-all" x-text="row.values"></div>
+                                    </div>
+                                  </template>
+                                </div>
+                              </details>
+                            </template>
+                          </div>
+                        </details>
+                      </template>
+                    </div>
+                  </template>
+                </section>
+              </template>
+
+              <!-- the lifecycle pane's two lists -->
+              <template x-if="lc && !lc.unavailable">
+                <section class="mb-6 grid md:grid-cols-2 gap-3" data-ka-section="checks.api.lifecycle-lists">
+                  <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-3" data-lc-model-only>
+                    <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-1" x-text="'model-only commands (' + lc.modelOnly.length + ')'"></div>
+                    <p x-show="!lc.modelOnly.length" class="text-xs text-slate-400">none — every command joins an operation</p>
+                    <template x-for="m in lc.modelOnly" :key="m.command">
+                      <div class="text-xs font-mono text-slate-700 dark:text-slate-300" x-text="m.command + ' — ' + m.reason + (m.operation ? ' (' + m.operation + ')' : '')"></div>
+                    </template>
+                  </div>
+                  <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-3" data-lc-unmodelled>
+                    <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-1" x-text="'behaviour-unmodelled operations (' + lc.unmodelled.length + ')'"></div>
+                    <p x-show="!lc.unmodelled.length" class="text-xs text-slate-400">none — every operation is modelled</p>
+                    <template x-for="u in lc.unmodelled" :key="u">
+                      <div class="text-xs font-mono text-slate-700 dark:text-slate-300" x-text="u"></div>
+                    </template>
+                  </div>
+                </section>
+              </template>
+
+              <!-- component schemas: the shape + the ready-to-use assertion template (spec-locked, D192a) -->
+              <section x-show="apiModel.components && apiModel.components.length" class="mb-8" data-ka-section="checks.api.components">
+                <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-2">schemas</h2>
+                <template x-for="c in apiModel.components" :key="c.name">
+                  <div class="mb-4 rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+                    <div class="flex items-center gap-2">
+                      <span class="font-mono text-sm font-semibold text-slate-900 dark:text-slate-100" x-text="c.name"></span>
+                      <button type="button" @click="openComp[c.name] = !openComp[c.name]"
+                              class="ml-auto text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline"
+                              x-text="openComp[c.name] ? 'hide' : 'show'"></button>
+                    </div>
+                    <div x-show="openComp[c.name]" class="mt-2 grid md:grid-cols-2 gap-3">
+                      <div>
+                        <div class="text-[10px] uppercase tracking-wide text-slate-400 mb-1">sample</div>
+                        <pre class="rounded-lg bg-slate-50 dark:bg-slate-800 p-3 text-[11px] font-mono text-slate-700 dark:text-slate-300 overflow-x-auto" x-text="pretty(c.sample)"></pre>
+                      </div>
+                      <div>
+                        <div class="text-[10px] uppercase tracking-wide text-slate-400 mb-1">
+                          assertion template — <span class="font-mono normal-case">spec.schema('<span x-text="c.name"></span>')</span></div>
+                        <pre class="rounded-lg bg-slate-50 dark:bg-slate-800 p-3 text-[11px] font-mono text-slate-700 dark:text-slate-300 overflow-x-auto" x-text="pretty(c.template)"></pre>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </section>
+            </div>
+          </template>
+          <p x-show="!apiModel" class="text-sm text-slate-400 py-8 text-center">loading the API model…</p>
+        </div>
+
+        <!-- CodeMirror mount (the Source tab for .md and specs; the only view for any other text file) -->
+        <div id="cm-host" x-show="!selectedBinary && (!(isMd() || isSpec()) || viewMode==='source')" class="flex-1 min-h-0 overflow-auto bg-white dark:bg-slate-900" data-ka-section="checks.editor">
+          <div id="cm-loading" class="p-4 text-xs text-slate-400 italic">Loading editor…</div>
+        </div>
+
+        <!-- run output -->
+        <div x-show="output" class="border-t border-slate-200 dark:border-slate-700" data-ka-section="checks.output">
+          <div class="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 flex items-center justify-between">
+            <span>run output</span>
+            <button @click="output=''" class="text-indigo-600 dark:text-indigo-400 hover:underline normal-case">clear</button>
+          </div>
+          <pre class="max-h-56 overflow-auto px-4 pb-3 text-xs font-mono text-slate-700 dark:text-slate-300" x-text="output"></pre>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- the shared run-kickoff modal — opened by "New run ▶" and the Run ▶ split button's ▾ -->
+  <th:block th:insert="~{components/run-modal :: runModal}"></th:block>
+
+  <!-- CodeMirror 6 mount (module) — exposes window.cmEditor; emits 'cm-dirty' on edit (editor.html recipe). -->
+  <script type="module">
+    import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, dropCursor,
+             highlightActiveLineGutter,
+             EditorState, Compartment,
+             javascript,
+             autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap,
+             defaultKeymap, history, historyKeymap, indentWithTab,
+             foldGutter, foldKeymap, indentOnInput, bracketMatching, defaultHighlightStyle,
+             syntaxHighlighting, StreamLanguage, LanguageSupport, HighlightStyle, tags as t,
+             oneDark } from "/pub/vendor/cm.js";
+
+    const basicSetup = [
+      lineNumbers(), highlightActiveLineGutter(), foldGutter(), drawSelection(), dropCursor(),
+      EditorState.allowMultipleSelections.of(true), indentOnInput(),
+      bracketMatching(), closeBrackets(), highlightActiveLine(),
+      keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap]),
+      history(),
+    ];
+
+    // ── Karate/Gherkin language (line-by-line StreamLanguage) — a .feature is NOT pure Gherkin: steps
+    //    embed match markers ('#string', #(expr)), <placeholders> + inline JSON. Picked by extension. ──
+    const KARATE_KEYWORDS = ['Feature', 'Scenario Outline', 'Scenario', 'Background', 'Examples'];
+    const STEP_KEYWORDS   = ['Given', 'When', 'Then', 'And', 'But', '*'];
+    const startsWithAny = (s, list) => { for (const k of list) if (s.indexOf(k) === 0) return k; return null; };
+    const karateStream = StreamLanguage.define({
+      startState() { return { inDoc: false }; },
+      token(stream, state) {
+        if (state.inDoc) {
+          if (stream.match('"""')) { state.inDoc = false; return 'string-2'; }
+          stream.next(); return 'string-2';
+        }
+        if (stream.match('"""')) { state.inDoc = true; return 'string-2'; }
+        if (stream.sol()) {
+          stream.eatSpace();
+          if (stream.match('#')) { stream.skipToEnd(); return 'comment'; }
+          if (stream.match('@')) { stream.eatWhile(/[\w-]/); return 'meta'; }
+          const rest = stream.string.slice(stream.pos);
+          const kw = startsWithAny(rest, KARATE_KEYWORDS);
+          if (kw) { stream.match(kw); stream.eat(':'); return 'keyword'; }
+          const step = startsWithAny(rest, STEP_KEYWORDS);
+          if (step && (rest[step.length] === ' ' || rest.length === step.length)) { stream.match(step); return 'def'; }
+        }
+        if (stream.match(/^"([^"\\]|\\.)*"/)) return 'string';
+        if (stream.match(/^'([^'\\]|\\.)*'/)) return 'string';
+        if (stream.match(/^[0-9]+(\.[0-9]+)?/)) return 'number';
+        if (stream.match(/^#[a-zA-Z]+/)) return 'atom';
+        if (stream.match(/^\$[\w.]+/)) return 'variableName';
+        if (stream.match(/^#\([^)]*\)/)) return 'variableName';
+        stream.next();
+        return null;
+      },
+      languageData: { commentTokens: { line: '#' } },
+    });
+    const karateHighlight = HighlightStyle.define([
+      { tag: t.keyword,           color: '#a626a4', fontWeight: '600' },
+      { tag: t.definitionKeyword, color: '#4078f2', fontWeight: '600' },
+      { tag: t.string,            color: '#50a14f' },
+      { tag: t.special(t.string), color: '#a45a3a' },
+      { tag: t.atom,              color: '#c18401' },
+      { tag: t.variableName,      color: '#e45649' },
+      { tag: t.number,            color: '#986801' },
+      { tag: t.lineComment,       color: '#a0a1a7', fontStyle: 'italic' },
+      { tag: t.meta,              color: '#56b6c2' },
+    ]);
+    const karate = () => new LanguageSupport(karateStream, [syntaxHighlighting(karateHighlight)]);
+    // .feature → Karate/Gherkin; everything else (.js/.json/.txt/.md-source) → JavaScript (a sane default)
+    const langFor = (name) => (name && name.endsWith('.feature')) ? karate() : javascript();
+    const langConf = new Compartment();
+
+    // theme tracks the shell's data-theme (light = the default highlight style, dark = oneDark) and
+    // RE-THEMES LIVE on toggle — the highlight style lives in this compartment, not basicSetup
+    const themeConf = new Compartment();
+    const isDark = () => document.documentElement.getAttribute('data-theme') === 'dark';
+    const themeExt = () => isDark() ? oneDark : syntaxHighlighting(defaultHighlightStyle, { fallback: true });
+
+    const loading = document.getElementById('cm-loading');
+    if (loading) loading.remove();
+
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: '',
+        extensions: [
+          basicSetup,
+          themeConf.of(themeExt()),
+          keymap.of([indentWithTab]),
+          langConf.of(javascript()),
+          autocompletion(),
+          // a PROGRAMMATIC setDoc (opening a file) is also a docChanged — it must not mark the
+          // editor dirty; only user edits do. The suppression is a ONE-SHOT flag consumed here.
+          EditorView.updateListener.of(v => {
+            if (!v.docChanged) return;
+            if (window.cmEditor && window.cmEditor.loading) { window.cmEditor.loading = false; return; }
+            window.dispatchEvent(new CustomEvent('cm-dirty'));
+          }),
+          EditorView.theme({
+            '&': { height: '100%', fontSize: '13px' },
+            '.cm-scroller': { fontFamily: '"JetBrains Mono", ui-monospace, monospace' },
+          }),
+        ],
+      }),
+      parent: document.getElementById('cm-host'),
+    });
+
+    new MutationObserver(() => view.dispatch({ effects: themeConf.reconfigure(themeExt()) }))
+      .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+    window.cmEditor = {
+      loading: false,
+      getDoc: () => view.state.doc.toString(),
+      setLang: (name) => view.dispatch({ effects: langConf.reconfigure(langFor(name)) }),
+      setDoc: (text, name) => {
+        if (name !== undefined) window.cmEditor.setLang(name);
+        if ((text || '') === view.state.doc.toString()) return;
+        window.cmEditor.loading = true;
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text || '' } });
+      },
+    };
+    window.dispatchEvent(new CustomEvent('cm-ready'));
+  </script>
+
+  <!-- .md-body styling is in the compiled /pub/tailwind.css (etc/web-assets/input.css) -->

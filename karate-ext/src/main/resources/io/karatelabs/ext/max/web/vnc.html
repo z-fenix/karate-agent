@@ -1,0 +1,9 @@
+<!--/* The full-page browser watch view (D88, SSR shell + a thin client island) — /vnc. Wraps the
+     noVNC client (a third-party static app, NOT a markup page) in the console shell, so every
+     "watch the browser" link in the app is a normal, clean app URL. Single-port (D103): the noVNC
+     app is served same-origin under /novnc/* and its websockify WebSocket tunnels through the
+     serve port too — no second exposed port, and TLS/reverse-proxy fronting stays single-origin. */-->
+<div class="flex flex-col" style="height:calc(100vh - 3.3rem)">
+  <iframe id="ka-vnc" class="flex-1 w-full bg-slate-900" title="noVNC — container Chrome"
+          src="/novnc/vnc.html?autoconnect=true&password=karate&resize=scale&path=novnc/websockify"></iframe>
+</div>

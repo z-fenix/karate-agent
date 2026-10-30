@@ -1,0 +1,61 @@
+<!--/* One card block on the API test page (manual/tests/api.html): a call with its checks and remembered values,
+     a step said in words with its code folded, a lone check, or a data table (an Outline's rows, each a link to the page on
+     that row). Takes `b`, one of the page's blocks. A call of the flow's own carries Try this call again; `tried[k]`
+     is what its last Send returned, shown over the run's. */-->
+<th:block th:fragment="apiCard">
+  <div th:if="b.kind == 'call'" class="m-card m-api-call" data-ka-section="manual.tests.api.call" role="button" tabindex="0"
+       th:attr="'data-m-call': b.key, 'data-scenario': b.shared ? null : scenario, 'data-background': b.shared ? 'true' : null, 'data-step': b.step, 'data-end': b.end, 'aria-current': b.key == selected ? 'true' : 'false'"
+       x-data="{ k: null }" x-init="k = $el.dataset.mCall"
+       :aria-current="sel === $el.dataset.mCall ? 'true' : 'false'" @click="pick($el.dataset.mCall)"
+       @keydown.enter.prevent="pick($el.dataset.mCall)" @keydown.space.prevent="pick($el.dataset.mCall)">
+    <span class="m-api-call-head">
+      <span class="m-api-n" th:text="b.n">1</span>
+      <span class="m-api-call-title" th:text="b.title">Sign in</span>
+      <span class="m-api-call-state" x-show="!tried[k]"><span th:class="'m-dot m-dot--sm ' + b.dot"></span><span th:text="b.state">passed</span></span>
+      <span class="m-api-call-state" x-show="tried[k]" style="display: none"><span class="m-dot m-dot--sm" :class="dotClass(tried[k] &amp;&amp; tried[k].dot)"></span><span x-text="tried[k] ? 'sent again: ' + tried[k].word : ''"></span></span>
+    </span>
+    <span class="m-api-req"><span class="m-api-method" th:text="b.method">POST</span><span class="m-api-target" th:text="b.target">/demo/api/login</span></span>
+    <span th:if="b.sends" class="m-api-small" th:text="'Sends ' + b.sends">Sends {username, password}</span>
+    <details th:if="b.params" class="m-api-fold m-api-small"><summary th:text="b.params.text">Query: page</summary><pre class="m-api-code" th:text="b.params.code">page = 1</pre></details>
+    <details th:if="b.headers" class="m-api-fold m-api-small"><summary th:text="b.headers.text">Headers: Authorization</summary><pre class="m-api-code" th:text="b.headers.code">Authorization = 'Bearer ' + token</pre></details>
+    <ul th:if="b.checks.length" class="m-api-lines">
+      <li th:each="ck: b.checks" th:attr="'data-m-check': ck.step"><span th:class="'m-dot m-dot--xs ' + ck.dot" :class="tried[k] ? dotClass(triedCheck(k, $el).dot) : {}"></span><span><span th:text="ck.text">Status is 200 OK</span><span th:if="ck.error" class="m-api-err" th:text="ck.error" x-show="!tried[k]">expected</span><span class="m-api-err" style="display: none" x-show="tried[k] &amp;&amp; triedCheck(k, $el).error" x-text="tried[k] ? triedCheck(k, $el).error : ''"></span></span></li>
+    </ul>
+    <span th:if="!b.checks.length" class="m-api-small">Checks nothing about this call.</span>
+    <span th:if="b.remembers.length" class="m-api-chips"><span th:each="v: b.remembers" class="m-chip" th:text="v">Remembers token</span></span>
+    <span th:if="b.lone" class="m-api-err" th:text="b.error" x-show="!tried[k]">error</span>
+    <span class="m-api-err" style="display: none" x-show="tried[k] &amp;&amp; tried[k].lone" x-text="tried[k] ? tried[k].lone : ''"></span>
+    <span th:unless="b.shared" class="m-api-try">
+      <button type="button" class="m-btn m-btn--ghost m-api-try-btn" disabled="disabled" th:attr="'style': live &amp;&amp; live.warm ? null : 'display: none'"
+              x-show="ready()" :disabled="!!busy" @click.stop="tryCall($el.closest('[data-m-call]'))" @keydown.enter.stop="" @keydown.space.stop="">
+        <span x-show="busy !== k">Try this call again</span><span x-show="busy === k" style="display: none">Sending…</span>
+      </button>
+      <span class="m-api-next" th:attr="'style': live &amp;&amp; live.next == b.key ? null : 'display: none'" x-show="ready() &amp;&amp; live().next === k">◀ Next call</span>
+    </span>
+    <span class="m-api-err" role="alert" style="display: none" x-show="refusal[k]" x-text="refusal[k]"></span>
+  </div>
+  <div th:if="b.kind == 'advanced' || b.kind == 'check'" class="m-card m-api-locked" th:attr="'data-step': b.key">
+    <span class="m-api-locked-title"><span th:class="'m-dot m-dot--sm ' + b.dot"></span><span th:text="b.title">Sends these headers with every call after it</span></span>
+    <details th:if="b.steps &amp;&amp; b.kind != 'check'" class="m-api-fold"><summary class="m-api-hint">The step as written</summary><pre class="m-api-code" th:text="b.steps.join('\n')">* configure headers = { Accept: 'application/json' }</pre></details>
+    <span th:if="b.error" class="m-api-err" th:text="b.error">error</span>
+  </div>
+  <div th:if="b.kind == 'setup'" class="m-card m-api-locked" th:attr="'data-step': b.key">
+    <span class="m-api-locked-title"><span th:class="'m-dot m-dot--sm ' + b.dot"></span><span th:text="b.title">Sets up the calls that follow</span></span>
+    <span th:each="line: b.says" class="m-api-small" th:text="line">Calls go to the address the project calls demoUrl</span>
+    <details th:if="b.code" class="m-api-fold"><summary class="m-api-hint">As written</summary><pre class="m-api-code" th:text="b.code">Authorization = 'Bearer ' + token</pre></details>
+    <span th:if="b.error" class="m-api-err" th:text="b.error">error</span>
+  </div>
+  <div th:if="b.kind == 'table'" class="m-card m-api-locked">
+    <span class="m-api-locked-title" th:text="b.title">Examples</span>
+    <p th:if="b.computed" class="m-api-note">These rows are worked out when the test runs; the run report shows each one.</p>
+    <div th:unless="b.computed" class="m-api-examples-wrap">
+      <table class="m-api-table m-api-examples">
+        <thead><tr><th th:if="b.pick">Row</th><th th:each="h: b.head" th:text="h">col</th></tr></thead>
+        <tbody><tr th:each="r: b.rows" th:attr="'data-m-row': r.row, 'aria-current': r.current">
+          <td th:if="b.pick"><a class="m-link m-api-rowlink" th:href="r.href" th:attr="'title': 'Show this row · ' + r.state"><span th:class="'m-dot m-dot--xs ' + r.dot"></span><span th:text="r.row">0</span><span th:if="r.notrun" class="m-api-rownote">not run</span></a></td>
+          <td th:each="v: r.cells" th:text="v">v</td>
+        </tr></tbody>
+      </table>
+    </div>
+  </div>
+</th:block>

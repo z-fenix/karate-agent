@@ -1,0 +1,236 @@
+<!--/* Manual mode — Tests (/manual/tests): every test the project can REPLAY, each one row, whichever engine
+     runs it. A row opens the test's own page, /manual/tests/edit?test=<project-relative path>, where it is read,
+     run and changed; ?test=<path> (or ?check=<name>, the check spelling) on this route stays for links and
+     bookmarks, and lands there.
+     Reads, all server-side: runner.tests() (both engines, what each artifact declares, and its run history —
+     never re-derived here) · requirement.list() (the requirement behind a linked stamp) · harness.runs() (a
+     test in flight) · runner.tests({kind: 'postman'}) (the collections, each opening /manual/tests/postman).
+     runner.tests() and harness.runs() go through request.cache ('manual.tests', 'manual.runs'),
+     shared with any other read of them in the request; the rail counts the same paths off rail.tests().
+     Actions: Run / Run all kick off over /api/eval (run-modal.js: kaKickSuite) and land on /manual/runs/<id>;
+     Link a requirement opens the test's page at its criteria. */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'Tests · Karate Agent');
+  (function () {
+    function safe(fn) { try { return fn(); } catch (e) { return null; } }
+    function isList(v) { return v != null && v.length != null && typeof v != 'string'; }
+    var ago = kaWords.ageInWords, stampId = kaWords.stampId, fileName = kaWords.fileOf;
+    function testPage(path) { return '/manual/tests/edit?test=' + encodeURIComponent(path); }
+
+    // ?test=<path> names a test outright; ?check=<name> is the check spelling other screens link with
+    var wanted = request.param('test');
+    wanted = wanted ? String(wanted).replace(/^\/+/, '') : null;
+    if (!wanted && request.param('check')) {
+      var byName = String(request.param('check')).replace(/^\/+/, '').replace(/^checks\//, '');
+      wanted = 'checks/' + (/\.js$/.test(byName) ? byName : byName + '.js');
+    }
+    if (wanted) context.redirect(testPage(wanted));
+
+    var tests = request.cache('manual.tests', function () { return runner.tests(); });
+    if (!isList(tests)) tests = [];
+
+    // the requirement behind a stamp: every criterion (and every criterion-less requirement) by id
+    var reqs = safe(function () { return requirement.list(); });
+    var reqOf = {}, labelOf = {};
+    for (var r = 0; isList(reqs) && r < reqs.length; r++) {
+      var cs = isList(reqs[r].criteria) ? reqs[r].criteria : [];
+      for (var c = 0; c < cs.length; c++) {
+        reqOf[stampId(cs[c].stamp)] = reqs[r].id;
+        labelOf[stampId(cs[c].stamp)] = reqs[r].title + ' · criterion ' + cs[c].id;
+      }
+      reqOf[reqs[r].id] = reqs[r].id;
+      labelOf[reqs[r].id] = String(reqs[r].title);
+    }
+
+    // a test is in flight when a running run replays it (a check run, or a member of a running set)
+    var runs = request.cache('manual.runs', function () { return harness.runs(); });
+    var busy = {};
+    var rs = runs && isList(runs.runs) ? runs.runs : [];
+    for (var k = 0; k < rs.length; k++) {
+      if (rs[k].status != 'running') continue;
+      if (rs[k].check) busy['checks/' + String(rs[k].check).replace(/^\/+/, '').replace(/^checks\//, '')] = true;
+      var sel = isList(rs[k].selector) ? rs[k].selector : [];
+      for (var j = 0; j < sel.length; j++) busy[String(sel[j])] = true;
+    }
+
+    var rows = [];
+    var members = [];
+    for (var n = 0; n < tests.length; n++) {
+      var t = tests[n];
+      var path = String(t.path);
+      var feature = t.kind == 'feature';
+      members.push(path);
+      var ids = isList(t.req) ? t.req : [];
+      var state = busy[path] ? 'inflight' : (t.lastStatus ? String(t.lastStatus) : 'notrun');
+      rows.push({
+        path: path,
+        title: t.title ? t.title : fileName(path),
+        titled: t.title ? true : null,
+        description: t.description ? t.description : null,
+        // a link reads as the requirement's title; its id stays on hover
+        verifies: ids.length ? (labelOf[ids[0]] || ids[0]) : null,
+        verifiesId: ids.length ? String(ids[0]) : null,
+        verifiesHref: ids.length ? '/manual/coverage#req-' + encodeURIComponent(reqOf[ids[0]] || ids[0].split('/')[0]) : null,
+        more: ids.length > 1 ? '+' + (ids.length - 1) : null,
+        // only a check is linked from here — a feature carries its links in its own tags
+        linkable: (!feature && !ids.length) ? true : null,
+        dot: 'm-dot--' + state,
+        state: state == 'inflight' ? 'running now' : state == 'passed' ? 'passed' : state == 'failed' ? 'failed' : 'never run',
+        age: state == 'inflight' ? 'running now'
+            : t.lastStatus ? (t.lastStatus + ' ' + (ago(t.lastRunAt) || '')).trim() : 'never run',
+        href: testPage(path),
+        api: feature ? '/manual/tests/api?test=' + encodeURIComponent(path) : null
+      });
+    }
+    _.rows = rows;
+    _.runAll = members.length ? JSON.stringify(members) : null;
+
+    // the Postman collections: each opens on its own page, where it is edited and run
+    var cols = request.cache('manual.postman', function () { return runner.tests({ kind: 'postman' }); });
+    _.collections = [];
+    for (var p = 0; isList(cols) && p < cols.length; p++) {
+      var col = cols[p];
+      var st = col.lastStatus ? String(col.lastStatus) : 'notrun';
+      _.collections.push({ path: String(col.path), title: col.title ? String(col.title) : fileName(String(col.path)),
+        dot: 'm-dot--' + st, state: st == 'passed' ? 'passed' : st == 'failed' ? 'failed' : 'never run',
+        age: col.lastStatus ? (col.lastStatus + ' ' + (ago(col.lastRunAt) || '')).trim() : 'never run',
+        href: '/manual/tests/postman?file=' + encodeURIComponent(String(col.path)) });
+    }
+
+  })();
+</script>
+<style>
+  .m-tests-body { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; padding-top: 28px; min-height: 0; }
+  /* the list is one card; its rows span it and the hairline between them stays inset */
+  .m-tests-list { min-width: 0; align-self: start; padding: 6px 0; overflow: hidden; }
+  .m-tests-list > .m-empty { background: none; border: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .m-tests-row {
+    position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 18px;
+    align-items: start; padding: 18px 24px;
+  }
+  .m-tests-row + .m-tests-row {
+    background-image: linear-gradient(var(--m-line), var(--m-line)); background-repeat: no-repeat;
+    background-size: calc(100% - 48px) 1px; background-position: 24px 0;
+  }
+  .m-tests-row:hover { background-color: var(--m-hover); }
+  .m-tests-row > .m-dot { margin-top: 6px; }
+  .m-tests-main { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+  .m-body a.m-tests-pick, .m-body a.m-tests-pick:hover { color: var(--m-ink); font-size: 16.5px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+  /* the whole row opens the test; its own links and actions sit above that */
+  .m-tests-pick::after { content: ''; position: absolute; inset: 0; }
+  .m-tests-row .m-tests-over { position: relative; z-index: 1; }
+  .m-tests-desc {
+    font-size: 13.5px; line-height: 1.5; color: var(--m-text-2); overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+  }
+  .m-tests-meta { display: flex; align-items: baseline; gap: 6px 16px; flex-wrap: wrap; font-size: 13px; color: var(--m-text-2); }
+  .m-tests-file { font-size: 12.5px; color: var(--m-text-3); overflow-wrap: anywhere; }
+  .m-tests-stamp { font-size: 13px; font-weight: 500; }
+  .m-tests-end { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; padding-top: 1px; }
+  .m-tests-age { font-size: 13px; color: var(--m-text-2); white-space: nowrap; }
+  .m-tests-age--inline { display: none; }
+
+  .m-tests-err { display: flex; align-items: baseline; gap: 10px; margin: 14px 0 0; font-size: 13.5px; color: var(--m-ink); overflow-wrap: anywhere; }
+  .m-tests-err .m-dot { align-self: center; }
+  .m-tests-err[hidden] { display: none; }
+
+  @media (max-width: 760px) {
+    .m-tests-end .m-tests-age { display: none; }
+    .m-tests-age--inline { display: inline; }
+    .m-tests-row { padding: 16px 18px; }
+    .m-tests-row + .m-tests-row { background-size: calc(100% - 36px) 1px; background-position: 18px 0; }
+  }
+</style>
+<section class="m-page" data-ka-section="manual.tests">
+  <header class="m-head">
+    <div class="m-head-text">
+      <h1 class="m-title">Tests</h1>
+      <p class="m-sub">Written once, replayed for free.</p>
+    </div>
+    <div class="m-head-end">
+      <button th:if="runAll" type="button" class="m-btn m-btn--ghost" th:attr="'data-m-run-all': runAll">Run all tests</button>
+      <a class="m-btn m-btn--ghost" href="/manual/tests/api">New API test</a>
+      <a class="m-btn" href="/manual/tests/new">New test</a>
+    </div>
+  </header>
+
+  <p class="m-tests-err" id="m-tests-err" role="alert" hidden><span class="m-dot m-dot--failed"></span><span data-m-err-text></span></p>
+
+  <div class="m-tests-body">
+    <div class="m-tests-list m-card" data-ka-section="manual.tests.list" data-m-live>
+      <div th:if="rows.length == 0 &amp;&amp; collections.length == 0" class="m-empty">
+        <div class="m-empty-title">No tests yet</div>
+        <div class="m-empty-sub">Do the flow once in the live browser. The AI turns it into a test you can replay for free.
+          To test an API instead, tell the assistant its address and what it should do.</div>
+        <div><a class="m-link m-link--strong" href="/manual/tests/new">New test</a> · <a class="m-link m-link--strong" href="/manual/tests/api">New API test</a></div>
+      </div>
+      <div th:each="t: rows" class="m-tests-row" th:attr="'data-m-test': t.path">
+        <span th:class="'m-dot ' + t.dot" th:attr="'title': t.state"></span>
+        <div class="m-tests-main">
+          <a class="m-tests-pick" th:href="t.href" th:text="t.title">Title</a>
+          <span th:if="t.description" class="m-tests-desc" th:text="t.description">What it checks</span>
+          <div class="m-tests-meta">
+            <span th:if="t.titled" class="m-tests-file" th:text="t.path">checks/x.js</span>
+            <span th:if="t.verifies">verifies <a class="m-tests-over m-tests-stamp" th:href="t.verifiesHref" th:text="t.verifies" th:attr="'title': t.verifiesId">REQ/1</a><span th:if="t.more" th:text="' ' + t.more"></span></span>
+            <a th:if="t.linkable" class="m-tests-over m-link--strong" th:href="t.href + '#proves'">Link a requirement</a>
+            <a th:if="t.api" class="m-tests-over" th:href="t.api">Open as API test</a>
+            <span class="m-tests-age m-tests-age--inline" th:text="t.age">never run</span>
+          </div>
+        </div>
+        <div class="m-tests-end">
+          <button type="button" class="m-row-act m-tests-over" th:attr="'data-m-run': t.path">Run</button>
+          <span class="m-tests-age" th:text="t.age">never run</span>
+        </div>
+      </div>
+      <div th:each="c: collections" class="m-tests-row" th:attr="'data-m-collection': c.path">
+        <span th:class="'m-dot ' + c.dot" th:attr="'title': c.state"></span>
+        <div class="m-tests-main">
+          <a class="m-tests-pick" th:href="c.href" th:text="c.title">Acme Orders</a>
+          <div class="m-tests-meta">
+            <span class="m-tests-file" th:text="'Postman collection · ' + c.path">postman/orders.postman_collection.json</span>
+            <a class="m-tests-over" th:href="c.href">Open the collection</a>
+            <span class="m-tests-age m-tests-age--inline" th:text="c.age">never run</span>
+          </div>
+        </div>
+        <div class="m-tests-end">
+          <span class="m-tests-age" th:text="c.age">never run</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</section>
+<script src="/pub/run-modal.js" ka:nocache="true"></script>
+<script>
+  function kaTestsError(e) {
+    var box = document.getElementById('m-tests-err');
+    if (!box) { alert(e); return; }
+    box.querySelector('[data-m-err-text]').textContent = String(e && e.message ? e.message : e).replace(/^Error: /, '');
+    box.hidden = false;
+    box.scrollIntoView({ block: 'nearest' });
+  }
+
+  // One delegated handler: the list re-renders in place on run events (data-m-live).
+  (function () {
+    function land(runId) { location.href = runId ? '/manual/runs/' + encodeURIComponent(runId) : '/manual/runs'; }
+    async function act(btn, label, work) {
+      if (btn.disabled) return;
+      var was = btn.textContent;
+      btn.disabled = true; btn.textContent = label;
+      try { await work(); }
+      catch (e) { kaTestsError(e); btn.disabled = false; btn.textContent = was; }
+    }
+    document.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-m-run],[data-m-run-all]');
+      if (!b) return;
+      e.preventDefault();
+      if (b.hasAttribute('data-m-run')) {
+        // a replay is a one-member set on the suite lane: no AI; the run video is on, as every Manual replay's is
+        act(b, 'Starting…', async () => land((await kaKickSuite([b.getAttribute('data-m-run')], { async: true, video: true })).runId));
+      } else if (b.hasAttribute('data-m-run-all')) {
+        act(b, 'Starting…', async () => land((await kaKickSuite(JSON.parse(b.getAttribute('data-m-run-all')), { async: true, video: true })).runId));
+      }
+    });
+  })();
+</script>

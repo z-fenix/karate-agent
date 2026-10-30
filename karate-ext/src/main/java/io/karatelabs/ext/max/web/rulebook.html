@@ -1,0 +1,1911 @@
+<!--/* /rulebooks/{name} — the rulebook-sim + diff editor, console v4 (D114 "altitude split"). The v3
+     surfaces (compact flowchart, friendly JsonTable, Rule.table matrix, grid lookup editor) re-home
+     UNCHANGED into a cleaner three-region layout; the engine (Rule.table/explore/diagram) is untouched.
+
+     Regions (split by ALTITUDE):
+       LEFT      = Scenarios rail (unchanged)
+       CENTER    = scenario-scoped, two columns `Input | Result`:
+                     Input  = the schema-driven form (needs vertical height)
+                     Result = Audit over Output, stacked (the per-run surfaces)
+                   a vertical splitter (centerSplit) divides them; Run feeds Result.
+       RIGHT     = the Reference panel — rulebook-scoped, a DOCKABLE right panel (docked column ·
+                   collapsed rail · full-screen). ONE slot at a time, switchable:
+                     lookup (default) · outline · code · diagram · scenario-coverage (mini)
+                   Two escape hatches: ⤢ Scenario Coverage (the full transposed decision table) and
+                   ⛶ Combo (full-screen outline | diagram | code, the IDE deep-dive).
+
+     SSR (D88): the full snapshot renders into the #rulebook-bootstrap island (incl. the sha-keyed
+     diagram); zero data calls on load. Every data call is on the /ui/ markup channel (D98 — never
+     /api/eval). LAYOUT persists per-browser via kaPrefs (rb.* keys, D114); SELECTION +
+     editsBySc stay in-memory (a reload is a clean slate, save-then-run flushes dirty surfaces). */-->
+<script ka:scope="global">
+  request.pathMatches('/rulebooks/{name}');
+  var rbName = request.pathParams.name;
+  // SSR bootstrap (D88): the full snapshot renders into a JSON island — zero data calls on page
+  // load. The diagram rides along (D111e: render is ~5ms; sha-keyed refresh after saves).
+  var rb = rule.load(rbName);
+  var rbDiagram = rb && rb.error ? null : rule.diagram(rbName);
+  // the Rule.check triage rides along in the SSR island too (the Health slot) — the two mechanical
+  // fixes side by side: notused (add test data) vs notreachable (fix the rule).
+  var rbCheck = rb && rb.error ? null : rule.check(rbName);
+  // cell coverage (D326) — only a book with file tables has cells to count
+  var rbCells = rb && !rb.error && rb.tables && rb.tables.length ? rule.cells(rbName) : null;
+  // the latest premium-match ingest per sheet (D328(g)) — the breadcrumb's match line, only when one exists
+  var rbMatch = rb && !rb.error ? rule.match(rbName) : null;
+  var rbMatchSheets = rbMatch && rbMatch.sheets ? rbMatch.sheets : [];
+  _.rbName = rbName;
+  _.rb = rb;
+  _.rbDiagram = rbDiagram;
+  _.rbCheck = rbCheck;
+  _.rbCells = rbCells;
+  _.rbMatchSheets = rbMatchSheets;
+  _.rbError = rb && rb.error ? rb.error : null;
+  // per-browser layout prefs (D114): SSR-hydrate the session.ui map so kaPrefs.read returns
+  // the persisted rb.* keys with no GET round-trip / no flash. Read defensively (session is null
+  // until the first kaPrefs write opts the browser in).
+  _.prefs = (session && session.ui) || {};
+  context.setGlobal('pageTitle', rbName + ' · Rules · Karate Agent');
+</script>
+
+<!-- not-found envelope (server-side — an unknown rulebook renders guidance, not a broken page) -->
+<div th:if="rbError" class="max-w-3xl mx-auto px-6 py-10">
+  <div class="rounded-xl border border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 p-5 text-sm text-rose-700 dark:text-rose-300">
+    <div class="font-semibold mb-1">Rulebook not found</div>
+    <div th:text="rbError">error</div>
+    <a href="/rulebooks" class="mt-3 inline-block text-indigo-600 dark:text-indigo-400 hover:underline">← all rules</a>
+  </div>
+</div>
+
+<div th:unless="rbError">
+
+<!--/* per-browser layout prefs island (#prefs-data) — kaPrefs.read hydrates rb.* off this (D114) */-->
+<div ka:island="prefs"/>
+
+<!-- breadcrumb row (its own small Alpine scope — it sits ABOVE the main rulebookPage() x-data root) -->
+<div class="px-4 pt-2 pb-1 flex items-center gap-2 text-sm" x-data="rulebookActions()">
+  <a href="/rulebooks" class="text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400">Rules</a>
+  <span class="text-slate-300 dark:text-slate-600">›</span>
+  <span class="font-semibold text-slate-900 dark:text-slate-100 font-mono" th:text="rbName">name</span>
+  <!--/* D124 context-sensitive "?" — deep-link into the Rules Help dive (the rulebook = schema+calc+scenarios). */-->
+  <a href="/help#rule.rulebook" target="ka-help" rel="noopener" title="What is a rulebook? Open the Help deep-dive"
+     class="inline-flex items-center justify-center w-4 h-4 ml-1 align-middle rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold no-underline hover:ring-1 hover:ring-indigo-400">?</a>
+  <!--/* the premium match (D328(g)): one line off the newest ingest, opening the report on its Match tab */-->
+  <button x-show="matchLine()" x-cloak @click="openReport('match')" :disabled="reportBusy" data-ka-match
+          class="ml-2 text-xs text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
+          title="The latest ingested carrier results against the exported sheet — open the Match tab" x-text="matchLine()"></button>
+  <!--/* open the standalone Rule Analysis report (Coverage · Value Ranges · Rule Check · What-If) in a
+       new tab — generated on demand into the artifact `reports` root, honors the page's karate-theme */-->
+  <button x-cloak @click="openReport()" :disabled="reportBusy || gradeBusy" data-ka-section="rules.analysis"
+          class="ml-auto inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:border-indigo-300 disabled:opacity-50"
+          title="Generate + open the standalone Rule Analysis report (Coverage · Value Ranges · Rule Check · What-If)">
+    <span x-text="reportBusy ? 'Generating…' : 'Analysis report ↗'"></span>
+  </button>
+  <span x-show="reportError" x-cloak x-text="reportError" class="text-xs text-rose-600 dark:text-rose-400"></span>
+  <!--/* run the mutation self-grade, then open the same report on its Mutation tab */-->
+  <button x-cloak @click="selfGrade()" :disabled="reportBusy || gradeBusy" data-ka-section="rules.selfgrade"
+          class="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:border-indigo-300 disabled:opacity-50"
+          title="Seed defects into a copy of the rulebook, grade what its own oracles notice, and open the Analysis report on the Mutation tab">
+    <span x-text="gradeBusy ? 'Grading…' : 'Self-grade ↗'"></span>
+  </button>
+  <span x-show="gradeError" x-cloak x-text="gradeError" class="text-xs text-rose-600 dark:text-rose-400"></span>
+  <!-- reusable "point an LLM at this page" pattern (D120, kaPromptButton in pub/eval.js) — context is THIS
+       rulebook (derived client-side from the path, so the pattern needs no server interpolation). -->
+  <div x-data="kaPromptButton('rule-authoring', {context: `Work on the rulebook ${location.pathname.split('/').pop()} on this server.`})" x-cloak>
+    <button @click="copy()" x-text="label"
+            class="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:border-indigo-300"
+            title="Copy a prompt that points any LLM at this rulebook + the rule-authoring skill — paste it into your AI and it edits the rules for you in plain language.">Copy LLM prompt</button>
+  </div>
+</div>
+
+<!--/* Body — flex regions: LEFT (fixed %) | CENTER (flex-grow) | Reference panel (fixed % docked,
+     a thin rail collapsed). Percent widths are inline so the splitters can mutate them. */-->
+<div x-data="rulebookPage()" x-cloak
+     class="px-4 pb-3 flex"
+     style="height: calc(100vh - 6.2rem); min-height: 30rem;"
+     x-ref="splitRoot">
+
+  <!--/* LEFT — Scenarios pane (unchanged from v2/v3) */-->
+  <aside class="flex flex-col bg-white dark:bg-slate-800 rounded-l-xl border border-slate-200 dark:border-slate-700 overflow-hidden"
+         :style="'flex: 0 0 ' + leftPct + '%'" data-ka-section="rules.scenarios">
+    <div class="px-3 py-2 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2">
+      <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex-1">Scenarios</h2>
+      <button @click="addScenario()"
+              class="text-xs px-2 py-1 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+              title="Add new scenario">＋ New</button>
+      <button x-show="!runAllRunning" @click="runAll()"
+              class="text-xs px-2 py-1 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+              title="Run every scenario (sequential; a failed dot = the calc errored)">▶ All</button>
+      <button x-show="runAllRunning" @click="stopRunAll()"
+              class="text-xs px-2 py-1 rounded border border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950"
+              title="Stop the running batch">■ Stop</button>
+      <button @click="clearAll()"
+              class="text-xs px-2 py-1 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40"
+              :disabled="runAllRunning"
+              title="Clear all run results + dots">✕ Clear</button>
+    </div>
+    <!--/* Run-All summary strip — "failed" here means the CALC ERRORED (rules scenarios carry no
+         expectations; scenario rows are the surface with verdicts) */-->
+    <div x-show="runAllRunning || runAllSummary"
+         class="px-3 py-1.5 border-b border-slate-100 dark:border-slate-700 text-xs bg-slate-50/60 dark:bg-slate-900/40">
+      <div x-show="runAllRunning" class="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+        <span class="inline-block w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></span>
+        <span>Running all…</span>
+        <span class="text-slate-400" x-text="runAllDoneCount + ' / ' + (rb.scenarios ? rb.scenarios.length : 0)"></span>
+      </div>
+      <div x-show="!runAllRunning && runAllSummary" class="flex items-center gap-2">
+        <span class="text-emerald-600 dark:text-emerald-400" x-text="runAllSummary ? '✓ ' + runAllSummary.completed + ' completed' : ''"></span>
+        <span x-show="runAllSummary && runAllSummary.failed > 0"
+              class="text-rose-600 dark:text-rose-400"
+              :title="'failed = the calc errored (parse / runtime / timeout)'"
+              x-text="runAllSummary ? '· ' + runAllSummary.failed + ' calc errors' : ''"></span>
+        <span class="text-slate-400 font-mono"
+              x-text="runAllSummary ? '· ' + runAllSummary.durationMs + 'ms' : ''"></span>
+      </div>
+    </div>
+    <div class="px-3 py-2 border-b border-slate-100 dark:border-slate-700">
+      <input type="text" x-model="search" placeholder="Filter scenarios…"
+             class="w-full px-2 py-1 text-sm rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"/>
+    </div>
+    <ul class="flex-1 overflow-y-auto text-sm">
+      <template x-for="s in filteredScenarios()" :key="s._id">
+        <li class="border-b border-slate-100 dark:border-slate-700">
+          <!--/* Row: click selects (the Results pane follows — retained per-row results);
+               double-click renames inline. Dot: emerald = ran clean, rose = calc error,
+               indigo-pulse = running, grey = unrun. */-->
+          <div class="px-3 py-2 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-900 flex items-center gap-2"
+               :class="selectedId === s._id ? 'bg-indigo-50 dark:bg-indigo-950/40' : ''"
+               @click="select(s._id)"
+               @dblclick="startRename(s)">
+            <template x-if="renamingId !== s._id">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5">
+                  <span class="shrink-0 w-2 h-2 rounded-full" :class="dotClass(s._id)"
+                        :title="dotTitle(s._id)"></span>
+                  <span class="truncate font-medium text-slate-800 dark:text-slate-100"
+                        x-text="s._label || '(unnamed)'"></span>
+                  <span x-show="isScenarioDirty(s)" class="text-amber-500 shrink-0" title="Unsaved changes">●</span>
+                  <span class="flex-1"></span>
+                  <button @click.stop="actionMenuId = (actionMenuId === s._id ? null : s._id)"
+                          class="shrink-0 text-xs px-1.5 py-0.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700"
+                          title="Actions">⋯</button>
+                </div>
+                <div x-show="resultLineFor(s._id)"
+                     class="text-xs font-mono text-slate-500 dark:text-slate-400 truncate"
+                     x-text="resultLineFor(s._id)"></div>
+              </div>
+            </template>
+            <template x-if="renamingId === s._id">
+              <input type="text" x-model="renameDraft" @click.stop
+                     @keydown.enter="commitRename(s)"
+                     @keydown.escape="cancelRename()"
+                     @blur="commitRename(s)"
+                     class="flex-1 px-2 py-0.5 text-sm rounded border border-indigo-400 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                     x-init="$nextTick(() => $el.focus())"/>
+            </template>
+          </div>
+          <!--/* Inline action strip (⋯) */-->
+          <div x-show="actionMenuId === s._id"
+               @click.outside="actionMenuId = null"
+               class="px-3 py-1.5 bg-slate-50 dark:bg-slate-900 border-t border-slate-100 dark:border-slate-700 text-xs flex items-center gap-2">
+            <button @click="duplicate(s); actionMenuId = null"
+                    class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-800">⎘ Duplicate</button>
+            <button @click="confirmDelete(s._id); actionMenuId = null"
+                    class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-rose-50 dark:hover:bg-rose-950 text-rose-700 dark:text-rose-300">✕ Delete</button>
+          </div>
+          <!--/* Inline delete confirmation — no window.confirm */-->
+          <div x-show="deletingId === s._id"
+               class="px-3 py-2 bg-rose-50 dark:bg-rose-950/40 border-t border-rose-200 dark:border-rose-800 text-xs flex items-center gap-2">
+            <span class="flex-1 text-rose-700 dark:text-rose-300">Delete this scenario?</span>
+            <button @click="doDelete(s._id)" class="px-2 py-0.5 rounded bg-rose-600 text-white hover:bg-rose-700">Delete</button>
+            <button @click="deletingId = null" class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600">Cancel</button>
+          </div>
+        </li>
+      </template>
+      <li x-show="filteredScenarios().length === 0"
+          class="px-3 py-6 text-center text-xs text-slate-500 dark:text-slate-400 italic">
+        <span x-text="search ? 'No matches.' : 'No scenarios yet. Click ＋ New.'"></span>
+      </li>
+    </ul>
+  </aside>
+
+  <!--/* LEFT splitter handle — discoverable: 1.5px bar, wide invisible hit zone + grip on hover (D113-a) */-->
+  <div class="relative w-1.5 shrink-0 group">
+    <div class="absolute inset-0 bg-slate-100 dark:bg-slate-900 group-hover:bg-indigo-300 dark:group-hover:bg-indigo-700 transition-colors"
+         :class="draggingLeft ? '!bg-indigo-400 dark:!bg-indigo-600' : ''"></div>
+    <div class="absolute inset-y-0 -left-1.5 -right-1.5 z-20 cursor-col-resize flex items-center justify-center"
+         @mousedown.prevent="startDragLeft($event)">
+      <span class="opacity-0 group-hover:opacity-100 text-slate-500 dark:text-slate-400 text-[9px] leading-none select-none pointer-events-none transition-opacity">⠿</span>
+    </div>
+  </div>
+
+  <!--/* CENTER — scenario-scoped: Input | Result (Audit over Output). Flex-grows into the space LEFT
+       and the Reference panel leave; min-w-0 lets it shrink under the splitters. */-->
+  <section class="flex-1 min-w-0 flex flex-col bg-white dark:bg-slate-800 border-y border-slate-200 dark:border-slate-700 overflow-hidden">
+    <div class="flex-1 flex min-h-0" x-ref="centerBody">
+
+      <!--/* INPUT column — the schema-driven recursive form (SchemaForm rows). Gets full vertical
+           height (commercial-auto's vehicles[] is tall). */-->
+      <div class="flex flex-col min-w-0 overflow-hidden" :style="'flex: 0 0 calc(' + centerSplit + '% - 3px)'" data-ka-section="rules.input">
+        <div class="shrink-0 px-3 py-1 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2 text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">
+          Input <span x-show="anyDirty" class="text-amber-500 normal-case" title="Unsaved scenario edits">●</span>
+          <div class="flex-1"></div>
+          <div class="flex items-center gap-0.5 normal-case tracking-normal text-sm">
+            <button @click="collapseAllInputs()" title="Collapse all" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">⊟</button>
+            <button @click="expandAllInputs()" title="Expand all" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">⊞</button>
+            <template x-if="!inputsSearch.open">
+              <button @click="paneSearchToggle('inputs')" title="Search inputs" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">🔍</button>
+            </template>
+            <template x-if="inputsSearch.open">
+              <span class="flex items-center gap-0.5">
+                <input type="text" x-model="inputsSearch.q" @input="paneSearchRun('inputs')"
+                       @keydown.enter.prevent="paneSearchStep('inputs', $event.shiftKey ? -1 : 1)"
+                       @keydown.escape="paneSearchToggle('inputs')"
+                       x-init="$nextTick(() => $el.focus())"
+                       placeholder="search…"
+                       class="w-24 px-1.5 py-0.5 text-xs rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"/>
+                <span class="text-[10px] text-slate-400 dark:text-slate-500 w-8 text-center" x-show="inputsSearch.q"
+                      x-text="inputsSearch.matches.length ? (inputsSearch.idx + 1) + '/' + inputsSearch.matches.length : '0'"></span>
+                <button @click="paneSearchStep('inputs', -1)" title="Previous match" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">↑</button>
+                <button @click="paneSearchStep('inputs', 1)" title="Next match" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">↓</button>
+                <button @click="paneSearchToggle('inputs')" title="Close" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">✕</button>
+              </span>
+            </template>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto px-4 py-3">
+          <template x-if="!selectedScenario">
+            <div class="text-sm text-slate-500 dark:text-slate-400 italic py-10 text-center">
+              Pick a scenario from the left pane.
+            </div>
+          </template>
+          <template x-if="selectedScenario">
+            <div>
+              <!--/* scenario identity — at the TOP, tinted apart from the rating inputs (the name is the
+                   scenario's, not a calc input; every `_`-prefixed key is engine-owned and filtered out
+                   of the form — see the rows filter in rulebook-page.js). */-->
+              <div class="mb-3 pb-3 border-b border-slate-200 dark:border-slate-700 rounded bg-indigo-50/40 dark:bg-indigo-950/20 px-2 py-2">
+                <div class="flex items-center gap-2 text-xs">
+                  <span class="text-indigo-500 dark:text-indigo-400 font-semibold shrink-0 min-w-[3.5rem]">name:</span>
+                  <input type="text"
+                         :value="editLabel"
+                         @input="editLabel = $event.target.value"
+                         placeholder="scenario name…"
+                         class="flex-1 min-w-0 max-w-xs px-2 py-0.5 text-xs rounded border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"/>
+                </div>
+                <div class="flex items-center gap-2 text-xs mt-1">
+                  <span class="text-indigo-400 dark:text-indigo-500 shrink-0 min-w-[3.5rem]">id:</span>
+                  <span class="font-mono text-slate-500 dark:text-slate-400" x-text="selectedScenario._id"></span>
+                </div>
+              </div>
+              <ul class="font-mono text-xs leading-tight">
+                <template x-for="row in flatFormFields()" :key="row.path.join('/')">
+                  <li :style="'padding-left:' + (row.depth * 16) + 'px'"
+                      :id="'input-' + row.path.join('.')"
+                      class="py-0.5 flex items-center gap-2"
+                      :class="isPaneMatch('inputs', row.path.join('.')) ? 'bg-amber-100/60 dark:bg-amber-900/30 rounded' : ''">
+                    <template x-if="row.kind === 'object'">
+                      <span class="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+                        <span class="cursor-pointer hover:text-slate-900 dark:hover:text-slate-100"
+                              @click="toggleInputCollapse(row.path)"
+                              x-text="isInputCollapsed(row.path) ? '▸' : '▾'"></span>
+                        <span class="font-semibold text-slate-800 dark:text-slate-100 cursor-pointer"
+                              @click="toggleInputCollapse(row.path)" x-text="row.label"></span>
+                        <span class="text-slate-400 dark:text-slate-500">{<span x-text="row.size"></span>}</span>
+                        <button x-show="row.removable" @click="removeInputArrayItem(row.path)"
+                                class="px-1.5 rounded border border-rose-200 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-950 text-rose-600 dark:text-rose-400"
+                                title="Remove row">−</button>
+                      </span>
+                    </template>
+                    <template x-if="row.kind === 'array'">
+                      <span class="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+                        <span class="cursor-pointer hover:text-slate-900 dark:hover:text-slate-100"
+                              @click="toggleInputCollapse(row.path)"
+                              x-text="isInputCollapsed(row.path) ? '▸' : '▾'"></span>
+                        <span class="font-semibold text-slate-800 dark:text-slate-100 cursor-pointer"
+                              @click="toggleInputCollapse(row.path)" x-text="row.label"></span>
+                        <span class="text-slate-400 dark:text-slate-500">[<span x-text="row.size"></span>]</span>
+                        <button @click="addInputArrayItem(row.path, row.elem)"
+                                class="ml-1 px-1.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300"
+                                title="Add row">+</button>
+                      </span>
+                    </template>
+                    <template x-if="row.kind === 'field'">
+                      <span class="flex items-center gap-2 flex-1 min-w-0">
+                        <span class="text-slate-500 dark:text-slate-400 shrink-0 min-w-[6rem]"
+                              x-text="row.label + ':'"></span>
+                        <input x-show="row.type === 'string'" type="text"
+                               :value="getEditValue(row.path)"
+                               @input="setEditValue(row.path, $event.target.value)"
+                               class="flex-1 min-w-0 max-w-xs px-2 py-0.5 text-xs rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"/>
+                        <input x-show="row.type === 'number' || row.type === 'integer'" type="number" step="any"
+                               :value="getEditValue(row.path)"
+                               @input="setEditValue(row.path, $event.target.value === '' ? null : parseFloat($event.target.value))"
+                               class="flex-1 min-w-0 max-w-xs px-2 py-0.5 text-xs rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono"/>
+                        <input x-show="row.type === 'date'" type="date"
+                               :value="getEditValue(row.path)"
+                               @input="setEditValue(row.path, $event.target.value)"
+                               class="flex-1 min-w-0 max-w-xs px-2 py-0.5 text-xs rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono"/>
+                        <span x-show="row.type === 'boolean'" class="inline-flex items-center gap-2">
+                          <input type="checkbox"
+                                 :checked="!!getEditValue(row.path)"
+                                 @change="setEditValue(row.path, $event.target.checked)"
+                                 class="rounded border-slate-300 dark:border-slate-600"/>
+                          <span class="text-slate-500 dark:text-slate-400" x-text="getEditValue(row.path) ? 'true' : 'false'"></span>
+                        </span>
+                        <select x-show="row.type === 'enum'"
+                                :value="getEditValue(row.path)"
+                                @change="setEditValue(row.path, $event.target.value)"
+                                class="flex-1 min-w-0 max-w-xs px-2 py-0.5 text-xs rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+                          <template x-for="opt in (row.enumOpts || [])" :key="opt">
+                            <option :value="opt" x-text="opt"></option>
+                          </template>
+                        </select>
+                        <button x-show="row.removable" @click="removeInputArrayItem(row.path)"
+                                class="px-1.5 rounded border border-rose-200 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-950 text-rose-600 dark:text-rose-400"
+                                title="Remove row">−</button>
+                      </span>
+                    </template>
+                  </li>
+                </template>
+              </ul>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!--/* CENTER splitter — vertical, Input ⇄ Result (centerSplit); discoverable (D113-a) */-->
+      <div class="relative w-1.5 shrink-0 group">
+        <div class="absolute inset-0 bg-slate-100 dark:bg-slate-900 group-hover:bg-indigo-300 dark:group-hover:bg-indigo-700 transition-colors"></div>
+        <div class="absolute inset-y-0 -left-1.5 -right-1.5 z-20 cursor-col-resize flex items-center justify-center"
+             @mousedown.prevent="startDragPair($event, 'center')">
+          <span class="opacity-0 group-hover:opacity-100 text-slate-500 dark:text-slate-400 text-[9px] leading-none select-none pointer-events-none transition-opacity">⠿</span>
+        </div>
+      </div>
+
+      <!--/* RESULT column — Audit FIRST (top, the default surface — the diff signal lives there),
+           Output in a draggable horizontal split below. Follows the SELECTED scenario (retained
+           per-row, D111d). Run feeds this column. */-->
+      <div class="flex-1 flex flex-col min-w-0 overflow-hidden" data-ka-section="rules.result">
+        <!--/* Run-meta strip */-->
+        <div class="pl-3 pr-4 py-1.5 border-b border-slate-100 dark:border-slate-700 text-xs bg-slate-50/60 dark:bg-slate-900/40">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold mr-1">Result</span>
+            <template x-if="currentRun">
+              <span class="inline-flex items-center gap-2 min-w-0">
+                <span class="text-slate-700 dark:text-slate-200 font-medium truncate max-w-[14rem]"
+                      x-text="currentRun.__forScenarioLabel || ''"
+                      :title="currentRun.__forScenarioLabel || ''"></span>
+                <span x-show="dirty" class="shrink-0 text-amber-500"
+                      title="Inputs edited since last run — re-run to refresh">●</span>
+                <span class="text-slate-400 shrink-0">·</span>
+                <span class="font-mono text-slate-700 dark:text-slate-200 shrink-0" x-text="lastRunTsFmt"></span>
+                <span class="text-slate-400 shrink-0">·</span>
+                <span class="font-mono text-slate-500 dark:text-slate-400 shrink-0"
+                      x-text="currentRun.durationMs != null ? currentRun.durationMs + 'ms' : ''"></span>
+                <span x-show="currentRun.truncated"
+                      class="text-amber-600 dark:text-amber-400 shrink-0" title="Audit tree was truncated">⚠ truncated</span>
+              </span>
+            </template>
+            <template x-if="!currentRun">
+              <span class="text-slate-400 dark:text-slate-500 italic">no run yet for this scenario</span>
+            </template>
+            <div class="flex-1"></div>
+            <!--/* Result pair show/hide pills (D113-a) — at least one stays visible */-->
+            <template x-for="col in ['audit','output']" :key="col">
+              <button @click="toggleCol(col)"
+                      class="text-[11px] px-2 py-0.5 rounded-full border shrink-0"
+                      :class="cols[col]
+                          ? 'border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/40'
+                          : 'border-slate-200 dark:border-slate-600 text-slate-400 dark:text-slate-500'"
+                      :title="(cols[col] ? 'Hide ' : 'Show ') + col"
+                      x-text="col"></button>
+            </template>
+            <button @click="runScenario()"
+                    class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-800 font-medium whitespace-nowrap shrink-0"
+                    :disabled="!selectedScenario">↻ Run</button>
+            <button x-show="currentRun" @click="clearCurrent()"
+                    class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-800 whitespace-nowrap shrink-0"
+                    title="Drop this scenario's displayed result">✕ Clear</button>
+          </div>
+        </div>
+
+        <div class="flex-1 flex flex-col min-h-0" x-ref="resultBody">
+
+          <!--/* AUDIT — first + default; collapsible tree + diff-nav + search (D113-a) */-->
+          <div class="flex flex-col min-h-0" :style="resultRowStyle('audit')" data-ka-section="rules.result.audit">
+            <div class="shrink-0 px-3 py-1 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2">
+              <span class="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Audit</span>
+              <!--/* ⊟/⊞ collapse-all/expand-all (parity with Inputs/Lookups) */-->
+              <span x-show="currentRun && !currentRun.error && currentRun.audit && currentRun.audit.length > 0" class="flex items-center gap-0.5 text-sm">
+                <button @click="collapseAllAudit()" title="Collapse all" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">⊟</button>
+                <button @click="expandAllAudit()" title="Expand all" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">⊞</button>
+              </span>
+              <div class="flex-1"></div>
+              <!--/* the word-LCS diff summary chip (D86) — vs the previous run that ADVANCED the
+                   per-rule baseline, whatever scenario (a cross-scenario diff names it). Only a
+                   {diff:true} run advances it, which is every run this console makes and not
+                   necessarily every run the rulebook has had. */-->
+              <span x-show="currentRun && currentRun.diff && !currentRun.diff.firstRun"
+                    class="text-[11px] font-mono"
+                    :title="'audit diff vs the previous diff-enabled run' + (currentRun && currentRun.diff && currentRun.diff.prevScenario ? ' (' + currentRun.diff.prevScenario + ')' : '')">
+                <span x-show="currentRun &amp;&amp; currentRun.diff &amp;&amp; currentRun.diff.prevScenario &amp;&amp; currentRun.__forScenarioId &amp;&amp; currentRun.diff.prevScenario !== currentRun.__forScenarioId"
+                      class="text-slate-400 dark:text-slate-500 font-sans italic"
+                      x-text="currentRun && currentRun.diff ? 'vs ' + currentRun.diff.prevScenario + ' ' : ''"></span>
+                <span class="text-emerald-600 dark:text-emerald-400" x-text="currentRun && currentRun.diff ? '+' + currentRun.diff.added : ''"></span>
+                <span class="text-rose-600 dark:text-rose-400" x-text="currentRun && currentRun.diff ? ' −' + currentRun.diff.removed : ''"></span>
+                <span class="text-amber-600 dark:text-amber-400" x-text="currentRun && currentRun.diff ? ' ~' + currentRun.diff.changed : ''"></span>
+              </span>
+              <!--/* next/prev diff — cycles diff rows, auto-expanding their ancestors (D113-a) */-->
+              <span x-show="currentRun && !currentRun.error && auditDiffCount() > 0" class="flex items-center gap-0.5 text-sm">
+                <button @click="auditDiffNav(-1)" title="Previous diff" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">↑</button>
+                <button @click="auditDiffNav(1)" title="Next diff" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">↓</button>
+              </span>
+              <span x-show="currentRun && currentRun.diff && currentRun.diff.firstRun"
+                    class="text-[11px] text-slate-400" title="No baseline yet — this run becomes it">first run</span>
+              <!--/* pane search (D113-a) */-->
+              <template x-if="!auditSearch.open">
+                <button @click="paneSearchToggle('audit')" title="Search audit" class="text-sm px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">🔍</button>
+              </template>
+              <template x-if="auditSearch.open">
+                <span class="flex items-center gap-0.5 text-sm">
+                  <input type="text" x-model="auditSearch.q" @input="paneSearchRun('audit')"
+                         @keydown.enter.prevent="paneSearchStep('audit', $event.shiftKey ? -1 : 1)"
+                         @keydown.escape="paneSearchToggle('audit')"
+                         x-init="$nextTick(() => $el.focus())"
+                         placeholder="search…"
+                         class="w-24 px-1.5 py-0.5 text-xs rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"/>
+                  <span class="text-[10px] text-slate-400 dark:text-slate-500 w-8 text-center" x-show="auditSearch.q"
+                        x-text="auditSearch.matches.length ? (auditSearch.idx + 1) + '/' + auditSearch.matches.length : '0'"></span>
+                  <button @click="paneSearchStep('audit', -1)" title="Previous match" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">↑</button>
+                  <button @click="paneSearchStep('audit', 1)" title="Next match" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">↓</button>
+                  <button @click="paneSearchToggle('audit')" title="Close" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">✕</button>
+                </span>
+              </template>
+            </div>
+            <div class="flex-1 overflow-auto p-3 text-sm">
+              <template x-if="!currentRun">
+                <div class="text-slate-500 dark:text-slate-400 italic py-6 text-center">
+                  Click <span class="font-medium text-indigo-600 dark:text-indigo-400">▶ Run</span> to evaluate the selected scenario.
+                </div>
+              </template>
+              <!--/* Error envelope ({error, code, status} — data, not a throw) */-->
+              <template x-if="currentRun && currentRun.error">
+                <div class="rounded border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-3">
+                  <div class="font-semibold text-rose-700 dark:text-rose-300" x-text="currentRun.code || 'ERROR'"></div>
+                  <div class="text-xs text-rose-600 dark:text-rose-400 mt-1" x-text="currentRun.error"></div>
+                </div>
+              </template>
+              <!--/* collapsible tree renderer (D113-a): #-headings as section titles, depth guide
+                   hairlines, container chevrons + rollup chip, token-tinted leaves, the D86 word-diff */-->
+              <template x-if="currentRun &amp;&amp; !currentRun.error &amp;&amp; currentRun.audit &amp;&amp; currentRun.audit.length > 0">
+                <ul class="font-mono text-xs leading-relaxed">
+                  <template x-for="row in auditRows()" :key="row.key">
+                    <!-- collapsible rows: whole-row click toggles + a hover tint cues it -->
+                    <li :id="'audit-' + row.key"
+                        @click="row.collapsible &amp;&amp; toggleAuditCollapse(row.key)"
+                        class="flex items-stretch border-l-2 rounded-sm"
+                        :class="[ rowStatusClass(row.node),
+                                  row.collapsible ? 'cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50' : '',
+                                  row.rollup &amp;&amp; row.rollup.any ? '!border-amber-400 dark:!border-amber-600 bg-amber-50/40 dark:bg-amber-950/20' : '',
+                                  isPaneMatch('audit', row.key) ? 'bg-amber-100/60 dark:bg-amber-900/30' : '' ]">
+                      <!-- depth guide hairlines -->
+                      <template x-for="g in row.depth" :key="g">
+                        <span class="w-3 shrink-0 border-l border-slate-100 dark:border-slate-800/70"></span>
+                      </template>
+                      <!-- chevron (collapsible → indigo, distinct from the leaf bullet) / bullet -->
+                      <span class="shrink-0 w-4 text-center select-none"
+                            :class="row.collapsible ? 'text-indigo-500 dark:text-indigo-400 font-semibold' : 'text-slate-300 dark:text-slate-600'"
+                            x-text="row.collapsible ? (row.collapsed ? '▸' : '▾') : '·'"></span>
+                      <!-- content -->
+                      <div class="flex-1 min-w-0 py-0.5">
+                        <!-- #-heading line → section title -->
+                        <template x-if="row.kind === 'heading'">
+                          <span class="font-sans font-semibold text-slate-600 dark:text-slate-300" x-text="row.title"></span>
+                        </template>
+                        <!-- container row (collapsible) → title + rollup chip when collapsed -->
+                        <template x-if="row.kind === 'container'">
+                          <span class="inline-flex items-center gap-2">
+                            <span class="font-sans font-medium text-slate-700 dark:text-slate-200" x-text="row.title || '(block)'"></span>
+                            <span x-show="row.rollup &amp;&amp; row.rollup.any" class="text-[10px] font-mono"
+                                  title="hidden diffs in this collapsed subtree">
+                              <span class="text-emerald-600 dark:text-emerald-400" x-show="row.rollup &amp;&amp; row.rollup.a" x-text="'+' + (row.rollup ? row.rollup.a : 0)"></span>
+                              <span class="text-rose-600 dark:text-rose-400" x-show="row.rollup &amp;&amp; row.rollup.r" x-text="' −' + (row.rollup ? row.rollup.r : 0)"></span>
+                              <span class="text-amber-600 dark:text-amber-400" x-show="row.rollup &amp;&amp; row.rollup.c" x-text="' ~' + (row.rollup ? row.rollup.c : 0)"></span>
+                            </span>
+                          </span>
+                        </template>
+                        <!-- leaf, changed WITH word-diff (D86) -->
+                        <template x-if="row.kind === 'leaf' &amp;&amp; row.node.status === 'changed' &amp;&amp; row.node.wordDiff &amp;&amp; row.node.wordDiff.length > 0">
+                          <span class="inline-flex flex-col">
+                            <span class="line-through text-rose-600 dark:text-rose-400 opacity-70" x-text="row.node.prevText || ''"></span>
+                            <span>
+                              <template x-for="(seg, i) in row.node.wordDiff" :key="i">
+                                <template x-if="seg.kind !== 'removed'">
+                                  <span :class="seg.kind === 'added' ? 'text-emerald-700 dark:text-emerald-300 underline decoration-emerald-400' : ''"
+                                        x-text="seg.text + ' '"></span>
+                                </template>
+                              </template>
+                            </span>
+                          </span>
+                        </template>
+                        <!-- leaf, otherwise → token-tinted; removed = struck through -->
+                        <template x-if="row.kind === 'leaf' &amp;&amp; !(row.node.status === 'changed' &amp;&amp; row.node.wordDiff &amp;&amp; row.node.wordDiff.length > 0)">
+                          <span :class="row.node.status === 'removed' ? 'line-through opacity-70' : ''"
+                                x-html="tintAudit(row.title)"></span>
+                        </template>
+                      </div>
+                    </li>
+                  </template>
+                </ul>
+              </template>
+              <template x-if="currentRun &amp;&amp; !currentRun.error &amp;&amp; (!currentRun.audit || currentRun.audit.length === 0)">
+                <div class="text-slate-500 dark:text-slate-400 italic">
+                  calc.js emitted no log lines.
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!--/* OUTPUT splitter (horizontal) — discoverable; only when both surfaces show (D113-a) */-->
+          <div x-show="cols.audit && cols.output" class="relative h-1.5 shrink-0 group">
+            <div class="absolute inset-0 bg-slate-100 dark:bg-slate-900 group-hover:bg-indigo-300 dark:group-hover:bg-indigo-700 transition-colors"></div>
+            <div class="absolute inset-x-0 -top-1.5 -bottom-1.5 z-20 cursor-row-resize flex items-center justify-center"
+                 @mousedown.prevent="startDragPair($event, 'output')">
+              <span class="opacity-0 group-hover:opacity-100 text-slate-500 dark:text-slate-400 text-[9px] leading-none select-none pointer-events-none transition-opacity">⠿</span>
+            </div>
+          </div>
+
+          <!--/* OUTPUT — the bottom horizontal split; rendered by the shared JsonTable (D111c) */-->
+          <div class="flex flex-col min-h-0" :style="resultRowStyle('output')" data-ka-section="rules.result.output">
+            <div class="shrink-0 px-3 py-1 border-b border-slate-100 dark:border-slate-700">
+              <span class="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Output</span>
+            </div>
+            <div class="flex-1 overflow-auto p-3">
+              <template x-if="currentRun &amp;&amp; !currentRun.error &amp;&amp; currentRun.output != null">
+                <div x-html="JsonTable.render(currentRun.output)"></div>
+              </template>
+              <template x-if="!currentRun || currentRun.error || currentRun.output == null">
+                <div class="text-xs text-slate-400 dark:text-slate-500 italic">no output</div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!--/* Sticky bottom toolbar — Run + per-surface Save/Revert (only dirty surfaces offer them);
+         spans the center, so Inputs (here) + Lookups/Source (the Reference panel) all surface */-->
+    <div class="shrink-0 px-3 py-2 border-t border-slate-100 dark:border-slate-700 flex items-center gap-2 bg-slate-50 dark:bg-slate-900">
+      <button @click="runScenario()"
+              class="text-sm px-3 py-1 rounded font-medium bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40"
+              :disabled="!selectedScenario"
+              title="Save-then-run: dirty surfaces flush first">▶ Run</button>
+      <template x-for="srf in dirtySurfaces()" :key="srf.key">
+        <span class="inline-flex items-center">
+          <button @click="srf.save()"
+                  class="text-xs px-2 py-1 rounded-l border border-slate-200 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-800"
+                  :disabled="saving"
+                  :title="'Save ' + srf.label" x-text="'Save ' + srf.label"></button>
+          <button @click="srf.revert()"
+                  class="text-xs px-1.5 py-1 rounded-r border border-l-0 border-slate-200 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-800"
+                  :title="'Discard unsaved ' + srf.label + ' changes'">↶</button>
+        </span>
+      </template>
+      <!--/* Save-as-new (D114 v4) — when the input draft is dirty, mint a NEW named scenario from it
+           (distinct from "Save Inputs", which overwrites). Inline name prompt, Enter confirms. */-->
+      <template x-if="dirty &amp;&amp; !savingAsNew">
+        <button @click="startSaveAsNew()"
+                class="text-xs px-2 py-1 rounded border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950"
+                title="Save the edited input as a NEW scenario (keeps the original)">＋ Save as new</button>
+      </template>
+      <template x-if="savingAsNew">
+        <span class="inline-flex items-center gap-1">
+          <input type="text" x-model="newScenarioName"
+                 @keydown.enter="confirmSaveAsNew()" @keydown.escape="cancelSaveAsNew()"
+                 x-init="$nextTick(() => $el.focus())"
+                 placeholder="New scenario name…"
+                 class="w-48 px-2 py-1 text-xs rounded border border-indigo-400 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"/>
+          <button @click="confirmSaveAsNew()" :disabled="!newScenarioName.trim()"
+                  class="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40">Save</button>
+          <button @click="cancelSaveAsNew()"
+                  class="text-xs px-1.5 py-1 rounded border border-slate-200 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-800">✕</button>
+        </span>
+      </template>
+      <div class="flex-1"></div>
+      <span x-show="saveMessage" class="text-xs"
+            :class="saveError ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'"
+            x-text="saveMessage"></span>
+    </div>
+  </section>
+
+  <!--/* Reference splitter — only when the panel is docked (startDragRef → refPct) */-->
+  <div x-show="refState === 'docked'" class="relative w-1.5 shrink-0 group">
+    <div class="absolute inset-0 bg-slate-100 dark:bg-slate-900 group-hover:bg-indigo-300 dark:group-hover:bg-indigo-700 transition-colors"
+         :class="draggingRef ? '!bg-indigo-400 dark:!bg-indigo-600' : ''"></div>
+    <div class="absolute inset-y-0 -left-1.5 -right-1.5 z-20 cursor-col-resize flex items-center justify-center"
+         @mousedown.prevent="startDragRef($event)">
+      <span class="opacity-0 group-hover:opacity-100 text-slate-500 dark:text-slate-400 text-[9px] leading-none select-none pointer-events-none transition-opacity">⠿</span>
+    </div>
+  </div>
+
+  <!--/* RIGHT — the Reference panel (rulebook-scoped). ONE slot at a time; default lookup. Docked =
+       a third column; collapsed = a thin rail with just the switcher. The diagram SVG + #cm-host live
+       here and persist (x-show, never x-if) so decoration/CM state survive slot switches + the Combo. */-->
+  <aside class="flex flex-col bg-white dark:bg-slate-800 rounded-r-xl border border-slate-200 dark:border-slate-700 overflow-hidden"
+         :style="refState === 'collapsed' ? 'flex: 0 0 2.75rem' : ('flex: 0 0 ' + refPct + '%')" data-ka-section="rules.reference">
+
+    <!--/* COLLAPSED rail — a vertical switcher; clicking a surface re-docks to it */-->
+    <div x-show="refState === 'collapsed'" class="flex-1 flex flex-col items-center gap-1 py-2">
+      <button @click="setRefState('docked')" title="Expand the Reference panel"
+              class="px-1.5 py-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">«</button>
+      <div class="w-6 border-t border-slate-100 dark:border-slate-700 my-1"></div>
+      <template x-for="sl in [{k:'lookup',g:'▦',t:'Lookup'},{k:'code',g:'{ }',t:'Code'},{k:'diagram',g:'◇',t:'Diagram'},{k:'scenario-coverage',g:'▤',t:'Coverage'},{k:'check',g:'✚',t:'Health'},{k:'twin',g:'◎',t:'Twin'}]" :key="sl.k">
+        <button @click="setRefSlot(sl.k)" :title="sl.t"
+                class="w-7 py-1 rounded text-[11px] hover:bg-slate-100 dark:hover:bg-slate-700"
+                :class="refSlot === sl.k ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300' : 'text-slate-500 dark:text-slate-400'"
+                x-text="sl.g"></button>
+      </template>
+    </div>
+
+    <!--/* DOCKED — the surface switcher header + the active slot */-->
+    <div x-show="refState === 'docked'" class="flex-1 flex flex-col min-h-0">
+      <!--/* switcher header */-->
+      <div class="shrink-0 px-2 py-1 border-b border-slate-100 dark:border-slate-700 flex items-center gap-1 text-xs flex-wrap">
+        <template x-for="sl in [{k:'lookup',t:'Lookup'},{k:'code',t:'Code'},{k:'diagram',t:'Diagram'},{k:'scenario-coverage',t:'Coverage'},{k:'check',t:'Health'},{k:'twin',t:'Twin'}]" :key="sl.k">
+          <button @click="setRefSlot(sl.k)"
+                  class="px-2 py-0.5 rounded border flex items-center gap-1"
+                  :class="refSlot === sl.k
+                      ? 'border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/40 font-medium'
+                      : 'border-transparent text-slate-500 hover:text-slate-900 dark:hover:text-slate-100'">
+            <span x-text="sl.t"></span>
+            <span x-show="sl.k === 'lookup' && dirtyLookups" class="text-amber-500" title="Unsaved lookups edits">●</span>
+            <span x-show="sl.k === 'code' && dirtySource" class="text-amber-500" title="Unsaved calc.js edits">●</span>
+          </button>
+        </template>
+        <div class="flex-1"></div>
+        <button @click="openTableFull()"
+                class="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+                title="Open the full Scenario Coverage decision table">⤢</button>
+        <button @click="openDiagramFull()"
+                class="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+                title="Combo — full-screen outline · diagram · code">⛶</button>
+        <button @click="setRefState('collapsed')"
+                class="px-1.5 py-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400"
+                title="Collapse to a rail">»</button>
+      </div>
+
+      <!--/* ===== slot: LOOKUP (default) — the grid lookup editor, re-homed from v3's center. The
+           rate table is rulebook-scoped DATA the calc reads; edits are GLOBAL (labelled as such). */-->
+      <div x-show="refSlot === 'lookup'" class="flex-1 flex flex-col min-h-0" data-ka-section="rules.reference.lookup">
+        <div class="shrink-0 px-3 py-1 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2 text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">
+          Lookups <span class="normal-case tracking-normal text-slate-400 dark:text-slate-500">· global rulebook data</span>
+          <span x-show="dirtyLookups" class="text-amber-500 normal-case" title="Unsaved lookups edits">●</span>
+          <div class="flex-1"></div>
+          <div class="flex items-center gap-0.5 normal-case tracking-normal text-sm">
+            <button x-show="rb.tables && rb.tables.length && !tableRowsLoaded" @click="loadTableRows()"
+                    title="File tables load as summaries — load their rows to edit them"
+                    class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 text-xs">rows</button>
+            <button @click="collapseAllLookups()" title="Collapse all" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">⊟</button>
+            <button @click="expandAllLookups()" title="Expand all" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">⊞</button>
+            <template x-if="!lookupsSearch.open">
+              <button @click="paneSearchToggle('lookups')" title="Search lookups" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">🔍</button>
+            </template>
+            <template x-if="lookupsSearch.open">
+              <span class="flex items-center gap-0.5">
+                <input type="text" x-model="lookupsSearch.q" @input="paneSearchRun('lookups')"
+                       @keydown.enter.prevent="paneSearchStep('lookups', $event.shiftKey ? -1 : 1)"
+                       @keydown.escape="paneSearchToggle('lookups')"
+                       x-init="$nextTick(() => $el.focus())"
+                       placeholder="search…"
+                       class="w-24 px-1.5 py-0.5 text-xs rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"/>
+                <span class="text-[10px] text-slate-400 dark:text-slate-500 w-8 text-center" x-show="lookupsSearch.q"
+                      x-text="lookupsSearch.matches.length ? (lookupsSearch.idx + 1) + '/' + lookupsSearch.matches.length : '0'"></span>
+                <button @click="paneSearchStep('lookups', -1)" title="Previous match" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">↑</button>
+                <button @click="paneSearchStep('lookups', 1)" title="Next match" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">↓</button>
+                <button @click="paneSearchToggle('lookups')" title="Close" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">✕</button>
+              </span>
+            </template>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto px-3 py-3">
+          <template x-for="ls in lookupShapes()" :key="ls.key">
+            <div class="mb-4 rounded" :id="'lookup-' + ls.key"
+                 :class="isPaneMatch('lookups', ls.key) ? 'bg-amber-100/60 dark:bg-amber-900/30' : ''">
+              <div class="flex items-center gap-2 mb-1">
+                <!--/* section chevron — folds the whole lookup down to its header (D113-a; ⊞/⊟ bulk it) */-->
+                <span class="cursor-pointer text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200"
+                      @click="toggleLookupCollapse([ls.key])"
+                      x-text="isLookupCollapsed([ls.key]) ? '▸' : '▾'"></span>
+                <span class="font-mono text-xs font-semibold text-slate-800 dark:text-slate-100 cursor-pointer"
+                      @click="toggleLookupCollapse([ls.key])" x-text="ls.key"></span>
+                <span class="text-[10px] text-slate-400 dark:text-slate-500" x-text="ls.kind === 'grid' ? '[' + (lookupsDraft[ls.key] || []).length + ' rows]' : ''"></span>
+                <button x-show="ls.kind === 'grid' &amp;&amp; !isLookupCollapsed([ls.key])" @click="addLookupArrayItem([ls.key])"
+                        class="px-1.5 text-xs rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300"
+                        title="Add row">+</button>
+              </div>
+
+              <div x-show="!isLookupCollapsed([ls.key])">
+              <!--/* uniform-object-array → editable fixed-column grid */-->
+              <template x-if="ls.kind === 'grid'">
+                <div class="rounded border border-slate-200 dark:border-slate-700 overflow-x-auto">
+                  <table class="w-full text-xs font-mono">
+                    <thead>
+                      <tr>
+                        <template x-for="c in ls.cols" :key="c">
+                          <th class="px-2 py-1 text-left font-semibold text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-900/60" x-text="c"></th>
+                        </template>
+                        <th class="w-8 bg-slate-50 dark:bg-slate-900/60"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="(row, ri) in (lookupsDraft[ls.key] || [])" :key="ri">
+                        <tr class="odd:bg-white even:bg-slate-50/70 dark:odd:bg-slate-800 dark:even:bg-slate-900/40">
+                          <template x-for="c in ls.cols" :key="c">
+                            <td class="px-1 py-0.5 border-t border-slate-100 dark:border-slate-700/60">
+                              <input x-show="typeof getLookupValue([ls.key, ri, c]) === 'number'" type="number" step="any"
+                                     :value="getLookupValue([ls.key, ri, c])"
+                                     @change="setLookupValue([ls.key, ri, c], $event.target.value === '' ? null : parseFloat($event.target.value))"
+                                     class="w-full min-w-[4rem] px-1.5 py-0.5 text-xs rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-600 focus:border-indigo-400 bg-transparent text-slate-900 dark:text-slate-100 font-mono"/>
+                              <input x-show="typeof getLookupValue([ls.key, ri, c]) === 'boolean'" type="checkbox"
+                                     :checked="!!getLookupValue([ls.key, ri, c])"
+                                     @change="setLookupValue([ls.key, ri, c], $event.target.checked)"
+                                     class="rounded border-slate-300 dark:border-slate-600"/>
+                              <input x-show="typeof getLookupValue([ls.key, ri, c]) !== 'number' &amp;&amp; typeof getLookupValue([ls.key, ri, c]) !== 'boolean'" type="text"
+                                     :value="getLookupValue([ls.key, ri, c])"
+                                     @change="setLookupValue([ls.key, ri, c], $event.target.value)"
+                                     class="w-full min-w-[4rem] px-1.5 py-0.5 text-xs rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-600 focus:border-indigo-400 bg-transparent text-slate-900 dark:text-slate-100"/>
+                            </td>
+                          </template>
+                          <td class="px-1 py-0.5 border-t border-slate-100 dark:border-slate-700/60 text-center">
+                            <button @click="removeLookupArrayItem([ls.key, ri])"
+                                    class="px-1 rounded text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950" title="Remove row">−</button>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
+
+              <!--/* flat scalar map → key/value grid */-->
+              <template x-if="ls.kind === 'kv'">
+                <div class="rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
+                  <table class="w-full text-xs font-mono">
+                    <tbody>
+                      <template x-for="k in Object.keys(lookupsDraft[ls.key] || {})" :key="k">
+                        <tr class="odd:bg-white even:bg-slate-50/70 dark:odd:bg-slate-800 dark:even:bg-slate-900/40">
+                          <td class="px-2 py-0.5 border-t border-slate-100 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 whitespace-nowrap w-px" x-text="k"></td>
+                          <td class="px-1 py-0.5 border-t border-slate-100 dark:border-slate-700/60">
+                            <input x-show="typeof getLookupValue([ls.key, k]) === 'number'" type="number" step="any"
+                                   :value="getLookupValue([ls.key, k])"
+                                   @change="setLookupValue([ls.key, k], $event.target.value === '' ? null : parseFloat($event.target.value))"
+                                   class="w-full min-w-[4rem] px-1.5 py-0.5 text-xs rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-600 focus:border-indigo-400 bg-transparent text-slate-900 dark:text-slate-100 font-mono"/>
+                            <input x-show="typeof getLookupValue([ls.key, k]) === 'boolean'" type="checkbox"
+                                   :checked="!!getLookupValue([ls.key, k])"
+                                   @change="setLookupValue([ls.key, k], $event.target.checked)"
+                                   class="rounded border-slate-300 dark:border-slate-600"/>
+                            <input x-show="typeof getLookupValue([ls.key, k]) !== 'number' &amp;&amp; typeof getLookupValue([ls.key, k]) !== 'boolean'" type="text"
+                                   :value="getLookupValue([ls.key, k])"
+                                   @change="setLookupValue([ls.key, k], $event.target.value)"
+                                   class="w-full min-w-[4rem] px-1.5 py-0.5 text-xs rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-600 focus:border-indigo-400 bg-transparent text-slate-900 dark:text-slate-100"/>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
+
+              <!--/* anything else → the tree fallback (the recursive walker, scoped) */-->
+              <template x-if="ls.kind === 'tree'">
+                <ul class="font-mono text-xs leading-tight">
+                  <template x-for="row in flattenLookupsFor(ls.key)" :key="row.path.join('/')">
+                    <li :style="'padding-left:' + (row.depth * 16) + 'px'"
+                        :id="'lookup-' + row.path.join('/')"
+                        class="py-0.5 flex items-center gap-2"
+                        :class="isPaneMatch('lookups', row.path.join('/')) ? 'bg-amber-100/60 dark:bg-amber-900/30 rounded' : ''">
+                      <template x-if="row.kind === 'object'">
+                        <span class="flex items-center gap-1 cursor-pointer text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
+                              @click="toggleLookupCollapse(row.path)">
+                          <span x-text="isLookupCollapsed(row.path) ? '▸' : '▾'"></span>
+                          <span class="font-semibold text-slate-800 dark:text-slate-100" x-text="row.label"></span>
+                          <span class="text-slate-400 dark:text-slate-500">{<span x-text="row.size"></span>}</span>
+                        </span>
+                      </template>
+                      <template x-if="row.kind === 'array'">
+                        <span class="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+                          <span class="cursor-pointer hover:text-slate-900 dark:hover:text-slate-100"
+                                @click="toggleLookupCollapse(row.path)"
+                                x-text="isLookupCollapsed(row.path) ? '▸' : '▾'"></span>
+                          <span class="font-semibold text-slate-800 dark:text-slate-100 cursor-pointer hover:text-slate-900 dark:hover:text-slate-100"
+                                @click="toggleLookupCollapse(row.path)"
+                                x-text="row.label"></span>
+                          <span class="text-slate-400 dark:text-slate-500">[<span x-text="row.size"></span>]</span>
+                          <button @click="addLookupArrayItem(row.path)"
+                                  class="ml-1 px-1.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300"
+                                  title="Add row">+</button>
+                        </span>
+                      </template>
+                      <template x-if="row.kind === 'array-item'">
+                        <span class="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+                          <span x-text="row.label"></span>
+                          <button @click="removeLookupArrayItem(row.path)"
+                                  class="px-1.5 rounded border border-rose-200 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-950 text-rose-600 dark:text-rose-400"
+                                  title="Remove row">−</button>
+                        </span>
+                      </template>
+                      <template x-if="row.kind === 'primitive'">
+                        <span class="flex items-center gap-2 flex-1 min-w-0">
+                          <span class="text-slate-500 dark:text-slate-400 shrink-0" x-text="row.label + ':'"></span>
+                          <input x-show="row.type === 'number'" type="number" step="any"
+                                 :value="getLookupValue(row.path)"
+                                 @change="setLookupValue(row.path, $event.target.value === '' ? null : parseFloat($event.target.value))"
+                                 class="flex-1 min-w-0 max-w-xs px-2 py-0.5 text-xs rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono"/>
+                          <input x-show="row.type === 'string'" type="text"
+                                 :value="getLookupValue(row.path)"
+                                 @change="setLookupValue(row.path, $event.target.value)"
+                                 class="flex-1 min-w-0 max-w-xs px-2 py-0.5 text-xs rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"/>
+                          <label x-show="row.type === 'boolean'" class="inline-flex items-center gap-1">
+                            <input type="checkbox"
+                                   :checked="!!getLookupValue(row.path)"
+                                   @change="setLookupValue(row.path, $event.target.checked)"
+                                   class="rounded border-slate-300 dark:border-slate-600"/>
+                          </label>
+                        </span>
+                      </template>
+                      <!--/* D113-a: a nested uniform-object-array embeds as an editable grid in place */-->
+                      <template x-if="row.kind === 'grid-embed'">
+                        <div class="flex-1 min-w-0">
+                          <div class="flex items-center gap-2 mb-1">
+                            <span class="font-semibold text-slate-800 dark:text-slate-100" x-text="row.label"></span>
+                            <span class="text-[10px] text-slate-400 dark:text-slate-500" x-text="'[' + row.size + ' rows]'"></span>
+                            <button @click="addLookupArrayItem(row.path)"
+                                    class="px-1.5 text-xs rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300"
+                                    title="Add row">+</button>
+                          </div>
+                          <div class="rounded border border-slate-200 dark:border-slate-700 overflow-x-auto">
+                            <table class="w-full text-xs font-mono">
+                              <thead>
+                                <tr>
+                                  <template x-for="c in row.cols" :key="c">
+                                    <th class="px-2 py-1 text-left font-semibold text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-900/60" x-text="c"></th>
+                                  </template>
+                                  <th class="w-8 bg-slate-50 dark:bg-slate-900/60"></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <template x-for="(_e, ri) in (getLookupValue(row.path) || [])" :key="ri">
+                                  <tr class="odd:bg-white even:bg-slate-50/70 dark:odd:bg-slate-800 dark:even:bg-slate-900/40">
+                                    <template x-for="c in row.cols" :key="c">
+                                      <td class="px-1 py-0.5 border-t border-slate-100 dark:border-slate-700/60">
+                                        <input x-show="typeof getLookupValue(row.path.concat([ri, c])) === 'number'" type="number" step="any"
+                                               :value="getLookupValue(row.path.concat([ri, c]))"
+                                               @change="setLookupValue(row.path.concat([ri, c]), $event.target.value === '' ? null : parseFloat($event.target.value))"
+                                               class="w-full min-w-[4rem] px-1.5 py-0.5 text-xs rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-600 focus:border-indigo-400 bg-transparent text-slate-900 dark:text-slate-100 font-mono"/>
+                                        <input x-show="typeof getLookupValue(row.path.concat([ri, c])) === 'boolean'" type="checkbox"
+                                               :checked="!!getLookupValue(row.path.concat([ri, c]))"
+                                               @change="setLookupValue(row.path.concat([ri, c]), $event.target.checked)"
+                                               class="rounded border-slate-300 dark:border-slate-600"/>
+                                        <input x-show="typeof getLookupValue(row.path.concat([ri, c])) !== 'number' &amp;&amp; typeof getLookupValue(row.path.concat([ri, c])) !== 'boolean'" type="text"
+                                               :value="getLookupValue(row.path.concat([ri, c]))"
+                                               @change="setLookupValue(row.path.concat([ri, c]), $event.target.value)"
+                                               class="w-full min-w-[4rem] px-1.5 py-0.5 text-xs rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-600 focus:border-indigo-400 bg-transparent text-slate-900 dark:text-slate-100"/>
+                                      </td>
+                                    </template>
+                                    <td class="px-1 py-0.5 border-t border-slate-100 dark:border-slate-700/60 text-center">
+                                      <button @click="removeLookupArrayItem(row.path.concat([ri]))"
+                                              class="px-1 rounded text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950" title="Remove row">−</button>
+                                    </td>
+                                  </tr>
+                                </template>
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </template>
+                      <!--/* D113-a: a nested flat scalar map embeds as a key/value grid in place */-->
+                      <template x-if="row.kind === 'table-summary'">
+                        <span class="flex items-center gap-2 min-w-0 text-slate-500 dark:text-slate-400"
+                              title="A file table — load its rows (the rows button above) to edit it">
+                          <span class="font-semibold text-slate-800 dark:text-slate-100" x-text="row.label"></span>
+                          <span class="truncate" x-text="row.table.rows + ' rows · ' + row.table.role + ' · ' + (row.table.files || []).map(function (f) { return f.path; }).join(', ') + (row.table.truncated ? ' · truncated' : '')"></span>
+                        </span>
+                      </template>
+                      <template x-if="row.kind === 'kv-embed'">
+                        <div class="flex-1 min-w-0">
+                          <div class="font-semibold text-slate-800 dark:text-slate-100 mb-1" x-text="row.label"></div>
+                          <div class="rounded border border-slate-200 dark:border-slate-700 overflow-hidden">
+                            <table class="w-full text-xs font-mono">
+                              <tbody>
+                                <template x-for="k in row.keys" :key="k">
+                                  <tr class="odd:bg-white even:bg-slate-50/70 dark:odd:bg-slate-800 dark:even:bg-slate-900/40">
+                                    <td class="px-2 py-0.5 border-t border-slate-100 dark:border-slate-700/60 text-slate-500 dark:text-slate-400 whitespace-nowrap w-px" x-text="k"></td>
+                                    <td class="px-1 py-0.5 border-t border-slate-100 dark:border-slate-700/60">
+                                      <input x-show="typeof getLookupValue(row.path.concat([k])) === 'number'" type="number" step="any"
+                                             :value="getLookupValue(row.path.concat([k]))"
+                                             @change="setLookupValue(row.path.concat([k]), $event.target.value === '' ? null : parseFloat($event.target.value))"
+                                             class="w-full min-w-[4rem] px-1.5 py-0.5 text-xs rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-600 focus:border-indigo-400 bg-transparent text-slate-900 dark:text-slate-100 font-mono"/>
+                                      <input x-show="typeof getLookupValue(row.path.concat([k])) === 'boolean'" type="checkbox"
+                                             :checked="!!getLookupValue(row.path.concat([k]))"
+                                             @change="setLookupValue(row.path.concat([k]), $event.target.checked)"
+                                             class="rounded border-slate-300 dark:border-slate-600"/>
+                                      <input x-show="typeof getLookupValue(row.path.concat([k])) !== 'number' &amp;&amp; typeof getLookupValue(row.path.concat([k])) !== 'boolean'" type="text"
+                                             :value="getLookupValue(row.path.concat([k]))"
+                                             @change="setLookupValue(row.path.concat([k]), $event.target.value)"
+                                             class="w-full min-w-[4rem] px-1.5 py-0.5 text-xs rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-600 focus:border-indigo-400 bg-transparent text-slate-900 dark:text-slate-100"/>
+                                    </td>
+                                  </tr>
+                                </template>
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </template>
+                    </li>
+                  </template>
+                </ul>
+              </template>
+              </div><!--/* end section body (x-show !collapsed) */-->
+            </div>
+          </template>
+          <div x-show="lookupShapes().length === 0"
+               class="py-6 text-center text-xs text-slate-500 dark:text-slate-400 italic">
+            calc.js declares no <span class="font-mono">lookup</span> table.
+          </div>
+        </div>
+      </div>
+
+      <!--/* ===== slot: CODE — the calc.js editor (vendored CodeMirror). #cm-host PERSISTS (x-show),
+           and is physically moved into the ⛶ Combo; never destroyed. ===== */-->
+      <div x-show="refSlot === 'code'" class="flex-1 flex flex-col min-h-0" data-ka-section="rules.reference.code">
+        <div class="shrink-0 px-3 py-1 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2 text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">
+          Source <span class="normal-case tracking-normal text-slate-400 dark:text-slate-500">· calc.js</span>
+          <span x-show="dirtySource" class="text-amber-500 normal-case" title="Unsaved calc.js edits">●</span>
+          <div class="flex-1"></div>
+          <!--/* local Save & Apply (D114 v4 follow-up) — saveCalc() persists then re-runs the selected
+               scenario; revert restores the saved buffer. Shown only when the buffer is dirty. */-->
+          <template x-if="dirtySource">
+            <span class="flex items-center gap-1 normal-case tracking-normal">
+              <button @click="saveCalc()" :disabled="saving"
+                      class="px-2 py-0.5 rounded bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 text-xs font-medium"
+                      title="Save calc.js and re-run the selected scenario">Save &amp; Apply</button>
+              <button @click="revertSource()"
+                      class="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 text-xs"
+                      title="Discard unsaved calc.js edits">↶</button>
+            </span>
+          </template>
+        </div>
+        <div id="cm-host" class="flex-1 min-h-0 overflow-auto"></div>
+      </div>
+
+      <!--/* ===== slot: DIAGRAM — business view only (D114 v4 follow-up). The SSR'd sha-keyed SVG; a
+           click on a node POPS its inlined steps (no "All steps" relayout, no scroll-to-code). The
+           power affordances (All steps · Expand all · Copy Mermaid) live in the ⛶ Combo. The host
+           PERSISTS (x-show) + is moved into the Combo. ===== */-->
+      <div x-show="refSlot === 'diagram'" class="flex-1 flex flex-col min-h-0" data-ka-section="rules.diagram">
+        <div class="shrink-0 px-3 py-1 border-b border-slate-100 dark:border-slate-700 flex items-center gap-1.5 text-xs">
+          <span class="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Diagram</span>
+          <span x-show="dirtySource" class="text-amber-600 dark:text-amber-400"
+                title="The diagram renders the saved calc.js — save your Source edits to refresh">● saved version</span>
+          <div class="flex-1"></div>
+          <!-- the ⛶ full-screen Combo lives in the Reference-panel header (above) — no duplicate here -->
+          <span class="text-slate-400 dark:text-slate-500 italic">click a step for detail</span>
+        </div>
+        <div x-show="diagramError"
+             class="px-4 py-3 text-xs text-rose-600 dark:text-rose-400" x-text="diagramError"></div>
+        <!--/* width-scrollable so a wide flowchart doesn't force the panel wider */-->
+        <div class="flex-1 overflow-auto p-4" x-ref="diagramHost"
+             x-html="diagramSvg"
+             @click="diagramClick($event)"
+             @mousemove="diagramHover($event)"
+             @mouseleave="lookupPopover = null"></div>
+        <!--/* state-aware legend — the hot path (from the selected scenario's run) */-->
+        <div x-show="currentRun && currentRun.trace"
+             class="shrink-0 px-3 py-1 border-t border-slate-100 dark:border-slate-700 text-[10px] text-slate-400 dark:text-slate-500 flex items-center gap-1">
+          <span class="inline-block w-2.5 h-2.5 rounded-sm bg-indigo-200 dark:bg-indigo-800"></span> hot path
+        </div>
+      </div>
+
+      <!--/* ===== slot: SCENARIO-COVERAGE (mini) — a compact candidate list sized for the narrow panel.
+           reuses the already-loaded tableData (NOT a renderMatrix fork); two row actions: → Input
+           (tryCandidate, load into the center draft) and ＋ save (promoteRow). ===== */-->
+      <!--/* HEALTH — the Rule.check triage: the two mechanical fixes side by side, add DATA vs fix the RULE.
+             Beginner read: one gap is your tests (notused → write a test), the other is your code
+             (notreachable → the branch can never run). Findings carry their calc.label business name. */-->
+      <div x-show="refSlot === 'check'" class="flex-1 flex flex-col min-h-0" data-ka-section="rules.reference.check">
+        <div class="shrink-0 px-3 py-1.5 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2 text-xs flex-wrap">
+          <span class="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Health</span>
+          <span x-show="check &amp;&amp; check.coverage" class="text-slate-500 dark:text-slate-400"
+                x-text="check &amp;&amp; check.coverage ? (check.coverage.covered + '/' + check.coverage.total + ' branch arms exercised') : ''"></span>
+          <span x-show="cellsLine()" class="w-full text-slate-500 dark:text-slate-400" data-ka-cells x-text="cellsLine()"></span>
+        </div>
+        <div x-show="check &amp;&amp; check.error" class="px-4 py-3 text-xs text-rose-600 dark:text-rose-400"
+             x-text="check &amp;&amp; ((check.code || '') + ': ' + check.error)"></div>
+        <div class="flex-1 overflow-y-auto p-2.5 space-y-3.5" x-show="check &amp;&amp; !check.error">
+
+          <!--/* notused — add test DATA */-->
+          <div>
+            <div class="flex items-center gap-1.5 mb-0.5">
+              <span class="text-amber-500">◑</span>
+              <span class="text-[11px] uppercase tracking-wider font-semibold text-amber-600 dark:text-amber-400">Not used — add test data</span>
+              <span class="text-slate-400 text-xs" x-text="'(' + ((check &amp;&amp; check.notused || []).length) + ')'"></span>
+            </div>
+            <p class="text-[11px] text-slate-500 dark:text-slate-400 mb-1.5 leading-snug">A rule that works, but no saved scenario exercises it — the fix is a test.</p>
+            <template x-for="g in (check &amp;&amp; check.notused) || []" :key="g.site">
+              <div class="rounded-md border border-amber-200 dark:border-amber-900/50 bg-amber-50/60 dark:bg-amber-950/20 px-2 py-1.5 mb-1">
+                <div class="text-xs font-medium text-slate-700 dark:text-slate-200" x-text="g.label || ('line ' + g.line)"></div>
+                <div class="font-mono text-[10.5px] text-slate-500 dark:text-slate-400 truncate" :title="g.source" x-text="g.source"></div>
+              </div>
+            </template>
+            <div x-show="!(check &amp;&amp; check.notused &amp;&amp; check.notused.length)" class="text-[11px] text-slate-400 dark:text-slate-500 italic px-1">no data gaps — every reachable rule is exercised</div>
+          </div>
+
+          <!--/* notreachable — fix the RULE */-->
+          <div>
+            <div class="flex items-center gap-1.5 mb-0.5">
+              <span class="text-rose-500">⊘</span>
+              <span class="text-[11px] uppercase tracking-wider font-semibold text-rose-600 dark:text-rose-400">Not reachable — fix the rule</span>
+              <span class="text-slate-400 text-xs" x-text="'(' + ((check &amp;&amp; check.notreachable || []).length) + ')'"></span>
+            </div>
+            <p class="text-[11px] text-slate-500 dark:text-slate-400 mb-1.5 leading-snug">A branch no possible input reaches — dead logic inside the declared domain; the fix is the rule itself (one only an impossible input reaches is a defensive guard doing its job — the robustness block names it).</p>
+            <template x-for="g in (check &amp;&amp; check.notreachable) || []" :key="g.site">
+              <div class="rounded-md border border-rose-200 dark:border-rose-900/50 bg-rose-50/60 dark:bg-rose-950/20 px-2 py-1.5 mb-1">
+                <div class="text-xs font-medium text-slate-700 dark:text-slate-200" x-text="g.label || ('line ' + g.line)"></div>
+                <div class="font-mono text-[10.5px] text-slate-500 dark:text-slate-400 truncate" :title="g.source" x-text="g.source"></div>
+              </div>
+            </template>
+            <div x-show="!(check &amp;&amp; check.notreachable &amp;&amp; check.notreachable.length)" class="text-[11px] text-slate-400 dark:text-slate-500 italic px-1">no dead rules — every branch is reachable</div>
+          </div>
+
+          <!--/* the PBT property pair — calc.always (safety) + calc.sometimes (reachability), D188 */-->
+          <div x-show="check &amp;&amp; check.properties &amp;&amp; check.properties.length">
+            <div class="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mb-1">Properties</div>
+            <template x-for="inv in (check &amp;&amp; check.properties) || []" :key="inv.name">
+              <div class="flex items-center gap-1.5 text-xs px-1 py-0.5">
+                <!--/* D246: a corner-hunt violation reads VIOLATED with checks 0 — branch on the status, not the deck count */-->
+                <span :class="inv.holds ? 'text-emerald-500' : (inv.checks || inv.status === 'VIOLATED' ? 'text-rose-500' : 'text-amber-500')" x-text="inv.holds ? '✓' : (inv.checks || inv.status === 'VIOLATED' ? '✗' : '?')"></span>
+                <span class="text-slate-400 dark:text-slate-500 shrink-0 font-mono text-[10px]" x-text="inv.kind"></span>
+                <span class="text-slate-700 dark:text-slate-200 truncate" :title="inv.name" x-text="inv.name"></span>
+                <span class="text-slate-400 dark:text-slate-500 shrink-0"
+                      x-text="inv.status === 'NOTREACHABLE' ? 'NOTREACHABLE · proven over the closed domain'
+                              : !inv.checks &amp;&amp; inv.status !== 'VIOLATED' ? (inv.robustnessChecks ? ('NOT CHECKED · only impossible inputs (' + inv.robustnessChecks + ')') : 'NOT CHECKED')
+                              : inv.kind === 'sometimes' ? (inv.holds ? ('REACHED · ' + inv.satisfied + ' of ' + inv.checks) : 'NOTREACHED · sampled')
+                              : (inv.holds ? ((inv.status === 'COMPLETE' ? 'COMPLETE · ' : 'HOLDS · ') + inv.checks + ' in-domain checks' + (inv.searched ? ' · ' + inv.searched + ' corners hunted' : ''))
+                                 : ('VIOLATED' + (inv.searchViolations ? ' · found by the corner hunt' : '')))"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <div x-show="refSlot === 'scenario-coverage'" class="flex-1 flex flex-col min-h-0">
+        <div class="shrink-0 px-3 py-1.5 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2 text-xs flex-wrap">
+          <span class="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Coverage</span>
+          <span x-show="tableLoading" class="text-slate-400 italic">building…</span>
+          <span x-show="tableData && tableData.coverage" class="text-slate-500 dark:text-slate-400" x-text="tableVerdict()"></span>
+          <div class="flex-1"></div>
+          <button @click="loadTable()" :disabled="tableLoading"
+                  class="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40"
+                  title="Rebuild the candidate set from the current calc + scenarios">↻</button>
+          <button @click="openTableFull()"
+                  class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+                  title="Open the full Scenario Coverage decision table">⤢ Scenario Coverage</button>
+          <span x-show="cellsLine()" class="w-full text-slate-500 dark:text-slate-400" data-ka-cells x-text="cellsLine()"></span>
+        </div>
+        <div x-show="tableData && tableData.error"
+             class="px-4 py-3 text-xs text-rose-600 dark:text-rose-400"
+             x-text="tableData && ((tableData.code || '') + ': ' + tableData.error)"></div>
+        <div class="flex-1 overflow-y-auto px-2 py-2">
+          <template x-for="r in visibleRows()" :key="r._idx">
+            <div class="flex items-center gap-1.5 py-1 px-1.5 rounded hover:bg-slate-50/70 dark:hover:bg-slate-900/40 text-xs">
+              <span class="shrink-0" :class="rowBadge(r).cls" :title="rowBadge(r).title" x-text="rowBadge(r).glyph"></span>
+              <span class="truncate text-slate-700 dark:text-slate-200 flex-1 min-w-0" :title="r.name" x-text="r.name"></span>
+              <span x-show="r.error" class="text-rose-500 shrink-0" :title="r.error">⚠</span>
+              <span x-show="r.provenance === 'generated' &amp;&amp; r.addsCoverage" class="shrink-0 text-emerald-600 dark:text-emerald-400" title="adds a new path">＋path</span>
+              <span x-show="r.provenance === 'generated' &amp;&amp; !r.addsCoverage" class="shrink-0 text-slate-400 dark:text-slate-500" title="no new coverage">—</span>
+              <button @click="tryCandidate(r)"
+                      class="shrink-0 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
+                      title="Load into the selected scenario's Input draft (or create a new one if none is selected), then ▶ Run">→ Input</button>
+              <button x-show="r.provenance === 'generated' &amp;&amp; r.addsCoverage &amp;&amp; !r.error" @click="promoteRow(r)"
+                      class="shrink-0 px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950"
+                      title="Save this candidate as a named scenario">＋ save</button>
+            </div>
+          </template>
+          <div x-show="tableData && !tableData.error && visibleRows().length === 0"
+               class="py-6 text-center text-xs text-slate-400 dark:text-slate-500 italic">no scenarios</div>
+          <div x-show="!tableData && !tableLoading"
+               class="py-6 text-center text-xs text-slate-400 dark:text-slate-500 italic">loading…</div>
+        </div>
+      </div>
+
+      <!--/* ===== slot: TWIN — the behaviour model (rules-transitions.md §17.4): the walk's verdict +
+           ceilings, the explore summary, the four evidence grades (never blended — D270), the findings,
+           and the sequence rail with run-one. Lazy on first open: the payload is two walks. ===== */-->
+      <div x-show="refSlot === 'twin'" class="flex-1 flex flex-col min-h-0" data-ka-section="rules.reference.twin">
+        <div class="shrink-0 px-3 py-1.5 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2 text-xs flex-wrap">
+          <span class="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Twin</span>
+          <span x-show="twinLoading" class="text-slate-400 italic">walking…</span>
+          <span x-show="twinCi()" class="px-1.5 py-0.5 rounded border text-[10px] font-semibold"
+                :class="twinVerdictCls(twinCi() &amp;&amp; twinCi().verdict)"
+                x-text="twinCi() ? twinCi().verdict : ''"></span>
+          <span x-show="twinCeilings()" class="text-slate-500 dark:text-slate-400"
+                x-text="twinCeilings() ? twinCeilings().hit : ''"></span>
+          <span class="text-slate-400 dark:text-slate-500 font-mono text-[10px]" x-text="twinUsageText()"></span>
+          <div class="flex-1"></div>
+          <button @click="loadTwin()" :disabled="twinLoading"
+                  class="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40"
+                  title="Re-walk the twin">↻</button>
+        </div>
+        <!--/* the verdict sentence first, then the one explanatory note, then the boundary */-->
+        <div x-show="twinData &amp;&amp; twinData.twin"
+             class="shrink-0 px-3 pt-2 text-xs font-semibold text-slate-700 dark:text-slate-200" x-text="twinHeadline()"></div>
+        <div x-show="twinData &amp;&amp; twinData.twin" class="shrink-0 px-3 pt-1 text-[11px] text-slate-500 dark:text-slate-400">The twin is a model of how the system may behave; the walk drives every order the model allows, and a live replay compares that model against the running service.</div>
+        <div class="shrink-0 px-3 py-1 border-b border-slate-100 dark:border-slate-700 text-[11px] text-slate-400 dark:text-slate-500">A walk is evidence about the declaration, bounded by its ceilings; it never proves the system.</div>
+
+        <div x-show="!twinData &amp;&amp; twinLoading"
+             class="py-6 text-center text-xs text-slate-400 dark:text-slate-500 italic">loading…</div>
+        <div x-show="twinData &amp;&amp; !twinData.twin" class="px-3 py-4 text-xs text-slate-500 dark:text-slate-400">
+          No twin.js in this rulebook — <span class="font-mono">Twin.help()</span> · <span class="font-mono">Skill.help('twin-authoring')</span>
+        </div>
+        <!--/* the message leads; the code stays, muted — a bare code tells a business reader nothing */-->
+        <div x-show="twinData &amp;&amp; twinData.error" class="px-4 py-3 text-xs">
+          <div class="text-rose-600 dark:text-rose-400" x-text="twinData &amp;&amp; twinData.error ? twinData.error.message : ''"></div>
+          <div class="font-mono text-[10px] text-slate-400 dark:text-slate-500"
+               x-text="twinData &amp;&amp; twinData.error ? ('code ' + twinData.error.code) : ''"></div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-2.5 space-y-3.5" x-show="twinData &amp;&amp; twinData.twin">
+
+          <!--/* explore summary — states, transitions, fidelity, stats */-->
+          <div x-show="twinExplore()">
+            <div class="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">What the walk reached</div>
+            <div class="text-[11px] text-slate-400 dark:text-slate-500 mb-1">The states and the moves between them the walk got to under this model, and the ones it never did.</div>
+            <div class="flex items-start gap-1.5 text-xs px-1 py-0.5">
+              <span class="text-slate-400 dark:text-slate-500 shrink-0 w-20">reached</span>
+              <span class="font-mono text-[10.5px] text-slate-700 dark:text-slate-200"
+                    x-text="(twinStates() ? twinStates().reached : []).join(', ') || '—'"></span>
+            </div>
+            <div class="flex items-start gap-1.5 text-xs px-1 py-0.5">
+              <span class="text-slate-400 dark:text-slate-500 shrink-0 w-20">not reached</span>
+              <span class="font-mono text-[10.5px] text-amber-600 dark:text-amber-400"
+                    x-text="(twinStates() ? twinStates().notReached : []).join(', ') || '—'"></span>
+            </div>
+            <div class="flex items-start gap-1.5 text-xs px-1 py-0.5">
+              <span class="text-slate-400 dark:text-slate-500 shrink-0 w-20">transitions</span>
+              <span class="text-slate-700 dark:text-slate-200"
+                    x-text="(twinTransitions() ? (twinTransitions().observed || []).length : 0) + ' observed · '
+                            + (twinTransitions() ? (twinTransitions().notObserved || []).length : 0) + ' not observed'"></span>
+            </div>
+            <template x-for="t in (twinTransitions() ? (twinTransitions().notObserved || []) : [])"
+                      :key="t.from + '|' + t.command + '|' + t.to">
+              <div class="font-mono text-[10.5px] text-amber-600 dark:text-amber-400 px-1 ml-20"
+                   x-text="t.from + ' → ' + t.command + ' → ' + t.to"></div>
+            </template>
+            <div class="flex items-start gap-1.5 text-xs px-1 py-0.5">
+              <span class="text-slate-400 dark:text-slate-500 shrink-0 w-20">how checked</span>
+              <span class="text-slate-700 dark:text-slate-200" x-text="twinFidelityText()"></span>
+            </div>
+            <template x-for="f in twinOpenFields()" :key="f.field">
+              <div class="font-mono text-[10.5px] text-amber-600 dark:text-amber-400 px-1 ml-20"
+                   x-text="'undeclared open field ' + f.field + ' · ' + f.distinct + ' distinct'"></div>
+            </template>
+            <div class="flex items-start gap-1.5 text-xs px-1 py-0.5">
+              <span class="text-slate-400 dark:text-slate-500 shrink-0 w-20">size of walk</span>
+              <span class="text-slate-700 dark:text-slate-200" x-text="twinStatsText()"></span>
+            </div>
+          </div>
+
+          <!--/* counterexamples — the promote call is SHOWN, never fired: a write verb with a walk's cost (§17.3) */-->
+          <div x-show="twinCounterexamples().length">
+            <div class="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+              Where the model breaks its own rules <span class="text-slate-400 dark:text-slate-500" x-text="'(' + twinCounterexamples().length + ')'"></span>
+            </div>
+            <div class="text-[11px] text-slate-400 dark:text-slate-500 mb-1">Each row is an order of commands the walk found that ends with a rule of the model broken.</div>
+            <template x-for="cx in twinCounterexamples()" :key="cx.id">
+              <div class="rounded-md border border-rose-200 dark:border-rose-900/50 bg-rose-50/60 dark:bg-rose-950/20 px-2 py-1.5 mb-1">
+                <div class="flex items-center gap-1.5 text-xs">
+                  <span class="text-rose-600 dark:text-rose-400 shrink-0" x-text="cx.kind"></span>
+                  <span class="text-slate-700 dark:text-slate-200 truncate flex-1 min-w-0" :title="cx.name" x-text="cx.name || ''"></span>
+                  <span class="font-mono text-[10px] text-slate-500 dark:text-slate-400 shrink-0"
+                        x-text="cx.command + ' · node ' + cx.node + ' · ' + (cx.path || []).length + ' steps'"></span>
+                </div>
+                <div class="mt-1 font-mono text-[10px] text-slate-500 dark:text-slate-400 break-all" x-text="twinPromoteCall(cx)"></div>
+              </div>
+            </template>
+          </div>
+
+          <!--/* evidence — four grades, four denominators; never summed, never a percentage (D270 / D194) */-->
+          <div x-show="twinCheck()">
+            <div class="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Evidence</div>
+            <div class="text-[11px] text-slate-400 dark:text-slate-500 mb-1">Four separate counts, each over its own population — they are never added up into one number.</div>
+            <div class="flex flex-wrap gap-1.5">
+              <template x-for="e in twinEvidence()" :key="e.grade">
+                <div class="rounded-md border border-slate-200 dark:border-slate-700 px-2 py-1">
+                  <div class="font-mono text-xs text-slate-800 dark:text-slate-100" x-text="e.count + ' / ' + e.of"></div>
+                  <div class="text-[10px] text-slate-500 dark:text-slate-400" x-text="e.grade + (e.note ? ' · ' + e.note : '')"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!--/* findings — the Rule.check house shape; `incomplete` is a DISCLOSURE and never fails CI (P29) */-->
+          <div x-show="twinCheck()">
+            <div class="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Findings</div>
+            <div class="text-[11px] text-slate-400 dark:text-slate-500 mb-1">What the check found against the model, and — separately — what this reading does not cover.</div>
+
+            <div class="text-[11px] text-slate-500 dark:text-slate-400 px-1">
+              Required rows never reached — widen the model or the walk <span class="text-slate-400 dark:text-slate-500" x-text="'(' + ((twinFindings().requiredNotreached || []).length) + ')'"></span>
+            </div>
+            <template x-for="r in (twinFindings().requiredNotreached || [])" :key="r.kind + '|' + r.id">
+              <div class="flex items-center gap-1.5 text-xs px-1 py-0.5">
+                <span class="text-rose-500 shrink-0">⊘</span>
+                <span class="font-mono text-[10.5px] text-slate-700 dark:text-slate-200 shrink-0" x-text="r.id"></span>
+                <span class="font-mono text-[10px] text-slate-400 dark:text-slate-500 shrink-0" x-text="r.kind + ' · ' + r.status"></span>
+                <span class="text-slate-500 dark:text-slate-400 truncate"
+                      x-text="r.reason || (r.edge ? (r.edge.from + ' → ' + r.edge.command + ' → ' + r.edge.to)
+                              : (r.node != null ? ('node ' + r.node) : ''))"></span>
+              </div>
+            </template>
+
+            <div class="text-[11px] text-slate-500 dark:text-slate-400 px-1 mt-1">
+              Blessed sequences that moved — decide which reading is right <span class="text-slate-400 dark:text-slate-500" x-text="'(' + ((twinFindings().sequenceDrift || []).length) + ')'"></span>
+            </div>
+            <template x-for="d in (twinFindings().sequenceDrift || [])" :key="d.sequenceId + '|' + d.at">
+              <div class="flex items-start gap-1.5 text-xs px-1 py-0.5">
+                <span class="text-rose-500 shrink-0">≠</span>
+                <div class="min-w-0">
+                  <div class="text-slate-700 dark:text-slate-200"
+                       x-text="'Sequence ' + d.sequenceId + ' answers differently at step ' + (d.at + 1)
+                               + ' — it was ' + d.prev + ', it is now ' + d.now + '.'"></div>
+                  <div class="font-mono text-[10px] text-slate-400 dark:text-slate-500"
+                       x-text="'sequenceDrift · at ' + d.at"></div>
+                </div>
+              </div>
+            </template>
+
+            <!--/* the live seam, read as columns — where, what each side said (§17.5) */-->
+            <div class="text-[11px] text-slate-500 dark:text-slate-400 px-1 mt-1">
+              Where the service and the model disagree <span class="text-slate-400 dark:text-slate-500" x-text="'(' + ((twinFindings().liveMismatch || []).length) + ')'"></span>
+            </div>
+            <template x-for="(m, mi) in (twinFindings().liveMismatch || [])" :key="mi">
+              <div class="rounded-md border border-rose-200 dark:border-rose-900/50 bg-rose-50/60 dark:bg-rose-950/20 px-2 py-1.5 mb-1 text-xs">
+                <div class="text-slate-700 dark:text-slate-200 break-words"
+                     x-text="twinMismatchWho(m) + ' · ' + twinMismatchStep(m) + ' · replayed against '
+                             + twinMismatchAgainst(m)"></div>
+                <div class="text-rose-600 dark:text-rose-400" x-text="'the service ' + twinMismatchService(m)"></div>
+                <div class="text-slate-600 dark:text-slate-300" x-text="'the model — ' + twinMismatchModel(m)"></div>
+                <div x-show="m.evidence" class="font-mono text-[10px] text-slate-400 dark:text-slate-500 break-all"
+                     x-text="'evidence ' + String(m.evidence).slice(0, 12)"></div>
+              </div>
+            </template>
+
+            <div class="text-[11px] text-slate-500 dark:text-slate-400 px-1 mt-1">
+              Disclosures — what this reading does not cover <span class="text-slate-400 dark:text-slate-500" x-text="'(' + ((twinFindings().incomplete || []).length) + ')'"></span>
+            </div>
+            <template x-for="(d, di) in (twinFindings().incomplete || [])" :key="di">
+              <div class="flex items-start gap-1.5 text-xs px-1 py-0.5">
+                <span class="text-amber-500 shrink-0">◑</span>
+                <div class="min-w-0">
+                  <div class="text-slate-600 dark:text-slate-300" x-text="twinDisclosureText(d)"></div>
+                  <div class="font-mono text-[10px] text-slate-400 dark:text-slate-500 truncate"
+                       x-text="twinDisclosureDetail(d)"></div>
+                </div>
+              </div>
+            </template>
+
+            <template x-for="(rsn, ri) in (twinCi() ? (twinCi().reasons || []) : [])" :key="ri">
+              <div class="text-[11px] text-slate-600 dark:text-slate-300 px-1 mt-1" x-text="rsn"></div>
+            </template>
+          </div>
+
+          <!--/* the wire harvest — the refused exchanges the live record holds, read off it (§17.5) */-->
+          <div x-show="twinWireRefusals().length">
+            <div class="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+              What the service refused <span class="text-slate-400 dark:text-slate-500" x-text="'(' + twinWireRefusals().length + ')'"></span>
+            </div>
+            <div class="text-[11px] text-slate-400 dark:text-slate-500 mb-1">Every refusal the running service returned during the recorded replays, in its own words.</div>
+            <template x-for="(w, wi) in twinWireRefusals()" :key="wi">
+              <div class="flex items-center gap-1.5 text-xs px-1 py-0.5">
+                <span class="font-mono text-[10.5px] text-slate-700 dark:text-slate-200 shrink-0" x-text="w.command"></span>
+                <span class="font-mono text-[10px] text-slate-500 dark:text-slate-400 truncate"
+                      x-text="twinWireRefusalText(w)"></span>
+              </div>
+            </template>
+          </div>
+
+          <!--/* the sequence rail — one row per saved sequence, replayed under the CURRENT model (§17.1) */-->
+          <div>
+            <div class="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+              Saved sequences <span class="text-slate-400 dark:text-slate-500" x-text="'(' + twinSequences().length + ')'"></span>
+            </div>
+            <div class="text-[11px] text-slate-400 dark:text-slate-500 mb-1">The orders of commands kept on file — every check replays each of them against the current model.</div>
+            <div x-show="twinData &amp;&amp; twinData.provenance"
+                 class="text-[10px] text-slate-400 dark:text-slate-500 px-1 mb-1" x-text="twinProvenanceText()"></div>
+            <div x-show="twinPlanText()" data-twin-plan
+                 class="text-[10px] text-slate-400 dark:text-slate-500 px-1 mb-1" x-text="twinPlanText()"></div>
+            <template x-for="s in twinSequences()" :key="s._id">
+              <div class="rounded-md border border-slate-200 dark:border-slate-700 px-2 py-1.5 mb-1">
+                <div class="flex items-center gap-1.5 text-xs">
+                  <span class="font-mono text-[10.5px] text-slate-700 dark:text-slate-200 shrink-0" x-text="s._id"></span>
+                  <span class="text-slate-600 dark:text-slate-300 truncate flex-1 min-w-0" :title="s._label" x-text="s._label || ''"></span>
+                  <span class="text-[10px] text-slate-400 dark:text-slate-500 shrink-0"
+                        x-text="twinOriginLabel(s._from &amp;&amp; s._from.kind) + ' · ' + ((s.steps || []).length) + ' steps'
+                                + (s._expect ? ' · expected result declared' : '')"></span>
+                  <button @click="twinRunSequence(s._id)" :disabled="twinRunning[s._id]"
+                          class="shrink-0 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 disabled:opacity-40"
+                          title="Replay this sequence under the current model">▶ Run</button>
+                </div>
+                <!--/* the live record's reading (§17.6, D319): freshness and disposition never merged */-->
+                <div class="mt-1 text-[11px] px-1" data-twin-live>
+                  <div x-show="!twinLive(s._id)" class="text-slate-400 dark:text-slate-500 italic">not run live</div>
+                  <template x-if="twinLive(s._id)">
+                    <div>
+                      <div x-show="twinLive(s._id).freshness" class="text-amber-600 dark:text-amber-400" x-text="twinLive(s._id).freshness"></div>
+                      <div x-show="twinLive(s._id).head" class="font-mono text-[10.5px]"
+                           :class="(twinLive(s._id).head || '').indexOf('PASS') === 0 ? 'text-emerald-600 dark:text-emerald-400'
+                                   : (twinLive(s._id).head || '').indexOf('FAIL') === 0 ? 'text-rose-600 dark:text-rose-400'
+                                   : 'text-amber-600 dark:text-amber-400'"
+                           x-text="twinLive(s._id).head"></div>
+                      <div x-show="twinLive(s._id).mismatch" class="text-slate-600 dark:text-slate-300" x-text="twinLive(s._id).mismatch"></div>
+                      <div x-show="twinLive(s._id).reason" class="text-slate-500 dark:text-slate-400" x-text="twinLive(s._id).reason"></div>
+                      <div x-show="twinLive(s._id).shrink" class="text-slate-500 dark:text-slate-400" x-text="twinLive(s._id).shrink"></div>
+                      <template x-for="(st, si) in twinLive(s._id).steps" :key="si">
+                        <div class="font-mono text-[10.5px] text-slate-600 dark:text-slate-300 ml-2"
+                             x-text="(si + 1) + '. ' + st.command + (st.args ? ' ' + JSON.stringify(st.args) : '')"></div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+                <div x-show="twinRuns[s._id]" class="mt-1 pt-1 border-t border-slate-100 dark:border-slate-700">
+                  <template x-for="(st, si) in (twinRuns[s._id] ? twinRuns[s._id].steps : [])" :key="si">
+                    <div class="flex items-center gap-1.5 text-xs px-1 py-0.5">
+                      <span class="font-mono text-[10px] text-slate-400 dark:text-slate-500 shrink-0" x-text="si"></span>
+                      <span class="font-mono text-[10.5px] text-slate-700 dark:text-slate-200 shrink-0" x-text="st.command"></span>
+                      <span class="shrink-0"
+                            :class="st.outcome === 'applied' ? 'text-emerald-600 dark:text-emerald-400'
+                                    : (st.outcome === 'error' ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400')"
+                            x-text="st.outcome + (st.stage ? ' · ' + st.stage : '') + (st.reason ? ' · ' + st.reason : '')"></span>
+                      <span class="text-[10px] text-slate-400 dark:text-slate-500 truncate" x-text="'postcondition ' + st.postcondition"></span>
+                    </div>
+                  </template>
+                  <div class="text-[11px] text-slate-500 dark:text-slate-400 px-1" x-text="twinExpectText(twinRuns[s._id])"></div>
+                  <template x-for="(m, mi) in twinMismatches(twinRuns[s._id])" :key="mi">
+                    <div class="font-mono text-[10.5px] text-rose-600 dark:text-rose-400 px-1 break-all"
+                         x-text="(m.at != null ? ('at ' + m.at + ' · ') : '') + m.field + ' · expected ' + JSON.stringify(m.expected)
+                                 + (m.actual === undefined ? ' · absent' : ' · actual ' + JSON.stringify(m.actual))"></div>
+                  </template>
+                  <template x-for="(d, di) in twinDisclosures(twinRuns[s._id])" :key="di">
+                    <div class="text-[11px] text-amber-600 dark:text-amber-400 px-1" x-text="d"></div>
+                  </template>
+                </div>
+              </div>
+            </template>
+            <div x-show="!twinSequences().length"
+                 class="text-[11px] text-slate-400 dark:text-slate-500 italic px-1">no sequences</div>
+          </div>
+
+          <!--/* play records (playground.md §6 (1)) — the quarantine's records, replayed for their worlds; the
+               person confirms steps and/or final values and picks the criteria, and this page's own route
+               writes confirm.json */-->
+          <div data-ka-section="rules.reference.twin.play">
+            <div class="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+              Play records <span class="text-slate-400 dark:text-slate-500" x-text="'(' + playRecords().length + ')'"></span>
+            </div>
+            <div class="text-[11px] text-slate-400 dark:text-slate-500 mb-1">Sessions played against the twin-backed mock. Confirm what each should do — per step, the final state, or both — and pick the criterion it defends, or leave it unlinked. A confirmed record promotes to a saved sequence.</div>
+            <div x-show="playMissing" data-play-missing class="text-[11px] text-amber-600 dark:text-amber-400 px-1 mb-1"
+                 x-text="'play record ' + playMissing + ' is not in this project — played against another project, or cleaned from target/'"></div>
+            <template x-for="r in playRecords()" :key="r.id">
+              <div :id="'play-record-' + r.id" tabindex="-1" :data-play-open="playOpen[r.id] ? 'true' : 'false'"
+                   class="rounded-md border px-2 py-1.5 mb-1"
+                   :class="playSelected === r.id ? 'border-indigo-400 dark:border-indigo-500' : 'border-slate-200 dark:border-slate-700'">
+                <div class="flex items-center gap-1.5 text-xs">
+                  <span class="font-mono text-[10.5px] text-slate-700 dark:text-slate-200 shrink-0" x-text="r.id"></span>
+                  <span x-show="r.error" class="text-rose-600 dark:text-rose-400 truncate flex-1 min-w-0"
+                        x-text="r.error ? r.error.code + ' · ' + r.error.message : ''"></span>
+                  <span x-show="!r.error" class="text-slate-600 dark:text-slate-300 truncate flex-1 min-w-0"
+                        x-text="r.error ? '' : (r.identity + ' · ' + r.steps.length + ' steps')"></span>
+                  <span x-show="!r.error" class="text-[10px] shrink-0"
+                        :class="r.confirmation &amp;&amp; r.confirmation.state === 'current' ? 'text-emerald-600 dark:text-emerald-400'
+                                : (r.confirmation ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500')"
+                        x-text="r.error ? '' : playConfirmText(r)"></span>
+                  <button x-show="!r.error" @click="playToggle(r.id)"
+                          class="shrink-0 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
+                          x-text="playOpen[r.id] ? 'Close' : 'Review'"></button>
+                </div>
+                <template x-if="!r.error &amp;&amp; playOpen[r.id] &amp;&amp; playDrafts[r.id]">
+                  <div class="mt-1 pt-1 border-t border-slate-100 dark:border-slate-700 space-y-1.5">
+                    <div x-show="r.replay &amp;&amp; r.replay.error" class="text-[11px] text-rose-600 dark:text-rose-400 px-1"
+                         x-text="r.replay &amp;&amp; r.replay.error ? 'replay refused: ' + r.replay.error : ''"></div>
+                    <div class="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 px-1">Steps — tick the ones to confirm</div>
+                    <template x-for="s in r.steps" :key="s.at">
+                      <div class="px-1 py-0.5 text-xs">
+                        <div class="flex items-center gap-1.5">
+                          <input type="checkbox" x-model="playDrafts[r.id].steps[s.at].on" class="shrink-0">
+                          <span class="font-mono text-[10px] text-slate-400 dark:text-slate-500 shrink-0" x-text="s.at"></span>
+                          <span class="font-mono text-[10.5px] text-slate-700 dark:text-slate-200 shrink-0" x-text="s.command"></span>
+                          <span class="shrink-0 text-[11px]"
+                                :class="s.disposition === 'applied' ? 'text-emerald-600 dark:text-emerald-400'
+                                        : (s.disposition === 'error' ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400')"
+                                x-text="s.status + ' ' + s.disposition + (s.stage ? ' · ' + s.stage : '') + (s.reason ? ' · ' + s.reason : '')"></span>
+                          <span class="text-[10px] text-slate-400 dark:text-slate-500 truncate font-mono" :title="JSON.stringify(s.args)"
+                                x-text="JSON.stringify(s.args)"></span>
+                        </div>
+                        <div x-show="playDrafts[r.id].steps[s.at].on" class="flex items-center gap-1.5 pl-5 pt-0.5 text-[11px]">
+                          <span class="text-slate-500 dark:text-slate-400">should be</span>
+                          <select x-model="playDrafts[r.id].steps[s.at].outcome"
+                                  class="rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-1 py-0">
+                            <option value="applied">applied</option>
+                            <option value="refused">refused</option>
+                            <option value="error">error</option>
+                          </select>
+                          <template x-if="playDrafts[r.id].steps[s.at].outcome !== 'applied'">
+                            <span class="flex items-center gap-1.5">
+                              <select x-model="playDrafts[r.id].steps[s.at].stage"
+                                      class="rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-1 py-0">
+                                <option value="">any stage</option>
+                                <option value="guard">guard</option>
+                                <option value="apply">apply</option>
+                                <option value="returnValue">returnValue</option>
+                                <option value="snapshot">snapshot</option>
+                                <option value="clock">clock</option>
+                              </select>
+                              <input type="text" x-model="playDrafts[r.id].steps[s.at].reason" placeholder="reason"
+                                     class="w-40 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-1 py-0 font-mono">
+                            </span>
+                          </template>
+                        </div>
+                        <div x-show="playReplayStep(r, s.at)" class="pl-5 font-mono text-[10px] text-slate-400 dark:text-slate-500 break-all"
+                             x-text="playReplayStep(r, s.at) ? 'model: ' + playReplayStep(r, s.at).outcome + (playIdentityNote(r, s.at) ? ' · ' + playIdentityNote(r, s.at) : '') + ' · world ' + JSON.stringify(playReplayStep(r, s.at).world) : ''"></div>
+                      </div>
+                    </template>
+                    <div class="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 px-1">Final state — tick the values to confirm</div>
+                    <template x-for="k in Object.keys(playFinal(r))" :key="k">
+                      <label class="flex items-center gap-1.5 px-1 text-xs">
+                        <input type="checkbox" x-model="playDrafts[r.id]['final'][k]">
+                        <span class="font-mono text-[10.5px] text-slate-700 dark:text-slate-200" x-text="k"></span>
+                        <span class="font-mono text-[10.5px] text-slate-500 dark:text-slate-400 break-all" x-text="JSON.stringify(playFinal(r)[k])"></span>
+                      </label>
+                    </template>
+                    <div class="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 px-1">Criteria this record defends</div>
+                    <template x-for="c in r.candidates" :key="c.id">
+                      <label class="flex items-start gap-1.5 px-1 text-xs">
+                        <input type="checkbox" x-model="playDrafts[r.id].req[c.id]" class="mt-0.5">
+                        <span class="font-mono text-[10.5px] text-slate-700 dark:text-slate-200 shrink-0" x-text="c.id"></span>
+                        <span class="text-slate-600 dark:text-slate-300" x-text="(c.text || '') + ' (' + (c.via === 'real' ? 'realized by ' : 'declared by ') + c.by + ')'"></span>
+                      </label>
+                    </template>
+                    <div x-show="!r.candidates.length" class="text-[11px] text-slate-400 dark:text-slate-500 italic px-1">no candidate criteria — the row lands unlinked</div>
+                    <div x-show="r.candidates.length &amp;&amp; !playPicked(r).length" class="text-[11px] text-slate-400 dark:text-slate-500 px-1">none picked — the row lands unlinked: a check, not coverage</div>
+                    <div class="flex items-center gap-1.5 px-1">
+                      <button @click="playConfirm(r)" :disabled="playSaving[r.id]"
+                              class="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 text-xs disabled:opacity-40"
+                              title="Write this confirmation beside the record">Confirm</button>
+                      <span class="font-mono text-[10px] text-slate-400 dark:text-slate-500 break-all" x-text="JSON.stringify(playExpect(r))"></span>
+                    </div>
+                    <div x-show="r.confirmation &amp;&amp; r.confirmation.state === 'current'" class="px-1 text-[11px] text-slate-500 dark:text-slate-400">
+                      Promote it: <span class="font-mono text-[10px] break-all" x-text="playPromoteCall(r)"></span>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <div x-show="!playRecords().length"
+                 class="text-[11px] text-slate-400 dark:text-slate-500 italic px-1">no play records — play the mock with <span class="font-mono">Http.mock({twin, record: true})</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!--/* lookup popover — hover a lookup node on the diagram → its rate table, inline */-->
+  <div x-show="lookupPopover" x-cloak
+       class="fixed z-50 max-w-md max-h-64 overflow-auto rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-xl p-2 pointer-events-none"
+       :style="lookupPopover ? 'left:' + lookupPopover.x + 'px; top:' + lookupPopover.y + 'px' : ''">
+    <div class="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold mb-1"
+         x-text="lookupPopover ? 'lookup.' + lookupPopover.key : ''"></div>
+    <div x-html="lookupPopover ? lookupPopover.html : ''"></div>
+  </div>
+
+  <!--/* steps popover (D114 v4) — CLICK a diagram node in the docked slot → its inlined steps (a
+       merged business bubble lists every member statement). Click-dismiss (✕/Esc/background). */-->
+  <div x-show="stepsPopover" x-cloak
+       @keydown.escape.window="stepsPopover = null"
+       class="fixed z-50 max-w-md max-h-72 overflow-auto rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-xl text-xs"
+       :style="stepsPopover ? 'left:' + stepsPopover.x + 'px; top:' + stepsPopover.y + 'px' : ''">
+    <div class="flex items-center gap-2 px-2 py-1 border-b border-slate-100 dark:border-slate-700">
+      <span class="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold flex-1"
+            x-text="stepsPopover && stepsPopover.lines.length > 1 ? stepsPopover.lines.length + ' steps' : 'step'"></span>
+      <button @click="stepsPopover = null" class="px-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" title="Close">✕</button>
+    </div>
+    <ul class="px-2 py-1.5 font-mono leading-relaxed">
+      <template x-for="(ln, i) in (stepsPopover ? stepsPopover.lines : [])" :key="i">
+        <li class="text-slate-700 dark:text-slate-200 py-0.5" x-text="ln"></li>
+      </template>
+    </ul>
+  </div>
+
+  <!--/* ⛶ Combo — full-screen outline | diagram | code (the IDE deep-dive). The diagram host AND
+       #cm-host are physically MOVED in (openDiagramFull) so ids/handlers/decoration + the single CM
+       view stay single-sourced; the outline rail reuses the same state/methods. (state: diagramFull) */-->
+  <div x-show="diagramFull" x-cloak
+       class="fixed inset-0 z-40 flex flex-col bg-white dark:bg-slate-900"
+       @keydown.escape.window="diagramFull &amp;&amp; closeDiagramFull()">
+    <!--/* top bar — column on/off toggles (the Result-pill pattern) + Close. The diagram's own power
+         affordances (All steps · Expand all · Mermaid) are pinned to the top of the diagram column. */-->
+    <div class="shrink-0 px-4 py-2 border-b border-slate-200 dark:border-slate-700 flex items-center gap-2 text-sm">
+      <span class="font-mono font-semibold text-slate-900 dark:text-slate-100" x-text="rbName"></span>
+      <span class="text-xs text-slate-400 dark:text-slate-500">· Combo</span>
+      <div class="flex-1"></div>
+      <template x-for="c in [{k:'outline',t:'Outline'},{k:'diagram',t:'Diagram'},{k:'code',t:'Code'}]" :key="c.k">
+        <button @click="comboToggle(c.k)"
+                class="text-[11px] px-2 py-0.5 rounded-full border"
+                :class="comboCols[c.k]
+                    ? 'border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/40'
+                    : 'border-slate-200 dark:border-slate-600 text-slate-400 dark:text-slate-500'"
+                :title="(comboCols[c.k] ? 'Hide ' : 'Show ') + c.t"
+                x-text="c.t"></button>
+      </template>
+      <button @click="closeDiagramFull()"
+              class="ml-1 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+              title="Close (Esc)">✕ Close</button>
+    </div>
+    <div class="flex-1 flex min-h-0" x-ref="comboBody">
+      <!--/* outline rail */-->
+      <aside class="overflow-y-auto border-r border-slate-200 dark:border-slate-700 p-2 text-xs bg-slate-50/60 dark:bg-slate-900/40"
+             :style="comboColStyle('outline')">
+        <div class="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold mb-1 px-1">Outline</div>
+        <template x-for="oe in diagramOutline" :key="oe.id">
+          <button @click="jumpTo(oe)"
+                  class="block w-full text-left py-0.5 truncate hover:text-indigo-600 dark:hover:text-indigo-400"
+                  :class="oe.kind === 'section' ? 'font-semibold text-slate-700 dark:text-slate-200' : 'text-slate-500 dark:text-slate-400'"
+                  :style="'padding-left:' + (outlineDepth(oe) * 14) + 'px'"
+                  :title="'line ' + oe.line + (oe.size ? ' · ' + oe.size + ' nodes' : '')">
+            <span x-text="(oe.kind === 'loop' ? '↻ ' : oe.kind === 'decision' ? '◇ ' : '') + oe.label"></span>
+            <span x-show="oe.collapsible &amp;&amp; diagramCollapsed.indexOf(oe.id) !== -1"
+                  class="text-slate-400 dark:text-slate-500">▸</span>
+          </button>
+        </template>
+      </aside>
+      <!--/* outline ⇄ diagram splitter */-->
+      <div x-show="comboCols.outline &amp;&amp; comboCols.diagram" class="relative w-1.5 shrink-0 group">
+        <div class="absolute inset-0 bg-slate-100 dark:bg-slate-900 group-hover:bg-indigo-300 dark:group-hover:bg-indigo-700 transition-colors"></div>
+        <div class="absolute inset-y-0 -left-1.5 -right-1.5 z-20 cursor-col-resize" @mousedown.prevent="startDragCombo($event, 'outline')"></div>
+      </div>
+      <!--/* DIAGRAM column — a pinned toolbar on top + the (scrollable) host below. The host is
+           appended here on open (flex-col so the toolbar stays pinned, the host scrolls normally). */-->
+      <div class="flex flex-col min-h-0 min-w-0 border-r border-slate-200 dark:border-slate-700" x-ref="diagramFullSlot" :style="comboColStyle('diagram')">
+        <div class="shrink-0 px-3 py-1 border-b border-slate-100 dark:border-slate-700 flex items-center gap-1.5 text-xs bg-slate-50/60 dark:bg-slate-900/40">
+          <span class="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Diagram</span>
+          <div class="flex-1"></div>
+          <button @click="toggleCompact()"
+                  class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+                  :class="compact ? 'bg-slate-100 dark:bg-slate-700' : ''"
+                  :title="compact ? 'Business view — linear steps merged' : 'All steps — every statement as a box'"
+                  x-text="compact ? '◫ Business' : '☰ All steps'">◫ Business</button>
+          <button x-show="diagramCollapsed.length > 0 || expandAll || expandSet.length > 0"
+                  @click="toggleExpandAll()"
+                  class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+                  x-text="expandAll || diagramCollapsed.length === 0 ? '⊟ Collapse' : '⊞ Expand all'"></button>
+          <button @click="copyMermaid()"
+                  class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+                  title="Copy the Mermaid flowchart text"
+                  x-text="mermaidCopied ? '✓ copied' : 'Copy Mermaid'">Copy Mermaid</button>
+        </div>
+        <!--/* the diagram host (x-ref diagramHost) is appended here on open — it is flex-1 + overflow-auto,
+             so it scrolls normally below the pinned toolbar and never pushes the code column. */-->
+      </div>
+      <!--/* diagram ⇄ code splitter */-->
+      <div x-show="comboCols.code &amp;&amp; (comboCols.diagram || comboCols.outline)" class="relative w-1.5 shrink-0 group">
+        <div class="absolute inset-0 bg-slate-100 dark:bg-slate-900 group-hover:bg-indigo-300 dark:group-hover:bg-indigo-700 transition-colors"></div>
+        <div class="absolute inset-y-0 -left-1.5 -right-1.5 z-20 cursor-col-resize" @mousedown.prevent="startDragCombo($event, 'code')"></div>
+      </div>
+      <!--/* the #cm-host is appended here while the Combo is open (code beside the diagram) */-->
+      <div class="flex flex-col min-h-0 min-w-0" x-ref="comboCodeSlot" :style="comboColStyle('code')"></div>
+    </div>
+  </div>
+
+  <!--/* ⤢ Scenario Coverage — the full decision table (D114 v4). Transposed by DEFAULT (the BA's native
+       rate-book shape: fields = rows, scenarios = columns); ⇄ flips to scenarios-as-rows. Same tableData,
+       a render flag only — renderCoverageGrid dispatches; matrixClick handles ＋ promote. */-->
+  <div x-show="tableFull" x-cloak class="fixed inset-0 z-40 bg-white dark:bg-slate-900 flex flex-col"
+       @keydown.escape.window="tableFull &amp;&amp; closeTableFull()">
+    <div class="shrink-0 px-4 py-2 border-b border-slate-200 dark:border-slate-700 flex items-center gap-2 text-xs flex-wrap">
+      <span class="font-semibold text-slate-700 dark:text-slate-200">Scenario Coverage</span>
+      <span class="text-slate-400" x-text="'· ' + rbName"></span>
+      <div class="inline-flex rounded border border-slate-200 dark:border-slate-600 overflow-hidden ml-2">
+        <button @click="showExisting()"
+                class="px-2 py-0.5 border-r border-slate-200 dark:border-slate-600"
+                :class="onlyExisting ? 'bg-indigo-600 text-white' : 'hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300'"
+                title="Show only the saved scenarios — no generated candidates">Existing</button>
+        <template x-for="opt in [{k:'coverage',l:'Minimal coverage'},{k:'pairwise',l:'All pairs'},{k:'boundary',l:'Boundary values'}]" :key="opt.k">
+          <button @click="setTableSuite(opt.k)"
+                  class="px-2 py-0.5 border-r border-slate-200 dark:border-slate-600 last:border-r-0"
+                  :class="!onlyExisting &amp;&amp; tableSuite === opt.k ? 'bg-indigo-600 text-white' : 'hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300'"
+                  x-text="opt.l"></button>
+        </template>
+      </div>
+      <!--/* layout toggle — plain language for a BA (not "flip"): which axis the SCENARIOS run along */-->
+      <span class="text-slate-400 dark:text-slate-500 ml-1">Scenarios as</span>
+      <div class="inline-flex rounded border border-slate-200 dark:border-slate-600 overflow-hidden">
+        <button @click="if (!coverageTransposed) toggleCoverageTransposed()"
+                class="px-2 py-0.5 border-r border-slate-200 dark:border-slate-600"
+                :class="coverageTransposed ? 'bg-indigo-600 text-white' : 'hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300'"
+                title="Scenarios across the top — fields down the side (the decision-table view)">columns</button>
+        <button @click="if (coverageTransposed) toggleCoverageTransposed()"
+                class="px-2 py-0.5"
+                :class="!coverageTransposed ? 'bg-indigo-600 text-white' : 'hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300'"
+                title="One scenario per row — fields across the top">rows</button>
+      </div>
+      <!--/* Fields ▾ picker — choose which input fields the matrix shows (kills the null noise) */-->
+      <div class="relative">
+        <button @click="fieldMenuOpen = !fieldMenuOpen"
+                class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+                title="Choose which input fields to show">Fields ▾</button>
+        <div x-show="fieldMenuOpen" x-cloak @click.outside="fieldMenuOpen = false"
+             class="absolute left-0 top-full mt-1 z-50 w-64 max-h-80 overflow-auto rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-xl p-2">
+          <div class="flex items-center gap-1 pb-1 mb-1 border-b border-slate-100 dark:border-slate-700">
+            <button @click="fieldsAll()" class="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">All</button>
+            <button @click="fieldsNone()" class="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">None</button>
+            <button @click="fieldsOnlyVarying()" class="px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950" title="Only fields whose value differs across the shown scenarios">Only varying</button>
+          </div>
+          <template x-for="c in ((tableData && tableData.columns && tableData.columns.inputs) || [])" :key="c.path">
+            <label class="flex items-center gap-2 py-0.5 px-1 rounded hover:bg-slate-50 dark:hover:bg-slate-900 cursor-pointer">
+              <input type="checkbox" :checked="fieldShown(c.path)" @change="fieldToggle(c.path)" class="accent-indigo-600"/>
+              <span class="truncate text-slate-700 dark:text-slate-200" :title="c.path" x-text="inputColLabel(c.path)"></span>
+            </label>
+          </template>
+        </div>
+      </div>
+      <span x-show="tableLoading" class="text-slate-400 italic">building…</span>
+      <span x-show="tableData && tableData.coverage" class="text-slate-500 dark:text-slate-400" x-text="tableVerdict()"></span>
+      <div class="flex-1"></div>
+      <label class="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400 cursor-pointer"
+             title="Show the decision rows (which rules each scenario fires) — the branch conditions in calc.js">
+        <input type="checkbox" x-model="showDecisions" class="accent-indigo-600"> decisions
+      </label>
+      <label class="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400 cursor-pointer">
+        <input type="checkbox" x-model="tableHideScenarios" class="accent-indigo-600"> hide existing scenarios
+      </label>
+      <button @click="exportCsv()"
+              class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+              title="Export the visible matrix (scenarios · inputs · decisions · outputs) to CSV">⤓ CSV</button>
+      <button @click="closeTableFull()"
+              class="px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700"
+              title="Close (Esc)">✕ Close</button>
+    </div>
+    <div x-show="tableData && tableData.error"
+         class="px-4 py-3 text-xs text-rose-600 dark:text-rose-400"
+         x-text="tableData && ((tableData.code || '') + ': ' + tableData.error)"></div>
+    <!--/* the grid (left, grows) + a draggable scenario workbench (right). Outputs aren't inline in the
+         grid — clicking a scenario runs it (Rule.execute) and shows its audit+output here. The workbench
+         is ALWAYS present (an empty hint until a scenario is picked); drag its edge to resize. */-->
+    <div class="flex-1 flex min-h-0" x-ref="scenarioGridBody">
+      <!--/* --mcw drives the sticky first-column width (drag the grip in its header — matrixColDrag) */-->
+      <div class="flex-1 min-w-0 overflow-auto p-3" x-html="renderCoverageGrid()"
+           :style="'--mcw:' + matrixColW + 'px'"
+           @click="matrixClick($event)" @mousedown="matrixColDrag($event)"></div>
+
+      <!--/* workbench splitter */-->
+      <div class="relative w-1.5 shrink-0 group">
+        <div class="absolute inset-0 bg-slate-100 dark:bg-slate-900 group-hover:bg-indigo-300 dark:group-hover:bg-indigo-700 transition-colors"></div>
+        <div class="absolute inset-y-0 -left-1.5 -right-1.5 z-20 cursor-col-resize" @mousedown.prevent="startDragScenarioWb($event)"></div>
+      </div>
+
+      <!--/* scenario workbench — reuses the Output (JsonTable) + a compact Audit tree (scenarioAuditRows) */-->
+      <div class="shrink-0 flex flex-col min-h-0 min-w-0 border-l border-slate-200 dark:border-slate-700" :style="'flex: 0 0 ' + scenarioWbPct + '%'">
+        <!--/* empty hint — nothing selected yet */-->
+        <template x-if="!selectedScenarioRow">
+          <div class="flex-1 flex items-center justify-center p-6 text-center text-xs text-slate-400 dark:text-slate-500 italic">
+            <span x-text="'Click a scenario ' + (coverageTransposed ? 'column' : 'row') + ' to see its audit + output.'"></span>
+          </div>
+        </template>
+        <template x-if="selectedScenarioRow">
+          <div class="flex-1 flex flex-col min-h-0">
+            <div class="shrink-0 px-3 py-1.5 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2 text-xs">
+              <span class="shrink-0" :class="rowBadge(selectedScenarioRow).cls" x-text="rowBadge(selectedScenarioRow).glyph"></span>
+              <span class="font-medium text-slate-700 dark:text-slate-200 truncate" :title="selectedScenarioRow.name" x-text="selectedScenarioRow.name"></span>
+              <span x-show="scenarioRunLoading" class="text-slate-400 italic">running…</span>
+              <div class="flex-1"></div>
+              <!--/* audit ⇄ output toggle pills — same as the main Result column */-->
+              <template x-for="col in ['audit','output']" :key="col">
+                <button @click="toggleScenarioCol(col)"
+                        class="text-[11px] px-2 py-0.5 rounded-full border shrink-0"
+                        :class="scenarioCols[col]
+                            ? 'border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/40'
+                            : 'border-slate-200 dark:border-slate-600 text-slate-400 dark:text-slate-500'"
+                        :title="(scenarioCols[col] ? 'Hide ' : 'Show ') + col"
+                        x-text="col"></button>
+              </template>
+              <button x-show="selectedScenarioRow.provenance === 'generated' &amp;&amp; selectedScenarioRow.addsCoverage &amp;&amp; !selectedScenarioRow.error"
+                      @click="promoteRow(selectedScenarioRow)"
+                      class="px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950"
+                      title="Save this candidate as a named scenario">＋ save</button>
+              <button @click="closeScenarioWorkbench()"
+                      class="px-1.5 py-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400" title="Close">✕</button>
+            </div>
+            <!--/* error envelope */-->
+            <template x-if="scenarioRun &amp;&amp; scenarioRun.error">
+              <div class="m-3 rounded border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs">
+                <div class="font-semibold text-rose-700 dark:text-rose-300" x-text="scenarioRun.code || 'ERROR'"></div>
+                <div class="text-rose-600 dark:text-rose-400 mt-1" x-text="scenarioRun.error"></div>
+              </div>
+            </template>
+            <!--/* Audit ⇄ Output — the SAME draggable, toggle-able vertical split as the main Result
+                 column (scenarioResultRowStyle + scenarioOutputSplit + the audit/output pills above) */-->
+            <div x-show="scenarioRun &amp;&amp; !scenarioRun.error" class="flex-1 flex flex-col min-h-0" x-ref="scenarioResultBody">
+              <!--/* AUDIT */-->
+              <div class="flex flex-col min-h-0" :style="scenarioResultRowStyle('audit')">
+                <div class="shrink-0 px-3 py-1 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2">
+                  <span class="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Audit</span>
+                  <span x-show="scenarioRun &amp;&amp; scenarioRun.audit &amp;&amp; scenarioRun.audit.length > 0" class="flex items-center gap-0.5 text-sm">
+                    <button @click="collapseAllScenarioAudit()" title="Collapse all" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">⊟</button>
+                    <button @click="expandAllScenarioAudit()" title="Expand all" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">⊞</button>
+                  </span>
+                  <div class="flex-1"></div>
+                  <!--/* audit search (fullscreen) — highlight matches; expands all so a hit shows */-->
+                  <template x-if="!scenarioAuditSearch.open">
+                    <button @click="scenarioAuditSearchToggle()" title="Search audit" class="text-sm px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">🔍</button>
+                  </template>
+                  <template x-if="scenarioAuditSearch.open">
+                    <span class="flex items-center gap-0.5 text-sm">
+                      <input type="text" x-model="scenarioAuditSearch.q" @input="scenarioAuditSearchRun()"
+                             @keydown.escape="scenarioAuditSearchToggle()"
+                             x-init="$nextTick(() => $el.focus())"
+                             placeholder="search…"
+                             class="w-24 px-1.5 py-0.5 text-xs rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"/>
+                      <button @click="scenarioAuditSearchToggle()" title="Close" class="px-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">✕</button>
+                    </span>
+                  </template>
+                </div>
+                <div class="flex-1 overflow-auto p-3 text-sm min-h-0">
+                  <template x-if="scenarioRun &amp;&amp; scenarioRun.audit &amp;&amp; scenarioRun.audit.length > 0">
+                    <ul class="font-mono text-xs leading-relaxed">
+                      <template x-for="row in scenarioAuditRows()" :key="row.key">
+                        <li @click="row.collapsible &amp;&amp; toggleScenarioAuditCollapse(row.key)"
+                            class="flex items-stretch rounded-sm"
+                            :class="[ row.collapsible ? 'cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50' : '',
+                                      scenarioAuditMatch(row) ? 'bg-amber-100/60 dark:bg-amber-900/30' : '' ]">
+                          <template x-for="g in row.depth" :key="g">
+                            <span class="w-3 shrink-0 border-l border-slate-100 dark:border-slate-800/70"></span>
+                          </template>
+                          <span class="shrink-0 w-4 text-center select-none"
+                                :class="row.collapsible ? 'text-indigo-500 dark:text-indigo-400 font-semibold' : 'text-slate-300 dark:text-slate-600'"
+                                x-text="row.collapsible ? (row.collapsed ? '▸' : '▾') : '·'"></span>
+                          <div class="flex-1 min-w-0 py-0.5">
+                            <template x-if="row.kind === 'heading'">
+                              <span class="font-sans font-semibold text-slate-600 dark:text-slate-300" x-text="row.title"></span>
+                            </template>
+                            <template x-if="row.kind === 'container'">
+                              <span class="font-sans font-medium text-slate-700 dark:text-slate-200" x-text="row.title || '(block)'"></span>
+                            </template>
+                            <template x-if="row.kind === 'leaf'">
+                              <span x-html="tintAudit(row.title)"></span>
+                            </template>
+                          </div>
+                        </li>
+                      </template>
+                    </ul>
+                  </template>
+                  <template x-if="scenarioRun &amp;&amp; (!scenarioRun.audit || scenarioRun.audit.length === 0)">
+                    <div class="text-slate-500 dark:text-slate-400 italic">calc.js emitted no log lines.</div>
+                  </template>
+                </div>
+              </div>
+              <!--/* OUTPUT splitter (horizontal) — only when both surfaces show */-->
+              <div x-show="scenarioCols.audit &amp;&amp; scenarioCols.output" class="relative h-1.5 shrink-0 group">
+                <div class="absolute inset-0 bg-slate-100 dark:bg-slate-900 group-hover:bg-indigo-300 dark:group-hover:bg-indigo-700 transition-colors"></div>
+                <div class="absolute inset-x-0 -top-1.5 -bottom-1.5 z-20 cursor-row-resize" @mousedown.prevent="startDragScenarioOutput($event)"></div>
+              </div>
+              <!--/* OUTPUT */-->
+              <div class="flex flex-col min-h-0" :style="scenarioResultRowStyle('output')">
+                <div class="shrink-0 px-3 py-1 border-b border-slate-100 dark:border-slate-700 text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Output</div>
+                <div class="flex-1 overflow-auto p-3">
+                  <template x-if="scenarioRun &amp;&amp; scenarioRun.output != null">
+                    <div x-html="JsonTable.render(scenarioRun.output)"></div>
+                  </template>
+                  <template x-if="!scenarioRun || scenarioRun.output == null">
+                    <div class="text-xs text-slate-400 dark:text-slate-500 italic">no output</div>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+    <div x-show="tableData && !tableData.error"
+         class="shrink-0 px-4 py-1 border-t border-slate-100 dark:border-slate-700 text-[10px] text-slate-400 dark:text-slate-500 flex flex-wrap items-center gap-x-4 gap-y-0.5">
+      <span>● saved · ✦ generated · click a scenario for its audit + output</span>
+      <span>Y / N / – = rule fired true / false / not reached · Y·N = both (a loop)</span>
+      <span x-show="tableData && tableData.stats"
+            x-text="tableData && (tableData.stats.distinctPaths + ' distinct paths · ' + tableData.stats.rows + ' rows')"></span>
+    </div>
+  </div>
+
+</div>
+
+<!--/* JSON island — the server-side snapshot handed to the Alpine factory (D88); the diagram
+     SSRs along, sha-keyed by mtimes.calc (D111e) */-->
+<script type="application/json" id="rulebook-bootstrap"
+        th:utext="JSON.stringify({name: rbName, rule: rb, diagram: rbDiagram, check: rbCheck, cells: rbCells, match: rbMatchSheets})">{}</script>
+
+<script src="/pub/session-prefs.js" ka:nocache="true"></script>
+<script src="/pub/rulebook-page.js" ka:nocache="true"></script>
+
+<!-- the vendored CodeMirror mount (the checks.html recipe) — window.cmEditor + cm-dirty/cm-ready -->
+<script type="module">
+  import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, dropCursor,
+           highlightActiveLineGutter,
+           EditorState, Compartment,
+           javascript,
+           autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap,
+           defaultKeymap, history, historyKeymap, indentWithTab,
+           foldGutter, foldKeymap, indentOnInput, bracketMatching, defaultHighlightStyle,
+           syntaxHighlighting,
+           oneDark } from "/pub/vendor/cm.js";
+
+  const basicSetup = [
+    lineNumbers(), highlightActiveLineGutter(), foldGutter(), drawSelection(), dropCursor(),
+    EditorState.allowMultipleSelections.of(true), indentOnInput(),
+    bracketMatching(), closeBrackets(), highlightActiveLine(),
+    keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap]),
+    history(),
+  ];
+
+  const themeConf = new Compartment();
+  const isDark = () => document.documentElement.getAttribute('data-theme') === 'dark';
+  const themeExt = () => isDark() ? oneDark : syntaxHighlighting(defaultHighlightStyle, { fallback: true });
+
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: '',
+      extensions: [
+        basicSetup,
+        themeConf.of(themeExt()),
+        keymap.of([indentWithTab]),
+        javascript(),
+        autocompletion(),
+        EditorView.updateListener.of(v => {
+          if (!v.docChanged) return;
+          if (window.cmEditor && window.cmEditor.loading) { window.cmEditor.loading = false; return; }
+          window.dispatchEvent(new CustomEvent('cm-dirty'));
+        }),
+        EditorView.theme({
+          '&': { height: '100%', fontSize: '13px' },
+          '.cm-scroller': { fontFamily: '"JetBrains Mono", ui-monospace, monospace' },
+        }),
+      ],
+    }),
+    parent: document.getElementById('cm-host'),
+  });
+
+  new MutationObserver(() => view.dispatch({ effects: themeConf.reconfigure(themeExt()) }))
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  window.cmEditor = {
+    loading: false,
+    getDoc: () => view.state.doc.toString(),
+    setDoc: (text) => {
+      if ((text || '') === view.state.doc.toString()) return;
+      window.cmEditor.loading = true;
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text || '' } });
+    },
+    // remeasure after the host is revealed/moved (the code slot starts hidden; the ⛶ Combo moves it)
+    refresh: () => view.requestMeasure(),
+    // the Diagram click-to-line bridge: select + center the 1-based line (highlight-beside)
+    gotoLine: (line) => {
+      const ln = Math.max(1, Math.min(line || 1, view.state.doc.lines));
+      const pos = view.state.doc.line(ln).from;
+      view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
+      view.focus();
+    },
+  };
+  window.dispatchEvent(new CustomEvent('cm-ready'));
+</script>
+
+<script src="/pub/schema-form.js" ka:nocache="true"></script>
+<script src="/pub/json-table.js" ka:nocache="true"></script>
+<script src="/pub/run-all.js" ka:nocache="true"></script>
+<script src="/pub/pane-search.js" ka:nocache="true"></script>
+
+</div>

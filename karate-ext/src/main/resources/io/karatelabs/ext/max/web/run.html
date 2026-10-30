@@ -1,0 +1,1318 @@
+<!--/* Run console (D88, SSR shell + rich client island) — ONE run, keyed by /runs/<id>. A content
+     fragment: layout.html provides <head>/header/theme. This page is a genuinely-rich client island (the
+     live SSE transcript + noVNC + read-only replay), so the body is Alpine-driven over /api/eval + the SSE
+     channel — the SSR exception the D88 rule allows. Two states (mode-agnostic — a loop run and an
+     LLM-driven live run render the same way; there is NO in-page REPL, live runs are machine-driven):
+       * /runs/<id>, running — transcript streamed off the per-run SSE topic + noVNC tile.
+       * /runs/<id>, done    — read-only: transcript replayed from transcript.jsonl through the SAME
+         ROUTER, the outcome, and the run's VIDEO in the same slot noVNC used.
+     One stream + a type-keyed ROUTER (console.md). */-->
+<script ka:scope="global">
+  // SSR the run meta (D88): harness.get(id) is pure (filesystem + the in-memory slot, never
+  // the engine), so it renders off the HTTP thread — the page never queues behind a long bot op
+  // holding the /api/eval lock (a live run used to render blank/"completed" until the lock freed).
+  var sid = request.pathMatches('/runs/{id}') ? request.pathParams.id : '';
+  _.meta = sid ? harness.get(sid) : null;
+  // the LLM picker for the focused "Convert to check" dialog (D150) — a recording run can
+  // be turned into a deterministic check by an autonomous Harness.author session; the dialog needs the
+  // provider·model shortlist to choose which model authors it.
+  _.llm = harness.providers();
+  // per-browser UI prefs (D114, step 27) — the split-pane size, SSR-hydrated so the page lays out
+  // right on first paint. Read defensively (run is null until the first kaPrefs write); the
+  // split lived in localStorage, now it's cookie-keyed (resets on a server bounce).
+  _.prefs = { split: (session && session.ui && session.ui.split) || null };
+  // the ordered member manifest this run's selector resolved to, and whether the selector is replayable
+  // (D281 c). SSR so the strip renders off the HTTP thread; two runs of one selector compare by eye.
+  // Each chip carries its OWN verdict off `memberVerdicts` (settled runs only — a running run has none
+  // yet, so its chips stay neutral): red for failed, amber-dashed for a member nothing ran under, the
+  // neutral chip for passed. A green wash on every member would drown the one red the eye is hunting.
+  var CHIP_OK = 'border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300';
+  var CHIP_RED = 'border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300';
+  var CHIP_NOTRUN = 'border-dashed border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300';
+  var m = _.meta || {};
+  var mm = m.members || [];
+  var mv = m.memberVerdicts || [];
+  var byPath = {};
+  for (var v = 0; v < mv.length; v++) { byPath[mv[v].path] = mv[v]; }
+  var js = 0;
+  var rows = [];
+  for (var i = 0; i < mm.length; i++) {
+    if (mm[i].kind == 'js') js++;
+    var vd = byPath[mm[i].path];
+    var state = !vd ? '' : (vd.notRun ? 'not run' : (vd.passed ? 'passed' : 'failed'));
+    rows.push({
+      path: mm[i].path,
+      kind: mm[i].kind,
+      state: state,
+      chip: state == 'failed' ? CHIP_RED : (state == 'not run' ? CHIP_NOTRUN : CHIP_OK),
+      title: mm[i].kind + (state ? ' · ' + state : '') + (vd && vd.error ? ' — ' + vd.error : '')
+    });
+  }
+  _.members = rows;
+  _.memberCount = mm.length;
+  _.memberJs = js;
+  _.replayable = (m.mode == 'suite' && m.selector && m.selector.length) ? true : null;
+</script>
+<div ka:island="meta"/>
+<div ka:island="prefs"/>
+<div ka:island="llm"/>
+  <!-- NO x-init: Alpine auto-invokes a method named init() on the x-data object — adding
+       x-init="init()" runs it TWICE (double SSE subscribe / duplicated replay turns) -->
+  <div x-data="consoleApp()" x-cloak class="max-w-[110rem] mx-auto px-6 py-5">
+
+    <!-- Convert to check (D150) — a small FOCUSED dialog (deliberately not the full run modal):
+         name + which model, then Harness.author drives an autonomous session that writes + verifies the
+         check and lands on its run. Just the minimum. -->
+    <div x-show="convertOpen" x-cloak class="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4"
+         @keydown.escape.window="convertOpen = false" @click.self="convertOpen = false">
+      <div class="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-xl">
+        <div class="flex items-start justify-between">
+          <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Convert recording to check</h2>
+          <button type="button" @click="convertOpen = false" title="close (Esc)"
+                  class="-mt-1 -mr-1 h-7 w-7 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 text-xl leading-none">×</button>
+        </div>
+        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">An autonomous agent writes a deterministic
+          <code class="font-mono" x-text="'checks/' + (convertName.trim() || 'recorded-flow') + '.js'"></code>
+          from this recording and runs it until it passes — you'll land on its run to watch.</p>
+
+        <label class="mt-4 block text-xs font-medium text-slate-600 dark:text-slate-300">Name</label>
+        <input type="text" x-model="convertName" spellcheck="false" placeholder="recorded-flow  ·  gwcc/create-claim"
+               @keydown.enter="doConvert()"
+               class="mt-1 w-full text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <p class="mt-1 text-[11px] leading-snug text-slate-400 dark:text-slate-500">Include a <code class="font-mono">/</code> to file it in a folder — e.g. <code class="font-mono">gwcc/create-claim</code> writes <code class="font-mono">checks/gwcc/create-claim.js</code>.</p>
+
+        <label x-show="convertCombos.length" class="mt-3 block text-xs font-medium text-slate-600 dark:text-slate-300">Model</label>
+        <!-- the picked combo is testable right here (D63): a key that is set says nothing about whether
+             that provider·model answers, and finding out on the authoring run is finding out too late.
+             Shared kaProviderTest factory (pub/eval.js) — the same preflight the Settings rows run. -->
+        <div x-show="convertCombos.length" x-data="kaProviderTest(() => convertCombos[convertCombo])">
+          <div class="mt-1 flex items-center gap-2">
+            <select x-model.number="convertCombo"
+                    class="flex-1 min-w-0 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500">
+              <template x-for="(c, i) in convertCombos" :key="i">
+                <option :value="i" x-text="c.label + (c.def ? ' (default)' : '')"></option>
+              </template>
+            </select>
+            <button type="button" @click="test()" :disabled="busy" title="check this provider · model answers"
+                    class="shrink-0 rounded-lg border border-slate-300 dark:border-slate-600 px-2.5 py-1.5 text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
+                    x-text="busy ? 'Testing…' : 'Test'">Test</button>
+          </div>
+          <!-- the verdict, in the modal: the provider's own words (full body on hover), the derived
+               operator sentence beneath -->
+          <div x-show="res" x-cloak class="mt-1 text-[11px] leading-snug">
+            <div :class="res && res.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'"
+                 :title="(res && res.error) || ''" x-text="verdict()"></div>
+            <div x-show="res && res.hint" class="mt-0.5 text-amber-700 dark:text-amber-400" x-text="(res && res.hint) || ''"></div>
+          </div>
+        </div>
+        <p x-show="!convertCombos.length" class="mt-3 text-xs text-amber-600 dark:text-amber-400">No LLM keys detected — set one to author a check.</p>
+
+        <div class="mt-5 flex items-center justify-end gap-2">
+          <span x-show="convertErr" class="mr-auto text-xs text-rose-600 dark:text-rose-400" x-text="convertErr"></span>
+          <button type="button" @click="convertOpen = false"
+                  class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700">Cancel</button>
+          <button type="button" @click="doConvert()" :disabled="converting || !convertName.trim() || !convertCombos.length"
+                  class="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
+                  x-text="converting ? 'Starting…' : 'Convert ▶'"></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- run status bar -->
+    <div class="flex flex-wrap items-center justify-between gap-3 text-sm">
+      <div class="flex items-center gap-3 min-w-0">
+        <a href="/runs" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">←</a>
+        <span class="inline-flex items-center gap-2">
+          <span class="inline-block h-2.5 w-2.5 rounded-full" :class="dot()"></span>
+          <span class="font-medium" :class="statusText()" x-text="status || 'idle'"></span>
+        </span>
+        <span x-show="runId" class="text-slate-500 dark:text-slate-400">run <span class="font-mono text-slate-700 dark:text-slate-200" x-text="runId"></span></span>
+        <span x-show="model" class="text-slate-500 dark:text-slate-400">model <span class="font-mono text-slate-700 dark:text-slate-200" x-text="model"></span></span>
+        <span x-show="tokens.in || tokens.out" class="text-slate-500 dark:text-slate-400">tokens <span class="font-mono text-slate-700 dark:text-slate-200" x-text="tokens.in + '↓ ' + tokens.out + '↑'"></span></span>
+        <!-- elapsed ticks live while running; freezes at the final duration once settled -->
+        <span x-show="elapsedText()" class="text-slate-500 dark:text-slate-400">elapsed <span class="font-mono text-slate-700 dark:text-slate-200" x-text="elapsedText()"></span></span>
+        <!--/* D124 context-sensitive "?" — runs, evidence + the autonomous loop. */-->
+        <a href="/help#run" target="ka-help" rel="noopener" title="What is a run? Open the Help deep-dive"
+           class="inline-flex items-center justify-center w-4 h-4 align-middle rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold no-underline hover:ring-1 hover:ring-indigo-400">?</a>
+      </div>
+      <!-- no "new run" here — ← goes back to the list; report/Troubleshoot/Delete only once settled -->
+      <div class="flex items-center gap-2">
+        <!-- every settled run renders to core's native karate report, served from the run dir (D136):
+             one report for the loop, a live bot run, a check, and a suite alike -->
+        <!--/* the suite lane's error channel — the loop/live pane renders `note` in its own aside */-->
+        <span x-show="note && mode==='suite'" class="text-xs text-rose-600 dark:text-rose-400" x-text="note"></span>
+        <!-- suite Stop (Runner.stop) — cooperative: the executing scenario finishes, the rest skip,
+             the run settles `stopped` with its report/evidence kept. In the header so it is reachable
+             from the scenario rail and the log panel alike. The loop/live Stop lives in the goal bar. -->
+        <button x-show="mode==='suite' && status==='running'" :disabled="stopping" @click="stopSuite()"
+                title="stop this suite — the scenario now executing finishes, everything after it is skipped, the report keeps what ran"
+                class="rounded-md border border-rose-300 dark:border-rose-700 px-2.5 py-1 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 disabled:opacity-40"
+                x-text="stopping ? 'Stopping…' : 'Stop'"></button>
+        <!--/* Run again (D281 c) — hands off to the ONE kickoff surface, pre-filled from this run's
+             recorded selector + options; this page has no modal markup, so it navigates to /runs?again=. */-->
+        <button th:if="replayable" x-show="status !== 'running' && status !== 'paused'"
+                @click="runAgain()" title="run this selection again — the kickoff form opens pre-filled"
+                class="rounded-md border border-indigo-300 dark:border-indigo-700 px-2.5 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40">Run again ▶</button>
+        <a x-show="hasReport && status !== 'running' && status !== 'paused'" :href="reportUrl" target="_blank"
+           class="rounded-md border border-indigo-300 dark:border-indigo-700 px-2.5 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40">Report ↗</a>
+        <button x-show="runId && mode!=='suite' && status !== 'running' && status !== 'paused'" @click="copyShare()"
+                title="copy a prompt to share this run with an LLM — troubleshoot, convert the flow to a checks/*.js, or explain it"
+                class="rounded-md border border-indigo-300 dark:border-indigo-700 px-2.5 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40"
+                x-text="copiedShare ? 'copied ✓' : '🤖 AI prompt'"></button>
+        <!-- Convert to check (D150) — only on a run that holds a recording (recordable). Opens a
+             small focused dialog → Harness.author drives an autonomous session that writes + verifies a
+             checks/*.js from this recording. Distinct from 🤖 AI prompt (which copies a prompt for an
+             EXTERNAL agent); this kicks off OUR harness in-product. -->
+        <button x-show="recordable && status !== 'running' && status !== 'paused'" @click="openConvert()"
+                title="turn this recording into a deterministic check — an autonomous agent writes it and verifies it green"
+                class="rounded-md border border-emerald-300 dark:border-emerald-700 px-2.5 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40">Convert to check ▶</button>
+        <!-- download the whole run folder (transcript + screenshots + video + report) as a zip -->
+        <a x-show="runId && status !== 'running' && status !== 'paused'" :href="'/api/run-zip/' + encodeURIComponent(runId)" download
+           class="rounded-md border border-slate-300 dark:border-slate-600 px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 no-underline">⬇ Zip</a>
+        <button x-show="runId && status !== 'running' && status !== 'paused'" @click="deleteRun()"
+                class="rounded-md border border-rose-300 dark:border-rose-700 px-2.5 py-1 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40">Delete</button>
+      </div>
+    </div>
+
+    <!-- ============ the harness universe (loop / live bot) — transcript + noVNC/video ============ -->
+    <!-- resizable two-pane split: left = transcript/actions, right = view slot (noVNC | video). Drag the
+         handle. The whole split is sized to the viewport (minus the page chrome above) so each column
+         scrolls WITHIN itself — the transcript history scrolls, the live turn stays pinned at the bottom,
+         and the noVNC tile fills its column — instead of the page growing and the live pane drifting. -->
+    <div x-show="mode!=='suite'" class="mt-4 flex items-stretch h-[calc(100vh_-_8rem)] min-h-0" x-ref="split" data-ka-section="runs.live">
+
+      <!-- ============ left: transcript / live actions ============ -->
+      <section class="flex flex-col gap-4 min-w-0 min-h-0 pr-2" :style="`flex-basis:${100-splitPct}%`">
+
+        <!-- goal (collapsible — collapsed by default, markdown body) + pause/stop controls -->
+        <div x-show="task" class="shrink-0 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4">
+          <div class="flex items-center gap-3 min-w-0">
+            <button @click="goalOpen = !goalOpen" class="flex items-center gap-2 min-w-0 flex-1 text-left">
+              <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 shrink-0">Goal</span>
+              <span x-show="!goalOpen" class="text-xs italic text-slate-400 dark:text-slate-500 truncate min-w-0" x-text="firstLine(task, 110)"></span>
+              <span class="text-slate-400 text-xs shrink-0" x-text="goalOpen ? '▾' : '▸'"></span>
+            </button>
+            <div class="shrink-0 flex gap-2">
+              <!-- pause/resume = loop steering only; a live run just stops (settle) -->
+              <button x-show="status==='running' && mode!=='live'" @click="pause()"
+                      class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700">Pause</button>
+              <button x-show="status==='running' || status==='paused'" :disabled="stopping" @click="stopRun()"
+                      class="rounded-lg border border-rose-300 dark:border-rose-700 px-3 py-1.5 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 disabled:opacity-40"
+                      x-text="stopping ? 'Stopping…' : 'Stop'"></button>
+            </div>
+          </div>
+          <div x-show="goalOpen" class="mt-2 text-sm text-slate-700 dark:text-slate-300">
+            <div x-show="goalHtml" class="md-body" x-html="goalHtml"></div>
+            <p x-show="!goalHtml" class="whitespace-pre-wrap break-words" x-text="task"></p>
+          </div>
+          <form x-show="status==='paused'" @submit.prevent="resume()" class="mt-2 flex gap-2">
+            <input x-model="resumeMsg" placeholder="message to inject on resume (optional)"
+                   class="flex-1 text-sm rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <button type="submit" class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500">Resume</button>
+          </form>
+        </div>
+
+        <!-- Outcome — right below the goal (collapsible, open by default; result rendered as markdown) -->
+        <div x-show="outcome" class="shrink-0 max-h-[40%] overflow-y-auto bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4" data-ka-section="runs.live.outcome">
+          <button @click="outcomeOpen = !outcomeOpen" class="w-full flex items-center gap-2 text-left min-w-0">
+            <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 shrink-0">Outcome</span>
+            <span class="text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 shrink-0"
+                  :class="outcomeBadge()" x-text="outcome && outcome.status"></span>
+            <span x-show="!outcomeOpen" class="text-xs italic text-slate-400 dark:text-slate-500 truncate min-w-0 flex-1" x-text="firstLine(outcomeSummary(), 110)"></span>
+            <span x-show="outcomeOpen" class="flex-1"></span>
+            <span class="text-[11px] font-mono text-slate-400 shrink-0" x-text="outcomeMeta()"></span>
+            <span class="text-slate-400 text-xs shrink-0" x-text="outcomeOpen ? '▾' : '▸'"></span>
+          </button>
+          <div x-show="outcomeOpen" class="mt-2 text-sm" :class="outcome && outcome.error ? 'text-rose-700 dark:text-rose-300' : 'text-slate-700 dark:text-slate-300'">
+            <!-- what to DO about it — one derived sentence ABOVE the provider's own body, which stays
+                 verbatim below: the raw response is the evidence, the hint is only an explanation -->
+            <p x-show="outcomeHint()" x-cloak class="mb-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs font-medium text-amber-800 dark:text-amber-300" x-text="outcomeHint()"></p>
+            <div x-show="outcomeHtml" class="md-body" x-html="outcomeHtml"></div>
+            <p x-show="!outcomeHtml" class="whitespace-pre-wrap break-words" x-text="outcomeText()"></p>
+          </div>
+        </div>
+
+        <!-- transcript (live or replayed read-only — both modes, same router) -->
+        <!-- the run transcript: ONE panel split into the scrollable DONE history (top) and the bottom-
+             anchored LIVE turn (below). Only the history scrolls vertically for finished turns; the live
+             turn is pinned to the bottom. The bar between them is the drag-to-resize divider (
+             D88). The panel is height-capped so the split is meaningful; it shrinks to content on a short
+             or settled run. -->
+        <div x-ref="txPanel" class="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col flex-1 min-h-0" data-ka-section="runs.live.transcript">
+          <div class="shrink-0 px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Transcript<span x-show="status && status!=='running'" class="ml-2 normal-case font-normal text-slate-400">(read-only)</span></span>
+            <div class="flex items-center gap-3 text-xs font-medium">
+              <!-- auto scroll = stick the history to the latest entry (log-tail UX), live runs only. Explicit,
+                   no guesswork: ON auto-scrolls on new content; scrolling up turns it OFF (never yanks);
+                   clicking resumes + jumps to the latest. Hidden once the run is done (nothing arrives). -->
+              <button x-show="status==='running' || status==='paused'" @click="toggleFollow()"
+                      :title="follow ? 'Auto-scrolling to the latest — click to stop' : 'Click to resume auto-scroll to the latest'"
+                      class="inline-flex items-center gap-1 hover:underline"
+                      :class="follow ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'">
+                <span class="inline-block h-1.5 w-1.5 rounded-full" :class="follow ? 'bg-indigo-500 animate-pulse' : 'bg-slate-400 dark:bg-slate-600'"></span>auto scroll
+              </button>
+              <button x-show="timeline.length" @click="toggleAll(false)" class="text-indigo-600 dark:text-indigo-400 hover:underline">collapse all</button>
+              <button x-show="timeline.length" @click="toggleAll(true)" class="text-indigo-600 dark:text-indigo-400 hover:underline">expand all</button>
+            </div>
+          </div>
+          <!-- DONE history — the ONLY vertical scroll for finished turns + recorder rows, all COLLAPSED by
+               default (a scannable list, NOT a wall of text). The in-flight turn is NOT here; it streams
+               into the live pane anchored below. Reading history and watching the stream don't contend —
+               the only auto-scroll is the explicit Follow toggle (off ⇒ scrolls only when the user does). -->
+          <div x-ref="histPane" @scroll="onHistScroll($event)" class="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
+            <!-- ONE chronological stream: turn cards (LLM/eval) and human-action rows interleaved, so a
+                 human takeover during a loop run reads inline with the loop's turns (D150).
+                 The current (in-flight) turn is hidden here — it lives in the pinned pane until it settles. -->
+            <template x-for="(e, ei) in timeline" :key="ei">
+              <div x-show="!(e.type === 'turn' && e.turn === inflightTurn())">
+                <!-- a turn card (LLM iteration / live-eval) -->
+                <template x-if="e.type === 'turn'">
+                  <details class="rounded-lg border border-slate-200 dark:border-slate-700"
+                           :open="e.turn.open" @toggle="e.turn.open = $event.target.open">
+                    <summary class="cursor-pointer select-none px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                      <span class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-700 px-1.5 text-xs text-slate-600 dark:text-slate-300" x-text="e.turn.n"></span>
+                      <span x-show="!e.turn.open" class="text-xs italic text-slate-500 dark:text-slate-400 truncate min-w-0 flex-1" x-text="turnSummary(e.turn)"></span>
+                      <span x-show="e.turn.open && e.turn.label" class="font-mono text-xs text-slate-600 dark:text-slate-300 truncate min-w-0" x-text="e.turn.label"></span>
+                      <span x-show="e.turn.open && !e.turn.label" class="text-slate-500 dark:text-slate-400 text-xs" x-text="e.turn.tools.length + ' tool(s)'"></span>
+                      <span x-show="e.turn.error" class="text-xs text-rose-600 dark:text-rose-400 shrink-0">error</span>
+                    </summary>
+                    <div class="px-3 pb-3 space-y-2 text-xs">
+                      <p x-show="e.turn.thinking" class="italic text-slate-400 whitespace-pre-wrap" x-text="e.turn.thinking"></p>
+                      <p x-show="e.turn.llm" class="text-slate-700 dark:text-slate-300 whitespace-pre-wrap" x-text="e.turn.llm"></p>
+                      <template x-for="(t, ti) in e.turn.tools" :key="ti">
+                        <div class="rounded bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700 p-2">
+                          <pre class="font-mono text-indigo-700 dark:text-indigo-300 whitespace-pre-wrap" x-text="t.js"></pre>
+                          <pre x-show="t.result !== null" class="mt-1 font-mono text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-all" x-text="t.result"></pre>
+                        </div>
+                      </template>
+                      <template x-for="(h, hi) in e.turn.hints" :key="hi">
+                        <p class="text-amber-600 dark:text-amber-400" x-text="'hint: ' + h"></p>
+                      </template>
+                      <p x-show="e.turn.error" class="text-rose-600 dark:text-rose-400 font-mono whitespace-pre-wrap" x-text="e.turn.error"></p>
+                    </div>
+                  </details>
+                </template>
+                <!-- a captured action / focus — expandable to its full detail (candidate locators, coords,
+                     frame, url) — the data an LLM/human uses to author a deterministic bot.act() check -->
+                <template x-if="e.type === 'action' && (e.kind === 'action' || e.kind === 'focus')">
+                  <details class="rounded hover:bg-slate-50 dark:hover:bg-slate-900/40 [&_summary::-webkit-details-marker]:hidden"
+                           :open="e.open" @toggle="e.open = $event.target.open">
+                    <summary class="cursor-pointer select-none flex items-start gap-2 px-3 py-1 font-mono text-xs">
+                      <span class="shrink-0 w-4 text-center text-slate-400" x-text="e.open ? '▾' : '▸'"></span>
+                      <!-- collapsed view is just verb + locator — the value (incl. secrets like a password,
+                           §7.1) is revealed only on expand, never in the always-visible row -->
+                      <span class="min-w-0 flex-1">
+                        <span class="font-semibold text-indigo-700 dark:text-indigo-300" x-text="e.action"></span>
+                        <span class="text-slate-500 dark:text-slate-400 break-all" x-text="e.locator ? ' ' + e.locator : ''"></span>
+                        <span x-show="e.value != null" class="text-slate-300 dark:text-slate-600" title="value hidden — expand to see">·</span>
+                      </span>
+                    </summary>
+                    <div class="pl-9 pr-3 pb-1.5 text-[11px] text-slate-500 dark:text-slate-400 space-y-0.5 font-mono break-all">
+                      <div x-show="e.value != null">
+                        <span class="text-slate-400">value:</span> <span class="text-emerald-700 dark:text-emerald-400" x-text="JSON.stringify(e.value)"></span>
+                      </div>
+                      <div x-show="e.frame"><span class="text-slate-400">frame:</span> <span x-text="e.frame"></span></div>
+                      <div x-show="e.raw && e.raw.candidates && e.raw.candidates.length">
+                        <span class="text-slate-400">alt locators:</span> <span x-text="(e.raw.candidates||[]).join('   ·   ')"></span>
+                      </div>
+                      <div x-show="e.raw && (e.raw.tag || e.raw.name || e.raw.role)">
+                        <span class="text-slate-400">element:</span>
+                        <span x-text="[e.raw.tag, e.raw.role, e.raw.name].filter(Boolean).join(' · ')"></span>
+                      </div>
+                      <div x-show="e.raw && e.raw.x != null"><span class="text-slate-400">at:</span> <span x-text="e.raw.x + ', ' + e.raw.y"></span></div>
+                      <div x-show="e.raw && e.raw.from"><span class="text-slate-400">drag:</span> <span x-text="JSON.stringify(e.raw.from) + ' → ' + JSON.stringify(e.raw.to)"></span></div>
+                      <div x-show="e.raw && e.raw.url"><span class="text-slate-400">url:</span> <span x-text="e.raw.url"></span></div>
+                    </div>
+                  </details>
+                </template>
+                <!-- annotation / reset / handoff — simple inline rows (no detail to expand) -->
+                <template x-if="e.type === 'action' && e.kind !== 'action' && e.kind !== 'focus'">
+                  <div class="flex items-start gap-2 px-3 py-1 font-mono text-xs">
+                    <span class="shrink-0 w-4 text-center" x-text="e.kind==='note' ? '📝' : (e.kind==='reset' ? '↺' : '⇄')"></span>
+                    <span class="min-w-0 flex-1 break-words"
+                          :class="e.kind==='note' ? 'text-amber-700 dark:text-amber-400' : 'text-slate-600 dark:text-slate-300'"
+                          x-text="e.text"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <p x-show="historyEmpty()" class="text-slate-400 text-sm px-2 py-6 text-center"
+               x-text="loadingTranscript ? 'loading transcript…'
+                       : ((status === 'running' || status === 'paused') ? 'watching the live turn below — finished turns collapse up here as the agent moves on'
+                       : 'no transcript')"></p>
+          </div>
+
+          <!-- ============ the bottom-anchored LIVE TURN (D88) ============
+               The in-flight turn streams here, pinned to the bottom of the panel; it auto-scrolls ONLY
+               itself. The bar above it is BOTH the section header and the drag-to-resize divider between
+               the done history (which scrolls) and the live turn (anchored). Present only while a turn is
+               in-flight; on settle it's removed and the turn drops into the history list above, collapsed.
+               `infH` (the live region's height) is fixed/draggable; the history takes the rest via flex-1. -->
+          <template x-if="inflightTurn()">
+            <div class="shrink-0 flex flex-col border-t border-slate-200 dark:border-slate-700" :style="`height:${infH}px`">
+              <!-- the divider IS the live-turn header — drag it to resize the split (height persists) -->
+              <div @mousedown.prevent="startInflightDrag($event)" title="drag to resize the live turn / history split"
+                   class="shrink-0 cursor-row-resize select-none px-4 py-2 bg-slate-50 dark:bg-slate-900/50 hover:bg-slate-100 dark:hover:bg-slate-800 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2">
+                <span class="inline-block h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
+                <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 shrink-0">Live turn</span>
+                <span class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-700 px-1.5 text-xs text-slate-600 dark:text-slate-300 shrink-0" x-text="inflightTurn() && inflightTurn().n"></span>
+                <span x-show="inflightTurn() && inflightTurn().label" class="font-mono text-xs text-slate-600 dark:text-slate-300 truncate min-w-0" x-text="inflightTurn() && inflightTurn().label"></span>
+                <span class="ml-auto text-[11px] text-slate-400 shrink-0" x-text="status === 'paused' ? 'paused' : 'streaming…'"></span>
+              </div>
+              <!-- the live turn's BODY — same expressions as a history turn card (e.turn.*), kept in lockstep -->
+              <div x-ref="inflightPane" class="flex-1 min-h-0 overflow-y-auto p-3 text-xs space-y-2">
+                <template x-for="(e, ei) in timeline" :key="'inf' + ei">
+                  <template x-if="e.type === 'turn' && e.turn === inflightTurn()">
+                    <div class="space-y-2">
+                      <p x-show="e.turn.thinking" class="italic text-slate-400 whitespace-pre-wrap" x-text="e.turn.thinking"></p>
+                      <p x-show="e.turn.llm" class="text-slate-700 dark:text-slate-300 whitespace-pre-wrap" x-text="e.turn.llm"></p>
+                      <template x-for="(t, ti) in e.turn.tools" :key="ti">
+                        <div class="rounded bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700 p-2">
+                          <pre class="font-mono text-indigo-700 dark:text-indigo-300 whitespace-pre-wrap" x-text="t.js"></pre>
+                          <pre x-show="t.result !== null" class="mt-1 font-mono text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-all" x-text="t.result"></pre>
+                        </div>
+                      </template>
+                      <template x-for="(h, hi) in e.turn.hints" :key="hi">
+                        <p class="text-amber-600 dark:text-amber-400" x-text="'hint: ' + h"></p>
+                      </template>
+                      <p x-show="e.turn.error" class="text-rose-600 dark:text-rose-400 font-mono whitespace-pre-wrap" x-text="e.turn.error"></p>
+                    </div>
+                  </template>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+
+      </section>
+
+      <!-- draggable vertical splitter -->
+      <div @mousedown.prevent="startDrag()" title="drag to resize"
+           class="w-1.5 mx-1 shrink-0 self-stretch cursor-col-resize rounded bg-slate-200 dark:bg-slate-700 hover:bg-indigo-400 dark:hover:bg-indigo-500 transition-colors"></div>
+
+      <!-- ============ right: the VIEW slot — noVNC (live) | video (done) ============ -->
+      <aside class="flex flex-col gap-4 min-w-0 min-h-0 pl-2" :style="`flex-basis:${splitPct}%`">
+
+        <!-- screenshot strip (the veriquant carousel harvest) — labeled bot.screenshot('title')
+             captures, live (screenshot events) + replay/seed (the manifest); click → lightbox -->
+        <div x-show="shots.length" class="shrink-0 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden" data-ka-section="runs.live.screenshot">
+          <div class="px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Screenshots</span>
+            <span class="text-xs text-slate-400" x-text="shots.length"></span>
+          </div>
+          <div class="flex gap-2 overflow-x-auto p-3">
+            <template x-for="(s, i) in shots" :key="s.filename">
+              <img :src="shotUrl(s.filename)" :title="s.title || s.filename" @click="openShot(i)" loading="lazy"
+                   class="h-24 w-auto rounded border border-slate-200 dark:border-slate-700 cursor-pointer hover:border-indigo-400 dark:hover:border-indigo-500 shrink-0"/>
+            </template>
+          </div>
+        </div>
+
+        <div class="bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col min-h-0"
+             :class="vncFull ? 'fixed inset-0 z-50' : 'rounded-xl flex-1'"
+             @keydown.escape.window="vncFull && toggleVncFull()"
+             data-ka-section="runs.live.vnc">
+          <div class="shrink-0 px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400" x-text="showLive ? 'Watch — container Chrome (noVNC)' : 'Recording'"></span>
+            <div class="flex items-center gap-3 text-xs font-medium">
+              <button x-show="showLive" @click="showVnc = !showVnc" class="text-indigo-600 dark:text-indigo-400 hover:underline" x-text="showVnc ? 'hide' : 'show'"></button>
+              <button x-show="showLive" @click="toggleVncFull()" class="text-indigo-600 dark:text-indigo-400 hover:underline"
+                      x-text="vncFull ? '✕ exit full screen' : 'full ⤢'"></button>
+            </div>
+          </div>
+
+          <!-- recording / take-control controls (D150) — view-only by default; arming the
+               noVNC input is the take-control flip (loop) or recording (live). -->
+          <div x-show="showLive" class="shrink-0 px-4 py-2.5 border-b border-slate-100 dark:border-slate-700 flex flex-wrap items-center gap-2 text-xs" data-ka-section="runs.live.controls">
+            <span x-show="armed" class="inline-flex items-center gap-1.5 rounded-md bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 px-2 py-1 font-semibold uppercase tracking-wide">
+              <span class="inline-block h-2 w-2 rounded-full bg-amber-500 animate-pulse"></span> You are driving
+            </span>
+            <span x-show="!armed" class="text-slate-400 dark:text-slate-500">view-only</span>
+
+            <!-- loop intervention: take control pauses the loop (arm only once it confirms `paused`, §3 race) -->
+            <button x-show="mode!=='live' && !controlling" :disabled="status!=='running'" @click="takeControl()"
+                    class="rounded-md border border-indigo-300 dark:border-indigo-700 px-2.5 py-1 font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 disabled:opacity-40"
+                    x-text="wantControl ? 'Pausing…' : 'Take control'"></button>
+            <button x-show="mode!=='live' && controlling" @click="giveBack()"
+                    class="rounded-md border border-emerald-300 dark:border-emerald-700 px-2.5 py-1 font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40">Give back to agent</button>
+
+            <!-- live recording: record / stop + indicator -->
+            <button x-show="mode==='live' && !recording" @click="startRec()"
+                    class="rounded-md border border-rose-300 dark:border-rose-700 px-2.5 py-1 font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40">● Record</button>
+            <button x-show="mode==='live' && recording" @click="stopRec()"
+                    class="rounded-md border border-slate-300 dark:border-slate-600 px-2.5 py-1 font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700">Stop recording</button>
+            <span x-show="recording" class="inline-flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-medium">
+              <span class="inline-block h-2 w-2 rounded-full bg-rose-500 animate-pulse"></span>REC
+              <span class="text-slate-500 dark:text-slate-400" x-text="actionCount + ' action' + (actionCount===1?'':'s')"></span>
+            </span>
+
+            <!-- ask an LLM to help drive / intervene on this live session (run-context-aware prompt) -->
+            <button x-show="mode==='live'" @click="copyDrive()"
+                    title="Copy a prompt that lets an LLM (Claude / MCP) drive or help with THIS live session"
+                    class="ml-auto rounded-md border border-indigo-300 dark:border-indigo-700 px-2.5 py-1 font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40"
+                    x-text="copiedDrive ? 'copied ✓' : '🤖 AI prompt'"></button>
+            <!-- send a local file to a remote file-input — save to checks/ + bot upload -->
+            <button x-show="showLive" @click="sendFileOpen = !sendFileOpen"
+                    title="Send a local file to a file-input in the container Chrome — saves it under checks/ then drives the bot's upload verb"
+                    class="rounded-md border border-slate-300 dark:border-slate-600 px-2.5 py-1 font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700">📎 Send file</button>
+            <!-- reset browser (live: drives the live `bot`) — state-wipe-in-place, emits browser_reset (D150) -->
+            <button x-show="mode==='live'" @click="resetBrowser()" :disabled="resetting"
+                    class="rounded-md border border-slate-300 dark:border-slate-600 px-2.5 py-1 font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40"
+                    x-text="resetting ? 'Resetting…' : '↺ Reset browser'"></button>
+          </div>
+          <!-- send-file inline form: a locator for the <input type=file>, then pick the local file to push -->
+          <div x-show="showLive && sendFileOpen" class="shrink-0 px-4 py-2 border-b border-slate-100 dark:border-slate-700 flex flex-wrap items-center gap-2">
+            <input x-model="sendFileLoc" placeholder="locator for the file input — e.g. input[type=file]  ·  #attach  ·  Upload document"
+                   class="flex-1 min-w-0 text-xs font-mono rounded-md border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <input x-ref="sendFileInput" type="file" class="hidden" @change="sendFileToInput($event)">
+            <button @click="$refs.sendFileInput.click()" :disabled="sendFileBusy || !sendFileLoc.trim()"
+                    class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                    x-text="sendFileBusy ? 'Sending…' : 'Choose file & send'"></button>
+            <span class="text-[11px] text-slate-400 dark:text-slate-500">saved to <code class="font-mono">checks/</code>, then uploaded to the input</span>
+          </div>
+          <!-- annotation box — label the last action while recording (D150) -->
+          <form x-show="showLive && recording" @submit.prevent="addNote()" class="shrink-0 px-4 py-2 border-b border-slate-100 dark:border-slate-700 flex gap-2">
+            <input x-model="annotateMsg" placeholder="annotate this step (e.g. 'this is the offering tier — pick Gold')"
+                   class="flex-1 text-xs rounded-md border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500">Note</button>
+          </form>
+
+          <!-- live → noVNC tile — fills the rest of the column (flex-1), normal AND full-screen -->
+          <template x-if="showLive && showVnc">
+            <iframe :src="vncUrl" class="w-full flex-1 min-h-0 bg-slate-900" title="noVNC"></iframe>
+          </template>
+          <p x-show="showLive && !showVnc" class="px-4 py-8 text-center text-xs text-slate-400">noVNC tile hidden — live view is only available in-container</p>
+
+          <!-- done → video recording (or a placeholder until the recording lands) -->
+          <template x-if="!showLive && hasVideo">
+            <video :src="videoUrl" controls preload="metadata" class="w-full flex-1 min-h-0 bg-black object-contain" title="run recording"></video>
+          </template>
+          <div x-show="!showLive && !hasVideo && traffic" class="px-4 py-10 text-center text-xs text-slate-400" data-run-traffic>
+            This run recorded the site's calls
+            <a class="block mt-1 underline" :href="'/manual/tests/api?from=' + encodeURIComponent(runId)">Make an API test from them</a>
+          </div>
+          <div x-show="!showLive && !hasVideo && !traffic" class="px-4 py-10 text-center text-xs text-slate-400">
+            no recording for this run
+            <span class="block mt-1 text-slate-300 dark:text-slate-600">(browser runs record to video.mp4)</span>
+          </div>
+        </div>
+
+        <p x-show="note" class="text-xs text-rose-600 dark:text-rose-400" x-text="note"></p>
+      </aside>
+
+    </div>
+
+    <!-- ============ the deterministic test universe (Runner.run a set, D132/D281) ============ -->
+
+    <!-- a set with a check member drives the container display, so it is watchable as it runs (D281) —
+         the same noVNC embed the transcript view uses, view-only; settled, the slot plays the run video -->
+    <div x-show="mode==='suite' && (showLive ? hasCheckMember : hasVideo)" x-cloak
+         class="mt-4 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden"
+         data-ka-section="runs.suite.vnc">
+      <div class="px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+        <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
+              x-text="showLive ? 'Watch — container Chrome (noVNC)' : 'Recording'"></span>
+        <button @click="showVnc = !showVnc" class="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+                x-text="showVnc ? 'hide' : 'show'"></button>
+      </div>
+      <template x-if="showVnc && showLive">
+        <iframe :src="vncUrl" class="w-full h-[26rem] bg-slate-900" title="noVNC"></iframe>
+      </template>
+      <template x-if="showVnc && !showLive">
+        <video :src="videoUrl" controls preload="metadata" class="w-full h-[26rem] bg-black object-contain" title="run recording"></video>
+      </template>
+    </div>
+
+    <!--/* the member manifest (D281 c) — what this run's selector RESOLVED to at kickoff. A folder
+         re-resolves on a replay, so two runs of one selector are compared member-list to member-list. */-->
+    <div th:if="memberCount > 0"
+         class="mt-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-3"
+         data-ka-section="runs.suite.members">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Members</span>
+        <span class="text-[11px] font-mono text-slate-400"
+              th:text="memberCount + ' · ' + (memberCount - memberJs) + ' feature · ' + memberJs + ' check'">0</span>
+        <span th:each="mem, iter: members" th:attr="'title': mem.title"
+              class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-mono"
+              th:classappend="mem.chip">
+          <span th:classappend="mem.kind == 'js' ? 'text-indigo-500' : 'text-slate-400'" th:text="mem.kind == 'js' ? '◆' : '▸'">▸</span>
+          <span th:text="mem.path">path</span>
+          <span th:if="mem.state == 'failed'" class="font-semibold">✕</span>
+          <span th:if="mem.state == 'not run'" class="uppercase tracking-wide text-[9px]">not run</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- a NET-NEW second view: a live scenario list + interleaved log, fed by core's RunEvent stream
+         over SSE (live) or replayed from karate-events.jsonl (done; scenario-level — no per-step). -->
+    <div x-show="mode==='suite'" class="mt-4 grid grid-cols-1 lg:grid-cols-[22rem_1fr] gap-4 items-start" data-ka-section="runs.suite">
+
+      <!-- left: the scenario roster + live X/Y/Z -->
+      <section class="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden" data-ka-section="runs.suite.scenarios">
+        <div class="px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between gap-2">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Scenarios</span>
+          <span class="text-xs font-mono text-slate-500 dark:text-slate-400">
+            <span class="text-emerald-600 dark:text-emerald-400" x-text="counts.passed"></span>/<span x-text="counts.total"></span>
+            <span x-show="counts.failed" class="text-rose-600 dark:text-rose-400" x-text="' · ' + counts.failed + ' failed'"></span>
+          </span>
+        </div>
+        <div class="max-h-[72vh] overflow-y-auto p-2 space-y-1">
+          <template x-for="sc in scenarios" :key="sc.key">
+            <div class="flex items-center gap-2 px-2 py-1.5 rounded text-sm">
+              <span class="inline-block h-2 w-2 rounded-full shrink-0" :class="scDot(sc.status)"></span>
+              <span class="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200" :title="sc.name" x-text="sc.name"></span>
+              <span x-show="sc.durationMillis" class="text-[11px] font-mono text-slate-400 shrink-0" x-text="sc.durationMillis + 'ms'"></span>
+            </div>
+          </template>
+          <p x-show="!scenarios.length" class="text-slate-400 text-sm px-2 py-6 text-center"
+             x-text="status==='running' ? 'suite is live — scenarios appear as they enter' : 'no scenarios'"></p>
+        </div>
+      </section>
+
+      <!-- right: the interleaved log (feature / scenario / step / http / error) + type filters -->
+      <section class="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between gap-3 flex-wrap">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Log<span x-show="status && status!=='running'" class="ml-2 normal-case font-normal text-slate-400">(replay)</span></span>
+          <div class="flex items-center gap-2.5 text-[11px] font-medium">
+            <template x-for="k in ['feature','scenario','step','http','error']" :key="k">
+              <label class="inline-flex items-center gap-1 cursor-pointer select-none capitalize text-slate-500 dark:text-slate-400">
+                <input type="checkbox" x-model="filters[k]" class="h-3 w-3 rounded border-slate-300 dark:border-slate-600"><span x-text="k"></span>
+              </label>
+            </template>
+            <label class="inline-flex items-center gap-1 cursor-pointer select-none text-slate-500 dark:text-slate-400 border-l border-slate-200 dark:border-slate-600 pl-2.5">
+              <input type="checkbox" x-model="autoScroll" class="h-3 w-3 rounded border-slate-300 dark:border-slate-600">auto-scroll
+            </label>
+          </div>
+        </div>
+        <div x-ref="suiteLog" class="max-h-[72vh] overflow-y-auto p-2 font-mono text-xs leading-relaxed" data-ka-section="runs.suite.log">
+          <template x-for="e in logEntries" :key="e.id">
+            <div x-show="filters[e.kind]" class="flex items-start gap-2 px-2 py-0.5 rounded hover:bg-slate-50 dark:hover:bg-slate-900/40"
+                 :style="`padding-left:${0.5 + e.level * 1.1}rem`">
+              <span class="shrink-0" :class="logIcon(e).cls" x-text="logIcon(e).ch"></span>
+              <span class="min-w-0 break-words whitespace-pre-wrap" :class="logText(e)" x-text="e.text"></span>
+              <span x-show="e.detail" class="text-slate-400 shrink-0" x-text="e.detail"></span>
+            </div>
+          </template>
+          <p x-show="!logEntries.length" class="text-slate-400 px-2 py-6 text-center"
+             x-text="loadingTranscript ? 'loading…' : (status==='running' ? 'waiting for the first event…' : 'no events')"></p>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- the shared screenshot lightbox (opened by the strip above) -->
+  <th:block th:insert="~{components/lightbox :: lightbox}"></th:block>
+
+  <!-- .md-body styling is in the compiled /pub/tailwind.css (etc/web-assets/input.css) -->
+
+  <script src="/pub/session-prefs.js" ka:nocache="true"></script>
+  <script src="/pub/share-prompt.js" ka:nocache="true"></script>
+  <script>
+    // The typed-event handler registry — one entry per HarnessEvent type; drives BOTH the live SSE stream
+    // and the read-only transcript replay (same line shape). `s` is the Alpine component, `d` the payload.
+    const ROUTER = {
+      run_start:   (s, d) => { s.task = s.task || d.task || ''; s.model = d.model || s.model || ''; },
+      iteration_start: (s, d) => s.turnFor(d.iteration),
+      text_chunk:      (s, d) => { s.turnFor(d.iteration).llm += d.chunk || ''; },
+      thinking:        (s, d) => { s.turnFor(d.iteration).thinking += (d.text || d.chunk || ''); },
+      llm_response:    (s, d) => { const t = s.turnFor(d.iteration); if (d.text) t.llm = d.text;
+                                   s.model = d.model || s.model; s.tokens.in += d.inputTokens || 0; s.tokens.out += d.outputTokens || 0; },
+      tool_request:    (s, d) => { s.turnFor(d.iteration).tools.push({ js: d.js, result: null }); },
+      tool_result:     (s, d) => { const t = s.turnFor(d.iteration).tools; for (let i = t.length - 1; i >= 0; i--) if (t[i].result === null) { t[i].result = d.result; break; } },
+      console:         (s, d) => { s.turnFor(d.iteration).llm += (d.text ? '\n' + d.text : ''); },
+      hint:            (s, d) => { s.turnFor(d.iteration).hints.push(d.message || d.source || ''); },
+      // loop steps carry an iteration; LIVE steps don't — those land on the turn they happened in
+      // (the latest eval card), never a blank turnFor(undefined) card
+      step:            (s, d) => { const t = d.iteration != null ? s.turnFor(d.iteration)
+                                     : (s.turns.length ? s.turns[s.turns.length - 1] : s.turnFor(1));
+                                   t.hints.push('step: ' + (d.name || '')
+                                     + (d.status ? ' [' + d.status + ']' : '')); },
+      screenshot:      (s, d) => s.addShot(d),   // a persisted labeled capture — the strip updates live
+      error:           (s, d) => { s.turnFor(d.iteration).error = d.message || 'error';
+                                   if (d.hint) s.errorHint = d.hint; },
+      // live-run lifecycle lines ("Starting agent…", "bot #1 parked…") — append to the turn
+      // they happened IN (the in-flight eval card / the latest turn), never pile into turn 1
+      log:             (s, d) => { const t = s.turns.length ? s.turns[s.turns.length - 1] : s.turnFor(1);
+                                   t.llm += (d.text || '') + '\n'; },
+      // live-run activity, the chat experience: the REQUEST renders the moment it is sent
+      // (eval_start), the response slots into the same card when the round-trip completes (eval)
+      eval_start:      (s, d) => { const t = s.turnFor(s.turns.length + 1);
+                                   t.label = (d.request || '').replace(/\s+/g, ' ').slice(0, 90);
+                                   t.tools.push({ js: d.request, result: null }); },
+      eval:            (s, d) => { // pair with the pending request card; create one for old transcripts
+                                   let t = null;
+                                   for (let i = s.turns.length - 1; i >= 0; i--) {
+                                     const c = s.turns[i];
+                                     if (c.tools.length === 1 && c.tools[0].result === null && c.tools[0].js === d.request) { t = c; break; }
+                                   }
+                                   if (!t) { t = s.turnFor(s.turns.length + 1);
+                                             t.label = (d.request || '').replace(/\s+/g, ' ').slice(0, 90);
+                                             t.tools.push({ js: d.request, result: null }); }
+                                   t.tools[0].result = JSON.stringify(d.response, null, 2);
+                                   if (d.response && d.response.command === 'error') t.error = String(d.response.payload || 'error'); },
+      paused:          (s) => { s.status = 'paused';
+                                 // §3 race: arm the noVNC input only now the loop has actually paused
+                                 if (s.wantControl) { s.controlling = true; s.wantControl = false; } },
+      resumed:         (s) => { s.status = 'running'; },
+      // human UI recording (D150) — first-class rows INTERLEAVED in the one timeline (so a
+      // human-takeover during a loop reads in chronological order, not siloed), live + replay alike.
+      human_action:    (s, d) => { s.timeline.push({ type: 'action', kind: 'action', action: d.action || 'action',
+                                     locator: d.locator || '', value: d.value, frame: d.frame, raw: d, open: false });
+                                   s.recording = true; s.actionCount = (s.actionCount || 0) + 1; },
+      focus:           (s, d) => s.timeline.push({ type: 'action', kind: 'focus',
+                                     action: 'focus ' + (d.phase || ''), locator: d.locator || '', raw: d, open: false }),
+      annotation:      (s, d) => s.timeline.push({ type: 'action', kind: 'note', text: d.text || '' }),
+      browser_reset:   (s, d) => s.timeline.push({ type: 'action', kind: 'reset', text: 'browser reset' }),
+      control_handoff: (s, d) => { s.timeline.push({ type: 'action', kind: 'handoff',
+                                     text: 'control → ' + (d.to || '') + (d.note ? ': ' + d.note : '') });
+                                   if (d.to === 'human') s.status = 'paused';
+                                   else if (d.to === 'agent') s.status = 'running'; },
+      complete:        (s, d) => { const wasLive = s.status === 'running' || s.status === 'paused';
+                                   if (wasLive) s.status = d.status || 'complete';
+                                   if (!s.finishedMs) s.finishedMs = d.ts || Date.now();  // freeze elapsed
+                                   if (!s.outcome) s.setOutcome(d);
+                                   settleReload(s); }
+    };
+
+    // the settled meta (outcome + the finalized recording) is on disk once `complete` lands — re-render
+    // the page in its done shape so the video appears in place, no manual refresh. BOTH routers settle
+    // through here: the transcript view swaps its noVNC tile for the recording, the suite view picks up
+    // the hasVideo the live meta could not know yet.
+    // Gate on `s.live` (the run was in-flight at THIS page load, from meta.live), NOT on the status the
+    // handler just flipped: a fresh load of an already-finished run REPLAYS the whole history — including
+    // any pause/resume — so a status gate is true on every replay, which would loop
+    // load→replay→complete→reload forever. A completed run loads with meta.live=false, so it never
+    // reloads; only a genuinely watched live run does. ONE-SHOT (sessionStorage, keyed by runId): a
+    // stop/settle can deliver `complete` while meta.live is still true across the reload, re-firing a few
+    // times until the terminal status persists — the guard makes it a single, clean swap.
+    function settleReload(s) {
+      if (!s.live || !s.runId || sessionStorage.getItem('ka-reloaded-' + s.runId)) return;
+      sessionStorage.setItem('ka-reloaded-' + s.runId, '1');
+      setTimeout(() => location.reload(), 1500);
+    }
+
+    // The suite (Runner.run a .feature) live view's event handlers — core's RunEvent stream bridged to
+    // SSE (D132). The feature→scenario hierarchy drives the roster + X/Y/Z; everything lands in the
+    // interleaved log. Steps arrive live only (the durable JSONL omits STEP_* — replay degrades to
+    // scenario-level). HTTP exchanges ride feature_exit embeds, the way the JSONL carries them.
+    const SUITE_ROUTER = {
+      feature_enter: (s, d) => s.suiteLog('feature', d.name || d.path || d.slug || 'feature', null, 0),
+      feature_exit:  (s, d) => s.suiteHttp(d),
+      scenario_enter:(s, d) => { s.scenarioRow(d).status = 'running'; s.recount(); },
+      scenario_exit: (s, d) => { const row = s.scenarioRow(d);
+                                 row.status = d.passed ? 'passed' : 'failed';
+                                 row.durationMillis = d.durationMillis || 0;
+                                 row.error = d.error || '';
+                                 s.recount();
+                                 s.suiteLog('scenario', (d.name || 'scenario')
+                                   + (d.error ? ' — ' + s.firstLine(d.errorReason || d.error, 160) : ''),
+                                   row.status, 1, d.durationMillis ? d.durationMillis + 'ms' : ''); },
+      step:          (s, d) => s.suiteLog('step', ((d.prefix ? d.prefix + ' ' : '') + (d.text || '')).trim(),
+                                   d.status, 2, d.durationMillis ? d.durationMillis + 'ms' : ''),
+      error:         (s, d) => s.suiteLog('error', d.message || d.error || 'error', 'failed', 2),
+      complete:      (s, d) => { s.status = d.status || 'complete';
+                                 if (!s.finishedMs) s.finishedMs = d.ts || Date.now();
+                                 if (d.total != null) s.counts = { total: d.total, passed: d.passed || 0, failed: d.failed || 0, running: 0 };
+                                 if (d.error) s.suiteLog('error', d.error, 'failed', 0);
+                                 s.hasReport = true;
+                                 settleReload(s); }
+    };
+
+    // markdown is lazy — goal/outcome render plain text until the (vendored) script lands (then upgrade)
+    function ensureMarked() {
+      if (window.marked) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const sc = document.createElement('script');
+        sc.src = '/pub/vendor/marked.min.js';
+        sc.onload = resolve; sc.onerror = reject;
+        document.head.appendChild(sc);
+      });
+    }
+
+    function consoleApp() {
+      return {
+        runId: '', status: 'idle', mode: '', model: '', tokens: { in: 0, out: 0 },
+        recordable: false,   // this run holds a recording → show "Convert to check" (Harness.author)
+        traffic: false,      // its record holds captured calls → the AI prompt asks for an API test of them
+        // the focused Convert-to-check dialog (D150)
+        convertOpen: false, convertName: 'recorded-flow', convertCombos: [], convertCombo: 0,
+        convertErr: '', converting: false,
+        startedMs: 0, finishedMs: 0, now: Date.now(),
+        task: '', resumeMsg: '', stopping: false, turns: [], lastSeq: -1, loadingTranscript: false,
+        shots: [],   // labeled screenshots {filename, title, ts} — manifest seed + live screenshot events, dedup by filename
+        timeline: [],// the ONE chronological stream: {type:'turn', turn} (LLM/eval cards) interleaved with
+                     // {type:'action', …} recorder events, in arrival order — so a human-takeover reads inline
+        goalOpen: false, goalHtml: '', outcome: null, outcomeOpen: true, outcomeHtml: '', note: '',
+        errorHint: '',   // the live `error` event's hint, until the settled meta carries its own
+        copiedShare: false,
+        // ---- UI recording / take-control state (D150) ----
+        recording: false, controlling: false, wantControl: false, actionCount: 0, annotateMsg: '', resetting: false, copiedDrive: false,
+        // ---- send-a-local-file-to-a-remote-input ----
+        sendFileOpen: false, sendFileLoc: '', sendFileBusy: false,
+        showVnc: true, vncFull: false, src: null, hasVideo: false, hasReport: false, live: false, _reportUrl: '',
+        // ---- the suite (mode:suite) view state (D132) ----
+        members: [],     // the run's ordered member manifest {path, kind} — a set records it (D281)
+        scenarios: [],   // the roster: {key, name, feature, status, durationMillis, error}
+        logEntries: [],  // the interleaved log: {id, kind, text, status, level, detail}
+        counts: { total: 0, passed: 0, failed: 0, running: 0 },
+        filters: { feature: true, scenario: true, step: true, http: true, error: true },
+        autoScroll: true, logSeq: 0,
+        follow: kaPrefs.read('follow', '1') !== '0',  // stick history to the latest entry (session, log-tail UX)
+        theme: document.documentElement.getAttribute('data-theme') || 'light',
+        splitPct: Math.min(80, Math.max(25, parseFloat(kaPrefs.read('split', null)) || 60)), // right pane % (session, D114)
+        infH: Math.max(120, parseFloat(kaPrefs.read('infH', null)) || 320),  // pinned live-turn pane height px (session)
+
+        // single-port (D103): noVNC is served same-origin under /novnc/* and its WebSocket
+        // tunnels through the serve port (path=novnc/websockify) — no second exposed port
+        // view-only by DEFAULT (D150); the input arms only while driving (armed). The iframe reloads when
+        // `armed` flips because :src is reactive — noVNC reads `view_only` from the URL.
+        get vncUrl() { return `/novnc/vnc.html?autoconnect=true&password=karate&resize=scale&path=novnc/websockify&view_only=${this.armed ? 0 : 1}`; },
+        // armed = the human is driving: a live recording session, or having taken control of a loop.
+        get armed() { return (this.mode === 'live' && this.recording) || this.controlling; },
+        get videoUrl() { return `/api/artifacts/runs/${encodeURIComponent(this.runId)}/video.mp4`; },
+        // a set with a check member drives a bot on the container display, so it is watchable while it
+        // runs — and films to one video (D281). A feature-only set is headless: nothing to show.
+        get hasCheckMember() { return this.members.some((m) => m.kind === 'js'); },
+        // the run's native karate report, served from the run dir (D136) — Java computes the precise
+        // URL (a single-feature run deep-links to its feature page; else the summary index), with the
+        // summary as the always-valid fallback; relative assets (res/…) resolve under the same prefix
+        get reportUrl() {
+          return this._reportUrl || `/api/artifacts/runs/${encodeURIComponent(this.runId)}/karate-summary.html`;
+        },
+        // the right slot shows the LIVE noVNC view while the run is in flight; otherwise the recording.
+        // PAUSED counts as in-flight: pausing (or taking control) is exactly when you watch + drive the
+        // browser — the `paused` handler arms the noVNC input, so the tile must stay mounted (else the
+        // iframe unmounts on pause, the RFB drops, and the view vanishes).
+        get showLive() { return this.status === 'running' || this.status === 'paused'; },
+
+        // expand/collapse the noVNC tile to a fullscreen overlay (CSS only — same iframe, RFB stays
+        // connected). noVNC (resize=scale) doesn't always re-fit when the iframe shrinks via CSS, so
+        // nudge it with a resize once the new layout applies (same-origin /novnc → reachable frame).
+        toggleVncFull() {
+          this.vncFull = !this.vncFull;
+          // noVNC (resize=scale) re-fits its scaled canvas only on a REAL resize of its container —
+          // exactly what dragging the split divider does. A synthetic 'resize', or setting+restoring
+          // the iframe's own inline width, gets coalesced and ignored (the observer lives INSIDE the
+          // iframe, on a layout the parent's reflow doesn't flush). So on collapse, reproduce the
+          // divider: briefly jiggle the split % (which drives the noVNC pane's real width) and restore
+          // it — two genuine parent-driven resizes the observer fires on. Expand already scales up.
+          if (this.vncFull) return;
+          this.$nextTick(() => setTimeout(() => {
+            const p = this.splitPct;
+            this.splitPct = p > 50 ? p - 1 : p + 1;     // a real pane resize, like a divider tap
+            setTimeout(() => { this.splitPct = p; }, 140); // held long enough to be observed, then restored
+          }, 160));
+        },
+
+        startDrag() {
+          const el = this.$refs.split;
+          const onMove = (ev) => {
+            const r = el.getBoundingClientRect();
+            const pct = (1 - (ev.clientX - r.left) / r.width) * 100;
+            this.splitPct = Math.min(80, Math.max(25, Math.round(pct)));
+          };
+          const onUp = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            document.body.style.userSelect = '';
+            kaPrefs.set('split', this.splitPct);
+          };
+          document.body.style.userSelect = 'none';
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        },
+
+        // the run id is the last path segment: /runs/<id>
+        init() {
+          // markdown upgrade for the goal whenever it lands/changes (plain text until then)
+          this.$watch('task', (t) => this.md(t).then((h) => { this.goalHtml = h || ''; }));
+          const id = decodeURIComponent((location.pathname.split('/').filter(Boolean).pop()) || '');
+          if (id === '' || id === 'runs') { location.href = '/runs'; return; }
+          this.runId = id;
+          this.load(id);
+        },
+
+        async md(src) {
+          if (!src) return '';
+          try { await ensureMarked(); return window.marked.parse(src); } catch (e) { return ''; }
+        },
+        // first line of `s`, capped — the collapsed-state previews (goal/outcome/turn headers)
+        firstLine(s, max) {
+          if (!s) return '';
+          const nl = s.indexOf('\n');
+          let line = (nl > 0 ? s.substring(0, nl) : s).trim();
+          return line.length > max ? line.substring(0, max) + '…' : line;
+        },
+        // the veriquant turnSummary tiers: live-eval request label → explicit thinking → a leading
+        // `//` comment on the first tool's JS (gemma-class models reason in comments) → the raw
+        // first input line → the LLM text
+        turnSummary(turn) {
+          let src = turn.label || turn.thinking || '';
+          if (!src && turn.tools.length) {
+            const js = (turn.tools[0].js || '').replace(/^\s+/, '');
+            src = js.indexOf('//') === 0 ? js.replace(/^\/\/\s?/, '') : js;
+          }
+          if (!src) src = turn.llm || '';
+          return this.firstLine(src, 110);
+        },
+        setOutcome(o) {
+          if (!o) return;
+          this.outcome = o;
+          // a SUCCESS result is authored markdown — render it. An ERROR is a raw diagnostic (config-eval
+          // dumps with "====" rules + "Code:"/"Error:" lines) that marked mangles into giant setext
+          // headings — leave outcomeHtml empty so it renders as plain preformatted text (the !outcomeHtml
+          // branch), not bold markdown.
+          if (o.result) { this.md(o.result).then((h) => { this.outcomeHtml = h || ''; }); }
+          else { this.outcomeHtml = ''; }
+        },
+        // `lastError` is what the loop's own terminal event calls the reason — read it too, so a run that
+        // dies while being WATCHED shows the provider's body under the hint, not an empty card.
+        // `blocker` is the D245 exit artifact: a BLOCKED run's `error` is a sentence that POINTS AT the
+        // contradictions, so rendering the sentence alone would tell the reader to look at something the
+        // page never shows. Append the proof.
+        outcomeText() {
+          if (!this.outcome) return '';
+          const base = this.outcome.result || this.outcome.error || this.outcome.lastError || '';
+          const blocker = this.outcome.blocker;
+          if (!blocker) return base;
+          return base + '\n\n' + JSON.stringify(blocker.contradictions || blocker, null, 2);
+        },
+        // the collapsed preview: the status-led one-liner beats the first line of a raw provider body
+        outcomeSummary() { return (this.outcome && this.outcome.errorShort) || this.outcomeText(); },
+        // the operator sentence for a recognized provider failure — from the settled meta, or (live,
+        // before the meta lands) from the `error` event that carried it
+        outcomeHint() { return (this.outcome && this.outcome.errorHint) || this.errorHint || ''; },
+        // elapsed: live = now - started (ticking); settled = finished - started (frozen)
+        elapsedText() {
+          if (!this.startedMs) return '';
+          const end = this.finishedMs || ((this.status === 'running' || this.status === 'paused') ? this.now : 0);
+          if (!end || end < this.startedMs) return '';
+          let s = Math.floor((end - this.startedMs) / 1000);
+          if (s < 60) return s + 's';
+          const m = Math.floor(s / 60); s = s % 60;
+          if (m < 60) return m + 'm ' + s + 's';
+          return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+        },
+        outcomeMeta() {
+          if (!this.outcome) return '';
+          const bits = [];
+          if (this.outcome.iterations != null) bits.push(this.outcome.iterations + ' iterations');
+          if (this.outcome.tokens != null) bits.push(this.outcome.tokens + ' tokens');
+          return bits.join(' · ');
+        },
+        outcomeBadge() {
+          const st = this.outcome && this.outcome.status;
+          if (st === 'completed' || this.outcome && this.outcome.succeeded) return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400';
+          if (st === 'failed' || st === 'error') return 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400';
+          return 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400';
+        },
+
+        load(id) {
+          // the meta is SSR-embedded (ka:island, D88) — no /api/eval round-trip, so the page state is
+          // correct immediately even while a long-running bot op holds the eval lock
+          const meta = JSON.parse(document.getElementById('meta-data').textContent);
+          // "no such run" = the get() lookup itself missed (a NOT_FOUND envelope: has `code`, no `runId`).
+          // A run that FAILED is a real record with `runId` + status:'failed' + an `error` reason — it must
+          // still render its outcome + replay its transcript, so do NOT bail just because `error` is set.
+          if (!meta || !meta.runId) { this.note = 'no such run: ' + (meta && meta.error ? meta.error : id); this.status = 'error'; return; }
+          this.task = meta.task || '';
+          this.status = meta.status;
+          this.mode = meta.mode || '';
+          this.model = meta.model || '';
+          this.recordable = !!meta.recordable;
+          this.traffic = !!meta.traffic;
+          this.startedMs = meta.startedMs || 0;
+          this.finishedMs = meta.finishedMs || 0;
+          if (meta.live) setInterval(() => { this.now = Date.now(); }, 1000);  // the live elapsed tick
+          this.live = !!meta.live;
+          this.hasVideo = !!meta.hasVideo;
+          this.hasReport = !!meta.hasReport;
+          this._reportUrl = meta.reportUrl || '';
+          (meta.screenshots || []).forEach((s) => this.addShot(s));   // the manifest seed
+          if (this.mode === 'suite') {
+            // the deterministic test universe: live → tail the SSE feed; done → replay the durable
+            // karate-events.jsonl (scenario-level — the JSONL omits STEP_*); the report link is always shown
+            this.members = meta.members || [];
+            this.hasReport = true;
+            if (meta.live) this.subscribe(id); else this.replaySuite(id);
+            return;
+          }
+          if (meta.live) {
+            // running → live stream (backfill ?since=-1 replays the transcript-so-far, then goes live)
+            this.subscribe(id);
+            if (this.mode === 'live') this.syncRecording();   // reflect an in-progress recording session
+          } else {
+            // done → read-only: a structured outcome card + the transcript replayed through the same ROUTER
+            if (meta.result !== undefined || meta.error) this.setOutcome(meta);
+            if (meta.hasTranscript) this.replay(id);
+          }
+        },
+
+        async replay(id) {
+          // a finished run replays through the same ROUTER; status is already terminal, so every turn lands
+          // in the collapsed history list (inflightTurn() is null — no pinned pane on a settled run)
+          this.loadingTranscript = true;
+          try {
+            const res = await fetch(`/api/artifacts/runs/${encodeURIComponent(id)}/transcript.jsonl`);
+            if (res.ok) {
+              const text = await res.text();
+              text.split('\n').forEach((line) => { if (line.trim()) this.onEvent('message', line); });
+            }
+          } catch (e) { /* leave the outcome; transcript is best-effort */ }
+          this.loadingTranscript = false;
+        },
+
+        // ---- the suite (mode:suite) view (D132) -------------------------------------------------
+        // replay a settled suite from the durable karate-events.jsonl (core's writer): it carries
+        // SUITE/FEATURE/SCENARIO/ERROR with `timeStamp` (normalized to `ts`) and OMITS STEP_*/HTTP_*
+        // (HTTP rides feature_exit embeds), so a finished run shows scenarios + outcomes + http, not
+        // per-step detail. The SAME SUITE_ROUTER consumes both the live feed and this replay.
+        async replaySuite(id) {
+          this.loadingTranscript = true;
+          const MAP = { FEATURE_ENTER: 'feature_enter', FEATURE_EXIT: 'feature_exit',
+                        SCENARIO_ENTER: 'scenario_enter', SCENARIO_EXIT: 'scenario_exit', ERROR: 'error' };
+          try {
+            const res = await fetch(`/api/artifacts/runs/${encodeURIComponent(id)}/karate-json/karate-events.jsonl`);
+            if (res.ok) {
+              const text = await res.text();
+              text.split('\n').forEach((line) => {
+                if (!line.trim()) return;
+                let env; try { env = JSON.parse(line); } catch { return; }
+                const type = MAP[env.type];
+                if (!type) return;
+                const d = Object.assign({}, env.data || {}, { type, ts: env.timeStamp });
+                const h = SUITE_ROUTER[type]; if (h) h(this, d);
+              });
+            }
+          } catch (e) { /* best-effort — leave whatever rendered */ }
+          this.recount();
+          this.loadingTranscript = false;
+        },
+        // a stable per-scenario key: the cross-run slug if core emitted one, else feature::name
+        scenarioKey(d) { return d.slug || ((d.feature || '') + '::' + (d.name || '') + '::' + (d.line || '')); },
+        scenarioRow(d) {
+          const key = this.scenarioKey(d);
+          let row = this.scenarios.find((x) => x.key === key);
+          if (!row) { row = { key, name: d.name || '(scenario)', feature: d.feature || '', status: 'running', durationMillis: 0, error: '' }; this.scenarios.push(row); }
+          return row;
+        },
+        recount() {
+          const c = { total: this.scenarios.length, passed: 0, failed: 0, running: 0 };
+          this.scenarios.forEach((s) => { if (s.status === 'passed') c.passed++; else if (s.status === 'failed') c.failed++; else c.running++; });
+          this.counts = c;
+        },
+        suiteLog(kind, text, status, level, detail) {
+          this.logEntries.push({ id: ++this.logSeq, kind, text, status: status || '', level: level || 0, detail: detail || '' });
+        },
+        // pull HTTP exchanges out of a feature_exit's embeds (scenarioResults→stepResults→embeds,
+        // name 'http-exchange', base64 JSON {request,response}) — how the JSONL carries them too
+        suiteHttp(d) {
+          (d.scenarioResults || []).forEach((sc) => (sc.stepResults || []).forEach((st) => (st.embeds || []).forEach((em) => {
+            if (em && em.name === 'http-exchange' && em.data) {
+              try {
+                const ex = JSON.parse(atob(em.data));
+                const rq = ex.request || {}, rs = ex.response || {};
+                this.suiteLog('http', (rq.method || 'GET') + ' ' + (rq.url || ''), rs.status >= 400 ? 'failed' : 'passed', 2,
+                  rs.status != null ? String(rs.status) : '');
+              } catch (e) { /* skip an unparseable embed */ }
+            }
+          })));
+        },
+        scrollSuiteLog() {
+          this.$nextTick(() => { const el = this.$refs.suiteLog; if (el) el.scrollTop = el.scrollHeight; });
+        },
+        scDot(status) { return { running: 'bg-amber-500 animate-pulse', passed: 'bg-emerald-500', failed: 'bg-rose-500' }[status] || 'bg-slate-300 dark:bg-slate-600'; },
+        logIcon(e) {
+          if (e.kind === 'feature') return { ch: '▶', cls: 'text-indigo-500 dark:text-indigo-400' };
+          if (e.kind === 'http') return { ch: '⇄', cls: 'text-sky-500 dark:text-sky-400' };
+          if (e.status === 'failed') return { ch: '✗', cls: 'text-rose-500 dark:text-rose-400' };
+          if (e.kind === 'scenario') return { ch: '✓', cls: 'text-emerald-500 dark:text-emerald-400' };
+          return { ch: '·', cls: 'text-slate-400 dark:text-slate-500' };
+        },
+        logText(e) {
+          if (e.status === 'failed' || e.kind === 'error') return 'text-rose-600 dark:text-rose-400';
+          if (e.kind === 'feature') return 'text-slate-700 dark:text-slate-200 font-medium';
+          return 'text-slate-600 dark:text-slate-300';
+        },
+
+        // the screenshot strip: dedup by filename (a replay event + the manifest seed carry the same
+        // capture), keep chronological order (both carry epoch-ms timestamps)
+        addShot(d) {
+          if (!d || !d.filename || this.shots.some((x) => x.filename === d.filename)) return;
+          this.shots.push({ filename: d.filename, title: d.title || '', ts: d.ts || 0 });
+          this.shots.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+        },
+        shotUrl(filename) {
+          return `/api/artifacts/runs/${encodeURIComponent(this.runId)}/screenshots/${encodeURIComponent(filename)}`;
+        },
+        openShot(i) {
+          kaLightboxOpen(this.shots.map((s) => ({ url: this.shotUrl(s.filename), title: s.title })), i);
+        },
+
+        turnFor(n) {
+          let t = this.turns.find((x) => x.n === n);
+          if (!t) {
+            // turns are born COLLAPSED: the history list is a scannable stack of done turns; the
+            // in-flight turn is shown expanded in the pinned pane (its `open` flag is irrelevant there).
+            t = { n, open: false, llm: '', thinking: '', tools: [], hints: [], error: '', label: '' };
+            this.turns.push(t);
+            this.timeline.push({ type: 'turn', turn: t });   // keep the chronological stream interleaved
+          }
+          return t;
+        },
+        // expand/collapse the whole history — turn cards AND the expandable recorder rows (action/focus),
+        // so "expand all" works in a pure UI-recording session (which has no turns, only action rows)
+        toggleAll(open) {
+          this.turns.forEach((t) => (t.open = open));
+          this.timeline.forEach((e) => {
+            if (e.type === 'action' && (e.kind === 'action' || e.kind === 'focus')) e.open = open;
+          });
+        },
+
+        // Follow (log-tail): when on, keep the history scrolled to the latest entry. Explicit toggle — no
+        // "is the user watching?" guesswork. Scrolling up turns it OFF (so it never yanks); the button
+        // re-enables it and jumps to the latest.
+        toggleFollow() {
+          this.follow = !this.follow;
+          kaPrefs.set('follow', this.follow ? '1' : '0');
+          if (this.follow) this.scrollHistory();
+        },
+        scrollHistory() {
+          if (!this.follow) return;
+          this.$nextTick(() => { const el = this.$refs.histPane; if (el) el.scrollTop = el.scrollHeight; });
+        },
+        // a user scroll AWAY from the bottom disengages Follow (no yank); a programmatic scroll-to-bottom
+        // stays at the bottom, so it never self-disengages
+        onHistScroll(e) {
+          if (!this.follow) return;
+          const el = e.target;
+          if (el.scrollHeight - el.scrollTop - el.clientHeight > 40) this.follow = false;
+        },
+
+        // the in-flight turn = the latest turn while the run is still live (running/paused). It is derived
+        // PURELY from the SSE stream — a new iteration_start (loop) or eval_start (live) appends the next
+        // turn, which makes the prior one "done"; `complete` settles the status, so there is no in-flight
+        // turn on a finished/replayed run (everything renders in the collapsed history list). No backend
+        // signal beyond the events already on the wire is needed (no explicit iteration_end/eval_end).
+        inflightTurn() {
+          if (this.status !== 'running' && this.status !== 'paused') return null;
+          return this.turns.length ? this.turns[this.turns.length - 1] : null;
+        },
+        // the history list is empty when the only timeline entry is the in-flight turn (shown in the pane)
+        historyEmpty() {
+          const inf = this.inflightTurn();
+          return !this.timeline.some((e) => !(e.type === 'turn' && e.turn === inf));
+        },
+        // auto-scroll ONLY the pinned live pane to its bottom (never the history list) — the decoupling
+        scrollInflight() {
+          this.$nextTick(() => { const el = this.$refs.inflightPane; if (el) el.scrollTop = el.scrollHeight; });
+        },
+        // drag the divider to resize the live-turn region — drag UP grows it, the history above shrinks
+        // (flex-1) so the divider tracks the cursor. Capped at the panel height minus a little headroom so
+        // the history always keeps a usable slice (the panel is fixed-height, so this is a true split).
+        startInflightDrag(ev) {
+          const panel = this.$refs.txPanel;
+          const cap = panel ? panel.clientHeight - 120 : window.innerHeight * 0.6;
+          const startY = ev.clientY, startH = this.infH, maxH = Math.max(160, cap);
+          const onMove = (e) => { this.infH = Math.min(maxH, Math.max(120, startH + (startY - e.clientY))); };
+          const onUp = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            document.body.style.userSelect = '';
+            kaPrefs.set('infH', this.infH);
+          };
+          document.body.style.userSelect = 'none';
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        },
+
+        dot() { return { running: 'bg-emerald-500 animate-pulse', paused: 'bg-amber-500', completed: 'bg-emerald-500', failed: 'bg-rose-500', interrupted: 'bg-amber-500', stopped: 'bg-amber-500', terminated: 'bg-amber-500', error: 'bg-rose-500' }[this.status] || 'bg-slate-300'; },
+        statusText() { return this.status === 'running' ? 'text-emerald-600 dark:text-emerald-400' : this.status === 'paused' ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500 dark:text-slate-400'; },
+
+        subscribe(run) {
+          if (this.src) this.src.close();
+          this.src = karate.events((name, raw) => this.onEvent(name, raw), { run, since: this.lastSeq });
+        },
+        onEvent(name, raw) {
+          let d; try { d = JSON.parse(raw); } catch { d = { text: raw }; }
+          if (d.seq != null) { if (d.seq <= this.lastSeq) return; this.lastSeq = d.seq; }
+          // a suite run routes through its own scenario/log handlers (D132); the harness/loop run
+          // through the transcript ROUTER — one stream, two views keyed off the run's mode
+          const h = (this.mode === 'suite' ? SUITE_ROUTER : ROUTER)[d.type || name];
+          if (h) h(this, d);
+          // keep the views glued to the latest: the suite log, or the pinned live-turn pane + (when Follow
+          // is on) the history list.
+          if (this.mode === 'suite') { if (this.autoScroll) this.scrollSuiteLog(); }
+          else { this.scrollInflight(); this.scrollHistory(); }
+        },
+
+        async pause() { try { await karate.value('Harness.pause()'); } catch (e) {} this.status = 'paused'; },
+        async resume() { try { await karate.value(`Harness.resume(${JSON.stringify(this.resumeMsg || '')})`); } catch (e) {} this.resumeMsg = ''; this.status = 'running'; },
+        // the focused Convert-to-check dialog (D150) — build the provider·model combos off the
+        // #llm-data island (same flat shape the run modal uses) the first time it opens, then show it.
+        openConvert() {
+          if (!this.convertCombos.length) {
+            const el = document.getElementById('llm-data');
+            const llm = (el && JSON.parse(el.textContent)) || { providers: [], defaultModel: '' };
+            const combos = [];
+            (llm.providers || []).forEach((p) => {
+              const models = (p.models && p.models.length) ? p.models : [{ id: '', label: '' }];
+              models.forEach((m) => combos.push({
+                provider: p.name, model: m.id,
+                label: m.label ? p.name + ' · ' + m.label + (m.resolved && m.resolved !== m.label ? ' (' + m.resolved + ')' : '') : p.name,
+                def: !!p.default && (m.id === llm.defaultModel || !m.id),
+              }));
+            });
+            this.convertCombos = combos;
+            this.convertCombo = Math.max(0, combos.findIndex((c) => c.def));
+          }
+          this.convertErr = ''; this.convertOpen = true;
+        },
+        // kick off Harness.author with the chosen name + model → land on the new authoring run to watch it.
+        async doConvert() {
+          if (this.converting || !this.convertName.trim()) return;
+          this.converting = true; this.convertErr = '';
+          const opts = { async: true };
+          const sel = this.convertCombos[this.convertCombo];
+          if (sel) { opts.provider = sel.provider; if (sel.model) opts.model = sel.model; }
+          const name = this.convertName.trim();
+          if (name) opts.name = name;
+          try {
+            const author = () => karate.value(`Harness.author(${JSON.stringify(this.runId)}, ${JSON.stringify(opts)})`);
+            let out = await author();
+            // a name a check already has (409 EXISTS) is replaced only on a yes; any refusal is said in the dialog
+            if (out && out.code === 'EXISTS') {
+              if (!confirm('checks/' + name + '.js already exists. Replace it?')) {
+                this.convertErr = 'checks/' + name + '.js already exists. Type another name.'; this.converting = false; return;
+              }
+              opts.overwrite = true;
+              out = await author();
+            }
+            if (!out || !out.runId) { this.convertErr = (out && out.error) || 'the run did not start'; this.converting = false; return; }
+            location.href = '/runs/' + encodeURIComponent(out.runId);
+          } catch (e) { this.convertErr = String(e); this.converting = false; }
+        },
+        async deleteRun() {
+          if (!confirm('Delete run ' + this.runId + ' (transcript, recording, screenshots)?')) return;
+          try {
+            await karate.value(`Harness.delete(${JSON.stringify(this.runId)})`);
+            location.href = '/runs';
+          } catch (e) { this.note = 'delete: ' + e; }
+        },
+        // Run again (D281 c) — the kickoff modal lives on /runs; hand off by id and it opens there
+        // pre-filled from this run's record (the SSR row carries the selector + options).
+        runAgain() { location.href = '/runs?again=' + encodeURIComponent(this.runId); },
+        // the suite lane's Stop (Runner.stop, cooperative) — the terminal `complete` event (status
+        // `stopped`) settles the view through the normal suite router; no local state flip needed
+        async stopSuite() {
+          this.stopping = true;
+          try { await karate.value(`Runner.stop('${this.runId}')`); }
+          catch (e) { this.stopping = false; }
+        },
+
+        async stopRun() {
+          this.stopping = true;
+          let settled = null;
+          try { settled = await karate.value('Harness.stop()'); } catch (e) {}
+          // a live run settles immediately, to the status its record carries; a refused stop (the run had
+          // already settled) answers an error envelope, not a record, and leaves the status to the `complete`
+          // event. A loop run settles itself within ~100ms and its `complete` event drives the status via the ROUTER
+          if (this.mode === 'live') {
+            if (settled && settled.runId === this.runId && typeof settled.status === 'string') {
+              this.status = settled.status; this.finishedMs = Date.now(); if (this.src) this.src.close();
+            } else { this.stopping = false; }
+          }
+        },
+
+        // ---- UI recording / take-control (D150) ----
+        // sync recording state on load for a running live run (the buttons drive it thereafter)
+        async syncRecording() {
+          try {
+            const s = await karate.value('Recording.status()');
+            if (s && s.recording) { this.recording = true; this.actionCount = s.actions || 0; }
+          } catch (e) { /* recorder may be absent off-serve — leave view-only */ }
+        },
+        // loop intervention: pause the loop, then arm noVNC ONLY once the `paused` event lands (§3 race)
+        async takeControl() {
+          this.wantControl = true;
+          try { await karate.value('Harness.takeControl()'); }
+          catch (e) { this.wantControl = false; this.note = 'take control: ' + e; }
+        },
+        async giveBack() {
+          try { await karate.value(`Harness.giveBack(${JSON.stringify(this.annotateMsg || '')})`); } catch (e) {}
+          this.controlling = false; this.wantControl = false; this.annotateMsg = ''; this.status = 'running';
+        },
+        async startRec() {
+          try { await karate.value('Recording.start()'); this.recording = true; this.actionCount = 0; }
+          catch (e) { this.note = 'record: ' + e; }
+        },
+        async stopRec() {
+          try { await karate.value('Recording.stop()'); } catch (e) {}
+          this.recording = false;
+        },
+        async addNote() {
+          const t = (this.annotateMsg || '').trim();
+          if (!t) return;
+          try { await karate.value(`Recording.note(${JSON.stringify(t)})`); } catch (e) { this.note = 'note: ' + e; }
+          this.annotateMsg = '';
+        },
+        async resetBrowser() {
+          this.resetting = true;
+          try { await karate.value('bot.reset()'); } catch (e) { this.note = 'reset: ' + e; }
+          this.resetting = false;
+        },
+        // Send a LOCAL file (on the human's machine) to a remote <input type=file> in the container Chrome
+        // (the GW-record critical path, ZERO new engine code). Two hops over
+        // surfaces that already ship: (1) save the bytes under checks/ via POST /ui/checks/upload (#9 infra-1),
+        // then (2) hand the saved fixture to the live bot through the shipped #6a verb, which resolves
+        // checks/<file> from the project root the container Chrome can read.
+        async sendFileToInput(ev) {
+          const f = ev.target.files && ev.target.files[0];
+          ev.target.value = '';                 // reset so re-picking the same file fires change again
+          if (!f) return;
+          const loc = (this.sendFileLoc || '').trim();
+          if (!loc) { this.note = 'send file: enter a locator for the <input type=file> first'; return; }
+          this.sendFileBusy = true;
+          try {
+            const buf = await f.arrayBuffer();
+            // /ui/checks/upload is project-root relative — drop the fixture under checks/ so the bot's
+            // upload verb (which resolves checks/<file> from the project root) can reach it.
+            const up = await (await fetch('/ui/checks/upload?name=' + encodeURIComponent('checks/' + f.name), {
+              method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buf
+            })).json();
+            if (up && up.error) { this.note = 'upload: ' + up.error; this.sendFileBusy = false; return; }
+            const js = `bot.act(${JSON.stringify(loc)}, 'upload', ${JSON.stringify('checks/' + f.name)})`;
+            await karate.value(js);
+            this.note = 'sent ' + f.name + ' → ' + loc;
+            this.sendFileOpen = false;
+          } catch (e) { this.note = 'send file: ' + e; }
+          this.sendFileBusy = false;
+        },
+        // Copy a prompt that lets an LLM (Claude / an MCP client) drive or intervene on THIS live
+        // session, or help turn the recording into a check. Run-context-aware; defers the bot.* API to
+        // the self-describing /api/prompts/browser (P26 — never restate the surface here).
+        async copyDrive() {
+          const base = location.origin, id = this.runId;
+          // minimal — just the context + where to pull everything else (P26: the surface self-describes)
+          const prompt = "Help me drive a LIVE browser session in the karate-agent console (run " + id
+            + " at " + base + ") — a `bot` is already attached and bound.\n\n"
+            + "Pull the API + instructions and follow them: curl -s " + base + "/api/prompts/browser\n"
+            + "Drive by POSTing JavaScript as the request body to " + base + "/api/eval (or the MCP `eval` tool).\n"
+            + (this.recording ? "I'm recording — actions stream to runs/" + id + "/transcript.jsonl.\n" : "");
+          await kaCopy(prompt);
+          this.copiedDrive = true;
+          setTimeout(() => { this.copiedDrive = false; }, 1800);
+        },
+
+        // Share a settled run with an LLM (pub/share-prompt.js): a recording with captured traffic asks for an
+        // API test of its calls; any other run names the run's artifacts and the user states the intent.
+        async copyShare() {
+          const prompt = window.kaSharePrompt(location.origin, this.runId, {traffic: this.traffic});
+          await kaCopy(prompt);
+          this.copiedShare = true;
+          setTimeout(() => { this.copiedShare = false; }, 1800);
+        }
+      };
+    }
+  </script>

@@ -1,0 +1,34 @@
+<!--/* Manual mode — the mode picker (/manual/choose): full-bleed, no rail (layout.html renders it bare).
+     The choice is remembered per browser in the D114 session (session.ui.consoleView, written by
+     kaManual.choose in pub/manual.js); / reads it to pick the landing page. */-->
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'Choose a mode · Karate Agent');
+</script>
+<section class="m-picker" data-ka-section="manual.choose">
+  <div class="m-picker-logo"><img src="/pub/karate-logo.svg" alt="" width="22" height="22"><span>AGENT</span></div>
+  <div class="m-picker-center">
+    <div class="m-picker-head">
+      <h1 class="m-picker-title">How are you working today?</h1>
+      <p class="m-picker-sub">Same project, same runs. Two ways in.</p>
+    </div>
+    <div class="m-picker-cards">
+      <a class="m-picker-card m-picker-card--strong" href="/manual" onclick="return kaManual.choose(event, 'manual', '/manual')">
+        <div class="m-picker-card-head">
+          <span class="m-picker-mark m-picker-mark--manual"></span>
+          <span class="m-picker-card-title">Manual mode</span>
+        </div>
+        <div class="m-picker-card-body">Do the flow once in the live browser. The AI turns it into a test you replay for free, and coverage shows what is left to test.</div>
+        <div class="m-picker-card-go">Enter →</div>
+      </a>
+      <a class="m-picker-card" href="/" onclick="return kaManual.choose(event, 'dev', '/')">
+        <div class="m-picker-card-head">
+          <span class="m-picker-mark m-picker-mark--dev"></span>
+          <span class="m-picker-card-title">Dev mode</span>
+        </div>
+        <div class="m-picker-card-body">The full console: checks, feature files, rules, requirements and every run option.</div>
+        <div class="m-picker-card-go">Enter →</div>
+      </a>
+    </div>
+  </div>
+  <p class="m-picker-foot">You can switch at any time from the bottom of the sidebar.</p>
+</section>

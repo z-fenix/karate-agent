@@ -1,0 +1,754 @@
+/*
+ * Manual mode — the hand-written sheet for every /manual page (loaded by layout.html on the Manual chrome
+ * only). Plain classes, prefixed `m-`, so pub/tailwind.css never needs a rebuild. Light tokens on :root,
+ * dark under [data-theme="dark"] (layout.html resolves the theme before paint).
+ *
+ * Rules the primitives encode (the SCUB deck's art direction): a soft peach-to-lavender backdrop; content
+ * grouped on frosted cards (white at 70%, a white edge, one soft shadow) and separated by space, never by
+ * page-wide rules — a hairline appears only between the rows of one card, inset from its edges; the black
+ * card is the one emphasis (the rail, the step you are on, the picker's Manual card); one indigo accent is
+ * the interactive colour; green and red appear only as a dot (or a coverage square); one row vocabulary.
+ *
+ * PRIMITIVES (compose pages from these; add a page-specific class only for a genuinely new shape)
+ *
+ *   Page         <section class="m-page" data-ka-section="manual.x">   fills the content column (flex column)
+ *   Header       <header class="m-head"><div class="m-head-text"><span class="m-eyebrow">Campaign</span>
+ *                  <h1 class="m-title">Release 1.3</h1><p class="m-sub">…</p></div>
+ *                  <div class="m-head-end">…actions…</div></header>   kicker and sub optional; actions right
+ *   Stat row     <div class="m-stats"><div class="m-stat"><span class="m-stat-value">5</span>
+ *                  <span class="m-stat-label">requirements</span></div>…</div>
+ *   Section      <div class="m-section"><div class="m-section-head"><h2 class="m-section-title">Do this next</h2>
+ *                  <span class="m-section-sub">…</span></div> …rows… </div>
+ *   Card         <div class="m-card"> a frosted surface (radius 18, padding 22px 24px); m-rows, m-summary and
+ *                m-empty are cards already
+ *   Rows         <div class="m-rows"> a card holding the list; rows are separated by an inset hairline; each row:
+ *                <div class="m-row"> (or <a class="m-row"> when the whole row acts)
+ *                  <span class="m-dot m-dot--passed"></span>
+ *                  <div class="m-row-main"><span class="m-row-title">…</span><span class="m-row-sub">…</span></div>
+ *                  <span class="m-row-meta">…</span>                       right-aligned (m-row-meta--mono for ids/timings)
+ *                </div>
+ *                `m-row--act` adds a 4th action column (<a class="m-row-act">Run</a>); size the meta/action
+ *                columns per page with style="--m-row-meta: 200px; --m-row-act: 90px".
+ *                `m-row--step` is the dense log row (baseline-aligned).
+ *                `m-row-head` is a column-header row (13px grey) above a table-like list.
+ *   Dots         m-dot + one state (11px; m-dot--lg 12px, m-dot--sm 9px, m-dot--xs 7px):
+ *                  m-dot--passed    green fill          passed / covered
+ *                  m-dot--failed    red fill            failed
+ *                  m-dot--notrun    grey ring           not run / not tested
+ *                  m-dot--critical  red ring            untested AND high criticality
+ *                  m-dot--inflight  indigo ring         the step or run happening now
+ *                  m-dot--stopped   grey fill           a run that ended before an answer (stopped, hit
+ *                                                       its limit, interrupted, blocked)
+ *                Never merge states: one dot = one of the six.
+ *   Squares      <div class="m-squares"><span class="m-sq m-sq--covered"></span>…</div>  a count's slots
+ *                  (14px; size a denser set from its container): m-sq--covered · m-sq--failing ·
+ *                  m-sq--notrun · m-sq--part (partly covered) · bare m-sq (not tested)
+ *   Summary      <div class="m-summary"> dot · <div><div class="m-summary-title">…</div>
+ *                  <div class="m-summary-sub">…</div></div> · <a class="m-link">Open</a></div>
+ *                `m-summary--note` = one line of text + a link (padding 16px 20px); `m-push` pins any block
+ *                to the bottom of the page column.
+ *   Actions      <a class="m-btn">New test</a> (indigo fill; m-btn--lg for the page's main action;
+ *                  m-btn--ghost for a secondary action beside it: a white card, indigo text)
+ *                <a class="m-link">Run the tests I have</a> (indigo text; m-link--strong = 600)
+ *                <a class="m-quiet">Cancel</a> (grey — Cancel/Stop only)
+ *                A <button> takes the same classes; :disabled dims it.
+ *   Footer bar   <div class="m-actions"> buttons/links … <span class="m-cost">Uses AI. Replaying it later is free.</span></div>
+ *                <p class="m-foot">…</p> a footnote pinned to the bottom.
+ *   Inputs       <label class="m-field"><span class="m-label-row"><span class="m-label">What must be true</span>
+ *                  <span class="m-hint">…</span></span><input class="m-input"></label>
+ *                  m-input--mono · m-textarea (the screen's focus: indigo border) · m-checkbox + m-check-row
+ *   Chips        <span class="m-chip">DOC-001/1<button class="m-chip-x" aria-label="Remove">×</button></span>
+ *   Tabs         <nav class="m-tabs"><a class="m-tab" aria-current="page">Latest run</a>…</nav>
+ *   Progress     <div class="m-track"><div class="m-track-fill" style="width: 40%"></div></div>
+ *   Stages       <ol class="m-stages"><li class="m-stage m-stage--done"><span class="m-stage-n">1</span>Set up</li>…</ol>
+ *                  each a card, an arrow between: m-stage--done (✓) · m-stage--now (the black card,
+ *                  aria-current="step") · bare = upcoming (faded)
+ *   Empty        <div class="m-empty"><div class="m-empty-title">No tests yet</div><div class="m-empty-sub">…</div></div>
+ *                  (+ <div class="m-empty-act"> for the actions that fill it, the main one filled)
+ *   Live frame   <div class="m-frame">…</div> (the live browser surface — black, rounded)
+ *   Text         m-eyebrow (small caps label, as a card's kicker) · m-muted (secondary) · m-faint (tertiary) ·
+ *                  m-mono only for what a person types or copies as code (a file name input, a variable name):
+ *                  names, paths, ids and figures read in the sans, figures with tabular digits
+ *
+ * The rail (manual.rail) and the picker (m-picker, manual.choose) are shell-owned; screens never restyle them.
+ * A section that must follow the project live carries data-m-live: pub/manual.js swaps it with a fresh
+ * server render when a run starts, settles or folds into the project graph.
+ */
+
+/* ---- fonts (vendored woff2 + OFL licences under /pub/fonts) ---- */
+@font-face { font-family: 'Geist'; font-style: normal; font-weight: 400; font-display: swap;
+  src: url('/pub/fonts/geist-400.woff2') format('woff2'); }
+@font-face { font-family: 'Geist'; font-style: normal; font-weight: 500; font-display: swap;
+  src: url('/pub/fonts/geist-500.woff2') format('woff2'); }
+@font-face { font-family: 'Geist'; font-style: normal; font-weight: 600; font-display: swap;
+  src: url('/pub/fonts/geist-600.woff2') format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400; font-display: swap;
+  src: url('/pub/fonts/jetbrains-mono-400.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 500; font-display: swap;
+  src: url('/pub/fonts/jetbrains-mono-500.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400; font-display: swap;
+  src: url('/pub/fonts/jetbrains-mono-ext-400.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 500; font-display: swap;
+  src: url('/pub/fonts/jetbrains-mono-ext-500.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+
+/* ---- tokens ---- */
+:root {
+  /* Manrope is the deck's face; until it is vendored the stack falls to Geist, its closest vendored cousin */
+  --m-sans: 'Manrope', 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --m-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --m-bg: #F6F4F5;
+  --m-backdrop:
+    radial-gradient(95% 80% at 0% 100%, rgba(254, 224, 207, 0.95) 0%, rgba(254, 224, 207, 0) 62%),
+    radial-gradient(90% 75% at 100% 0%, rgba(221, 227, 254, 1) 0%, rgba(221, 227, 254, 0) 66%);
+  --m-ink: #14161C;
+  --m-text-2: #5A6070;          /* sub-labels, secondary copy */
+  --m-text-3: #767C8C;          /* meta, footnotes */
+  --m-line: rgba(20, 22, 28, 0.08);        /* the hairline between the rows of one card */
+  --m-line-soft: rgba(20, 22, 28, 0.05);
+  --m-card: rgba(255, 255, 255, 0.7);      /* every card */
+  --m-card-edge: rgba(255, 255, 255, 0.9);
+  --m-card-shadow: 0 1px 2px rgba(20, 22, 28, 0.04), 0 16px 36px -16px rgba(20, 22, 28, 0.16);
+  --m-hover: rgba(20, 22, 28, 0.03);       /* a row under the pointer */
+  --m-surface: rgba(20, 22, 28, 0.045);    /* a quiet fill inside a card: a selected row, a chip */
+  --m-field: rgba(255, 255, 255, 0.85);    /* inputs */
+  --m-field-edge: rgba(20, 22, 28, 0.12);
+  --m-strong: #14161C;                     /* the black emphasis card */
+  --m-on-strong: #FFFFFF;
+  --m-on-strong-2: #C7CBD6;
+  --m-radius: 18px;
+  --m-radius-sm: 12px;
+  --m-ring: #5A6070;            /* not-run ring */
+  --m-ring-soft: #C7CBD6;       /* upcoming / inactive ring */
+  --m-square-empty: #C7CBD6;
+  --m-purple: #3B49F5;          /* the accent: every interactive element */
+  --m-purple-hover: #2A37D8;
+  --m-purple-soft: rgba(59, 73, 245, 0.08);
+  --m-accent-on-strong: #9BA3FF;
+  --m-on-purple: #FFFFFF;
+  --m-green: #1E8A52;           /* passed — dot only */
+  --m-red: #D2352F;             /* failed / critical-untested — dot only */
+
+  --m-rail-fill: radial-gradient(140% 55% at 100% 0%, rgba(37, 43, 71, 0.95) 0%, rgba(37, 43, 71, 0) 72%), #14161C;
+  --m-rail-bg: #14161C;
+  --m-rail-shadow: 0 24px 48px -24px rgba(20, 22, 28, 0.55);
+  --m-rail-rule: rgba(255, 255, 255, 0.09);
+  --m-rail-text: #FFFFFF;
+  --m-rail-idle: #C7CBD6;
+  --m-rail-muted: #8F95A6;
+  --m-rail-faint: #6F7586;
+  --m-rail-hover: rgba(255, 255, 255, 0.05);
+  --m-rail-current: rgba(255, 255, 255, 0.1);
+  --m-rail-live: #9BA3FF;       /* the rail's run-in-flight dot */
+  --m-rail-link: #9BA3FF;
+  --m-frame-bg: #000000;
+  --m-frame-edge: rgba(20, 22, 28, 0.14);
+}
+
+[data-theme="dark"] {
+  --m-bg: #14161C;
+  --m-backdrop:
+    radial-gradient(90% 75% at 100% 0%, rgba(37, 43, 71, 1) 0%, rgba(37, 43, 71, 0) 70%),
+    radial-gradient(80% 70% at 0% 100%, rgba(70, 44, 40, 0.35) 0%, rgba(70, 44, 40, 0) 70%);
+  --m-ink: #F4F5F8;
+  --m-text-2: #A9AFBF;
+  --m-text-3: #858B9C;
+  --m-line: rgba(255, 255, 255, 0.08);
+  --m-line-soft: rgba(255, 255, 255, 0.05);
+  --m-card: rgba(255, 255, 255, 0.045);
+  --m-card-edge: rgba(255, 255, 255, 0.07);
+  --m-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 36px -16px rgba(0, 0, 0, 0.55);
+  --m-hover: rgba(255, 255, 255, 0.03);
+  --m-surface: rgba(255, 255, 255, 0.06);
+  --m-field: rgba(255, 255, 255, 0.05);
+  --m-field-edge: rgba(255, 255, 255, 0.12);
+  --m-strong: #F4F5F8;                     /* on a dark page the emphasis card turns light */
+  --m-on-strong: #14161C;
+  --m-on-strong-2: #5A6070;
+  --m-ring: #8F95A6;
+  --m-ring-soft: #3A3F4E;
+  --m-square-empty: #3A3F4E;
+  --m-purple: #9BA3FF;
+  --m-purple-hover: #B9BFFF;
+  --m-purple-soft: rgba(155, 163, 255, 0.12);
+  --m-accent-on-strong: #3B49F5;
+  --m-on-purple: #14161C;
+  --m-green: #3CCB82;
+  --m-red: #F2645E;
+
+  --m-rail-fill: radial-gradient(140% 55% at 100% 0%, rgba(59, 73, 245, 0.18) 0%, rgba(59, 73, 245, 0) 72%), #0D0E12;
+  --m-rail-bg: #0D0E12;
+  --m-rail-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 24px 48px -24px rgba(0, 0, 0, 0.7);
+  --m-rail-text: #F4F5F8;
+  --m-rail-idle: #A9AFBF;
+  --m-rail-live: #9BA3FF;
+  --m-rail-link: #9BA3FF;
+  --m-frame-edge: rgba(255, 255, 255, 0.1);
+}
+
+/* ---- base ---- */
+.m-body {
+  margin: 0;
+  background: var(--m-backdrop), var(--m-bg);
+  background-attachment: fixed;
+  color: var(--m-ink);
+  font-family: var(--m-sans);
+  font-size: 14.5px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.m-body *, .m-body *::before, .m-body *::after { box-sizing: border-box; }
+.m-body a { color: var(--m-purple); text-decoration: none; }
+.m-body a:hover { color: var(--m-purple-hover); }
+.m-body :focus-visible { outline: 2px solid var(--m-purple); outline-offset: 2px; }
+.m-body .m-rail :focus-visible { outline-color: var(--m-rail-link); }
+.m-body [x-cloak] { display: none !important; }
+/* `hidden` must win over a class that sets display (an overlay left visible eats every click beneath it) */
+.m-body [hidden] { display: none !important; }
+.m-mono { font-family: var(--m-mono); }
+.m-muted { color: var(--m-text-2); }
+.m-faint { color: var(--m-text-3); }
+.m-eyebrow { font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--m-text-2); }
+.m-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---- the card: every grouped surface ---- */
+.m-card, .m-rows, .m-summary, .m-empty {
+  background: var(--m-card); border: 1px solid var(--m-card-edge); border-radius: var(--m-radius);
+  box-shadow: var(--m-card-shadow); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+}
+.m-card { padding: 22px 24px; }
+
+/* ---- the shell: a floating rail + the content column ---- */
+.m-shell { display: grid; grid-template-columns: 254px minmax(0, 1fr); min-height: 100vh; }
+.m-content { min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
+.m-main { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 40px 48px 36px 38px; }
+.m-page { flex: 1; display: flex; flex-direction: column; min-width: 0; width: 100%; max-width: 1160px; margin: 0 auto; }
+.m-page[data-ka-section="manual.run"] { max-width: 1360px; }
+
+.m-rail {
+  position: sticky; top: 14px; height: calc(100vh - 28px); margin: 14px 0 14px 14px; overflow-y: auto;
+  display: flex; flex-direction: column; padding: 26px 12px 20px;
+  background: var(--m-rail-fill); border-radius: 22px; box-shadow: var(--m-rail-shadow); color: var(--m-rail-text);
+}
+.m-body .m-rail-logo {
+  display: flex; align-items: center; gap: 10px; padding: 0 12px; color: var(--m-rail-text);
+  font-size: 12.5px; font-weight: 700; letter-spacing: 0.2em;
+}
+.m-rail-logo img, .m-picker-logo img { flex: none; display: block; }
+.m-rail-project {
+  display: flex; flex-direction: column; gap: 4px; margin: 18px 0 22px; padding: 10px 12px 11px;
+  border: 1px solid var(--m-rail-rule); border-radius: 12px; background: none; color: var(--m-rail-text);
+  font-family: var(--m-sans); text-align: left; cursor: pointer;
+}
+.m-rail-project:hover { background: var(--m-rail-hover); }
+.m-rail-project-label { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--m-rail-muted); }
+.m-rail-project-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.m-rail-project-name { min-width: 0; overflow-wrap: anywhere; font-size: 15px; font-weight: 600; }
+.m-rail-project-go { margin-left: auto; flex: none; font-size: 12.5px; font-weight: 600; color: var(--m-rail-link); }
+.m-rail-project:hover .m-rail-project-go { color: var(--m-rail-text); }
+.m-body .m-rail-logo:hover { color: var(--m-rail-text); }
+.m-rail-nav { display: flex; flex-direction: column; gap: 2px; }
+.m-body .m-nav-item {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 11px;
+  color: var(--m-rail-idle); font-size: 15px; font-weight: 500; line-height: 1.35;
+}
+.m-body .m-nav-item:hover { color: var(--m-rail-text); background: var(--m-rail-hover); }
+.m-body .m-nav-item[aria-current="page"] { color: var(--m-rail-text); background: var(--m-rail-current); }
+.m-nav-count { margin-left: auto; font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--m-rail-muted); }
+
+.m-rail-foot { margin-top: auto; padding: 24px 12px 0; display: flex; flex-direction: column; gap: 11px; }
+.m-rail-rule { height: 1px; background: var(--m-rail-rule); }
+.m-rail-rule--gap { margin-top: 6px; }
+.m-body .m-verdict { display: flex; flex-direction: column; gap: 8px; margin: 0 -12px; padding: 10px 12px; border-radius: 12px; color: var(--m-rail-text); }
+.m-body a.m-verdict:hover { color: var(--m-rail-text); background: var(--m-rail-hover); }
+.m-verdict-line { display: flex; align-items: center; gap: 10px; }
+.m-verdict-state { font-size: 16px; font-weight: 700; color: var(--m-rail-text); }
+.m-verdict-note { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--m-rail-muted); }
+.m-verdict-meta { margin: 0; font-size: 12px; color: var(--m-rail-muted); }
+.m-body .m-rail-inflight { display: flex; align-items: center; gap: 10px; color: var(--m-rail-text); font-size: 14px; }
+.m-body .m-rail-inflight:hover { color: var(--m-rail-text); }
+.m-rail-inflight-go { margin-left: auto; color: var(--m-rail-link); font-size: 13.5px; }
+.m-body .m-rail-inflight:hover .m-rail-inflight-go { color: var(--m-rail-text); }
+.m-rail-switch { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; }
+.m-body .m-rail-switch a { color: var(--m-rail-link); font-size: 13.5px; }
+.m-body .m-rail-switch a:hover { color: var(--m-rail-text); }
+.m-rail-guide {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0; border: 0; background: none;
+  cursor: pointer; color: var(--m-rail-link); font-family: var(--m-sans); font-size: 13.5px; font-weight: 600; text-align: left;
+}
+.m-rail-guide:hover { color: var(--m-rail-text); }
+.m-rail-theme {
+  margin-left: auto; background: none; border: 0; padding: 0 2px; cursor: pointer;
+  color: var(--m-rail-muted); font-size: 14px; line-height: 1;
+}
+.m-rail-theme:hover { color: var(--m-rail-text); }
+.m-rail-pin {
+  align-self: flex-start; background: none; border: 1px solid currentColor; border-radius: 999px;
+  padding: 2px 8px; font-size: 12px; line-height: 1.3; cursor: pointer;
+}
+.m-rail .m-dot { width: 9px; height: 9px; }
+.m-rail .m-dot--live { background: var(--m-rail-live); border-color: var(--m-rail-live); }
+
+/* the no-project nudge above a Manual page */
+.m-body .m-nudge {
+  display: flex; gap: 12px; align-items: center; margin: 24px 48px 0 38px; padding: 16px 22px;
+  background: var(--m-card); border: 1px solid var(--m-card-edge); border-radius: var(--m-radius);
+  box-shadow: var(--m-card-shadow); color: var(--m-ink); font-size: 14.5px;
+}
+.m-body button.m-nudge { font: inherit; text-align: left; cursor: pointer; }
+.m-nudge-go { margin-left: auto; color: var(--m-purple); font-weight: 600; }
+/* another tab changed the project (pub/manual.js kaManual.onReanchor): said once, or held on a page kept for its text */
+.m-body .m-moved::before, .m-body .m-stale::before {
+  content: ''; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--m-purple);
+}
+.m-body .m-stale::before { background: var(--m-red); }
+html.m-project-stale .m-body [data-m-save], html.m-project-stale .m-body [data-m-draft],
+html.m-project-stale .m-body form button[type=submit] { opacity: 0.45; cursor: not-allowed; }
+
+/* ---- page header: an optional kicker, the title, an optional line under it; actions on the right ---- */
+.m-head { display: flex; align-items: flex-end; gap: 16px 28px; flex-wrap: wrap; }
+.m-head-text { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.m-title { margin: 0; font-size: 36px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.12; overflow-wrap: anywhere; }
+.m-sub { margin: 0; max-width: 68ch; font-size: 15.5px; line-height: 1.5; color: var(--m-text-2); }
+.m-runid { font-family: var(--m-mono); font-size: 12px; color: var(--m-text-3); }
+.m-head-end { margin-left: auto; display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap; padding-bottom: 2px; }
+
+/* ---- stat row: a card per figure ---- */
+.m-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; padding: 28px 0 0; }
+.m-stat {
+  display: flex; flex-direction: column; gap: 4px; padding: 20px 22px;
+  background: var(--m-card); border: 1px solid var(--m-card-edge); border-radius: var(--m-radius); box-shadow: var(--m-card-shadow);
+}
+.m-stat-value { font-size: 34px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.1; }
+.m-stat-label { font-size: 13.5px; color: var(--m-text-2); }
+
+/* ---- sections: separated by space ---- */
+.m-section { padding-top: 36px; }
+.m-section-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding-bottom: 14px; }
+.m-section-title { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
+.m-section-sub { font-size: 13.5px; color: var(--m-text-2); }
+
+/* ---- the one row ---- */
+.m-rows { padding: 6px 0; overflow: hidden; }
+.m-row {
+  display: grid; grid-template-columns: 24px minmax(0, 1fr) var(--m-row-meta, auto);
+  gap: 18px; align-items: center; padding: 17px 0;
+}
+.m-row--act { grid-template-columns: 24px minmax(0, 1fr) var(--m-row-meta, auto) var(--m-row-act, 90px); }
+/* inside a card a row spans it (its hover fills the width) while the hairline between rows stays inset */
+.m-rows > * { padding-left: 24px; padding-right: 24px; }
+.m-rows > * + * {
+  background-image: linear-gradient(var(--m-line), var(--m-line)); background-repeat: no-repeat;
+  background-size: calc(100% - 48px) 1px; background-position: 24px 0;
+}
+.m-body a.m-row { color: inherit; }
+.m-body a.m-row:hover { color: inherit; background-color: var(--m-hover); }
+.m-body a.m-row:hover .m-row-act { color: var(--m-purple-hover); }
+.m-row-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.m-row-title { font-size: 16px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.m-row-title.m-mono { font-size: 14.5px; font-weight: 400; }
+.m-row-sub { font-size: 13px; color: var(--m-text-2); overflow-wrap: anywhere; }
+.m-row-meta { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--m-text-2); text-align: right; }
+.m-row-meta--mono { font-family: var(--m-mono); font-size: 12.5px; color: var(--m-text-3); }
+.m-body .m-row-act, .m-row-act {
+  font-size: 14.5px; font-weight: 600; color: var(--m-purple); text-align: right;
+  background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit;
+}
+.m-body .m-row-act:hover { color: var(--m-purple-hover); }
+.m-row--step { grid-template-columns: 24px minmax(0, 1fr) auto; align-items: baseline; padding-top: 12px; padding-bottom: 12px; }
+.m-row--step > .m-dot { align-self: center; }
+.m-row-head { display: grid; gap: 18px; padding-bottom: 11px; font-size: 13px; color: var(--m-text-2); }
+
+/* ---- state marks ---- */
+.m-dot {
+  display: inline-block; flex: none; width: 11px; height: 11px; border-radius: 50%;
+  background: transparent; border: 1.5px solid transparent;
+}
+.m-dot--lg { width: 12px; height: 12px; }
+.m-dot--sm { width: 9px; height: 9px; }
+.m-dot--xs { width: 7px; height: 7px; }
+.m-dot--passed { background: var(--m-green); border-color: var(--m-green); }
+.m-dot--failed { background: var(--m-red); border-color: var(--m-red); }
+.m-dot--notrun { border-color: var(--m-ring); }
+.m-dot--critical { border-color: var(--m-red); }
+.m-dot--inflight { border-color: var(--m-purple); }
+.m-dot--stopped { background: var(--m-ring); border-color: var(--m-ring); }
+
+.m-squares { display: flex; flex-wrap: wrap; gap: 7px; }
+.m-sq { position: relative; display: inline-block; width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid var(--m-square-empty); }
+.m-sq--covered { background: var(--m-green); border-color: var(--m-green); }
+.m-sq--failing { background: var(--m-red); border-color: var(--m-red); }
+.m-sq--notrun { border-color: var(--m-ring); }
+.m-sq--part { border-color: var(--m-green); }
+.m-sq--part::after { content: ''; position: absolute; left: 2.5px; top: 2.5px; width: 6px; height: 6px; border-radius: 2px; background: var(--m-green); }
+
+/* ---- surfaces ---- */
+.m-summary { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 18px; align-items: center; padding: 20px 24px; }
+.m-summary--lg { padding: 24px 26px; }
+.m-summary-title { font-size: 16px; font-weight: 600; }
+.m-summary--lg .m-summary-title { font-size: 20px; font-weight: 700; letter-spacing: -0.015em; }
+.m-summary-sub { margin-top: 3px; font-size: 13px; color: var(--m-text-2); }
+.m-summary-sub--solo { margin-top: 0; font-size: 15px; }
+.m-summary-end { display: flex; align-items: center; gap: 20px; }
+.m-summary--note { display: flex; align-items: center; gap: 14px; padding: 16px 22px; font-size: 14.5px; }
+.m-summary--note > :last-child { margin-left: auto; }
+.m-push { margin-top: auto; }
+.m-frame {
+  background: var(--m-frame-bg); border: 1px solid var(--m-frame-edge); border-radius: 14px; overflow: hidden;
+  box-shadow: var(--m-card-shadow); color: #52525B; font-family: var(--m-mono); font-size: 12px;
+}
+
+/* ---- actions ---- */
+.m-body .m-btn, .m-btn {
+  display: inline-flex; align-items: center; gap: 8px; border: 0; cursor: pointer; white-space: nowrap;
+  background: var(--m-purple); color: var(--m-on-purple); border-radius: var(--m-radius-sm); padding: 11px 20px;
+  box-shadow: 0 10px 22px -12px rgba(59, 73, 245, 0.7);
+  font-family: var(--m-sans); font-size: 14.5px; font-weight: 600; line-height: 1.2;
+}
+.m-body .m-btn:hover { background: var(--m-purple-hover); color: var(--m-on-purple); }
+.m-btn--lg { font-size: 15px; padding: 13px 26px; }
+.m-body .m-btn--ghost, .m-btn--ghost {
+  background: var(--m-card); color: var(--m-purple); border: 1px solid var(--m-card-edge); box-shadow: var(--m-card-shadow);
+}
+.m-body .m-btn--ghost:hover { background: var(--m-card); color: var(--m-purple-hover); border-color: var(--m-purple); }
+.m-body .m-btn:disabled, .m-body .m-btn[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; background: var(--m-purple); box-shadow: none; }
+/* after the rule above: a disabled ghost keeps its white card, or its indigo label vanishes into the fill */
+.m-body .m-btn--ghost:disabled, .m-body .m-btn--ghost[aria-disabled="true"] { background: var(--m-card); box-shadow: none; }
+.m-body .m-link, .m-link {
+  color: var(--m-purple); font-size: 14.5px; font-weight: 500; background: none; border: 0; padding: 0; cursor: pointer;
+  font-family: inherit; line-height: inherit;
+}
+.m-body .m-link:hover { color: var(--m-purple-hover); }
+.m-link--strong { font-weight: 600; }
+.m-body .m-link:disabled { opacity: 0.4; cursor: not-allowed; }
+.m-body .m-quiet, .m-quiet {
+  color: var(--m-text-2); font-size: 14.5px; background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit;
+}
+.m-body .m-quiet:hover { color: var(--m-ink); }
+.m-actions { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; padding-top: 30px; }
+.m-cost { margin-left: auto; font-size: 13px; color: var(--m-text-3); }
+.m-foot { margin: auto 0 0; padding-top: 26px; font-size: 13.5px; color: var(--m-text-3); }
+
+/* ---- inputs ---- */
+.m-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.m-label-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.m-label { font-size: 14px; font-weight: 600; color: var(--m-ink); }
+.m-hint { font-size: 13px; color: var(--m-text-2); }
+.m-input {
+  width: 100%; border: 1px solid var(--m-field-edge); border-radius: var(--m-radius-sm); padding: 12px 14px; outline: none;
+  background: var(--m-field); color: var(--m-ink); font-family: var(--m-sans); font-size: 14.5px; line-height: 1.4;
+}
+.m-input:focus { border-color: var(--m-purple); box-shadow: 0 0 0 4px var(--m-purple-soft); }
+.m-input::placeholder { color: var(--m-text-3); }
+.m-input--mono { font-family: var(--m-mono); font-size: 13.5px; }
+.m-textarea { min-height: 110px; padding: 14px 15px; font-size: 15.5px; line-height: 1.6; resize: none; border-color: var(--m-purple); }
+.m-check-row { display: flex; align-items: flex-start; gap: 11px; }
+.m-checkbox { flex: none; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--m-purple); }
+
+/* ---- chips, tabs, progress ---- */
+.m-chip {
+  display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 8px;
+  background: var(--m-purple-soft); color: var(--m-purple); font-size: 12.5px; font-weight: 600; line-height: 1.2;
+}
+/* the × is a real target: a 12px glyph with no padding is hard to hit */
+.m-chip-x {
+  background: none; border: 0; padding: 2px 4px; margin: -2px -5px -2px -2px; cursor: pointer; color: var(--m-text-3);
+  font-family: var(--m-sans); font-size: 16px; line-height: 1;
+}
+.m-chip-x:hover { color: var(--m-ink); }
+.m-tabs { display: flex; gap: 20px; font-size: 14.5px; }
+.m-body .m-tab { color: var(--m-text-2); padding-bottom: 2px; border-bottom: 2px solid transparent; }
+.m-body .m-tab:hover { color: var(--m-ink); }
+.m-body .m-tab[aria-current="page"], .m-body .m-tab.is-active { color: var(--m-ink); font-weight: 600; border-bottom-color: var(--m-purple); }
+.m-track { flex: 1; height: 4px; background: var(--m-surface); border-radius: 2px; overflow: hidden; }
+.m-track-fill { height: 100%; width: 0; background: var(--m-purple); }
+
+/* ---- the stage strip: where a test being created stands (Set up · Record · Write · Verify) ---- */
+/* one card per step, an arrow between them; the step you are on is the black card */
+/* --m-stage-gap is the arrow's room and the bud's offset: a pill never shrinks under its label into the next */
+.m-stages { --m-stage-gap: 38px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px 0; margin: 0; padding: 26px 0 4px; list-style: none; }
+.m-stage {
+  position: relative; flex: none; white-space: nowrap; display: flex; align-items: center; gap: 10px; padding: 10px 18px 10px 14px;
+  background: var(--m-card); border: 1px solid var(--m-card-edge); border-radius: 14px; box-shadow: var(--m-card-shadow);
+  font-size: 14.5px; font-weight: 600; color: var(--m-text-3);
+}
+.m-stage + .m-stage { margin-left: var(--m-stage-gap); }
+.m-stage + .m-stage::before {
+  content: '→'; position: absolute; left: calc(var(--m-stage-gap) * -0.71); top: 50%; transform: translateY(-52%);
+  color: var(--m-text-3); font-weight: 400; font-size: 15px;
+}
+.m-stage-n { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--m-text-3); }
+.m-stage--done { color: var(--m-ink); }
+.m-stage--done .m-stage-n { font-size: 0; }
+.m-stage--done .m-stage-n::after { content: '✓'; font-size: 13px; color: var(--m-green); }
+.m-stage--now { background: var(--m-strong); border-color: var(--m-strong); color: var(--m-on-strong); }
+.m-stage--now .m-stage-n { color: var(--m-accent-on-strong); }
+
+/* ---- empty states ---- */
+.m-empty { display: flex; flex-direction: column; gap: 6px; padding: 24px 26px; }
+.m-empty-title { font-size: 16px; font-weight: 600; }
+.m-empty-sub { font-size: 13.5px; color: var(--m-text-2); }
+.m-empty-act { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-top: 10px; }
+
+/* ---- the completion toast ---- */
+.m-toast {
+  display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px;
+  background: var(--m-bg); color: var(--m-ink); border: 1px solid var(--m-card-edge); border-radius: 14px;
+  box-shadow: 0 18px 40px -18px rgba(20, 22, 28, 0.35); font-family: var(--m-sans); font-size: 14px;
+}
+.m-toast .m-dot { margin-top: 5px; }
+.m-toast-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.m-toast-sub { font-size: 13px; color: var(--m-text-2); overflow-wrap: anywhere; }
+.m-toast-x { background: none; border: 0; padding: 0; cursor: pointer; color: var(--m-text-3); font-size: 16px; line-height: 1; }
+
+/* ---- the lightbox: a video (or a screenshot) over the page ---- */
+.m-lightbox { width: min(1120px, 92vw); max-width: none; padding: 0; border: 0; border-radius: 16px; background: #000; overflow: hidden; }
+.m-lightbox::backdrop { background: rgba(20, 22, 28, 0.62); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+.m-lightbox video, .m-lightbox img { display: block; width: 100%; max-height: 82vh; background: #000; }
+.m-lightbox-x {
+  position: absolute; top: 12px; right: 12px; z-index: 1; width: 34px; height: 34px; border: 0; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9); color: #14161C; font-size: 18px; line-height: 1; cursor: pointer;
+}
+
+/* ---- a dialog: the project chooser (layout.html #m-project, pub/manual.js kaManual.project) ---- */
+.m-dialog {
+  width: min(460px, 92vw); max-width: none; padding: 0; border: 1px solid var(--m-card-edge); border-radius: var(--m-radius);
+  background: var(--m-bg); color: var(--m-ink); box-shadow: 0 30px 70px -24px rgba(20, 22, 28, 0.5);
+}
+.m-dialog::backdrop { background: rgba(20, 22, 28, 0.45); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+.m-dialog-card { display: flex; flex-direction: column; gap: 10px; padding: 26px 28px 24px; }
+.m-dialog-title { margin: 0; font-size: 21px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.25; }
+.m-dialog-text { margin: 0; font-size: 14.5px; line-height: 1.55; color: var(--m-text-2); }
+.m-dialog-err { margin: 0; font-size: 13.5px; color: var(--m-ink); }
+.m-dialog-err::before { content: ''; display: inline-block; width: 9px; height: 9px; margin-right: 9px; border-radius: 50%; background: var(--m-red); }
+.m-dialog-actions { display: flex; align-items: center; gap: 20px; padding-top: 12px; }
+.m-project-list { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; margin: 4px -4px 0; padding: 4px; overflow-y: auto; list-style: none; }
+.m-project-item {
+  display: flex; align-items: center; gap: 14px; width: 100%; padding: 12px 14px;
+  border: 1px solid var(--m-card-edge); border-radius: var(--m-radius-sm); background: var(--m-card);
+  color: var(--m-ink); font-family: var(--m-sans); text-align: left; cursor: pointer;
+}
+.m-project-item:hover { border-color: var(--m-purple); }
+.m-project-item[aria-current="true"] { border-color: var(--m-strong); box-shadow: inset 0 0 0 1px var(--m-strong); cursor: default; }
+.m-project-item:disabled { opacity: 0.55; cursor: progress; }
+.m-project-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.m-project-name { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.m-project-meta { font-size: 13px; color: var(--m-text-2); }
+.m-project-here { margin-left: auto; flex: none; font-size: 12.5px; font-weight: 600; color: var(--m-text-2); }
+
+/* ---- the mode picker (manual.choose): the deck's cover — the Manual card is the black one ---- */
+.m-picker { min-height: 100vh; display: flex; flex-direction: column; padding: 34px 40px 40px; color: var(--m-ink); }
+.m-picker-logo { display: flex; align-items: center; gap: 10px; font-size: 12.5px; font-weight: 700; letter-spacing: 0.2em; color: var(--m-text-2); }
+.m-picker-center {
+  flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 44px; padding: 40px 0;
+}
+.m-picker-head { display: flex; flex-direction: column; gap: 12px; align-items: center; text-align: center; max-width: 680px; }
+.m-picker-title { margin: 0; font-size: 48px; font-weight: 700; letter-spacing: -0.035em; line-height: 1.08; }
+.m-picker-sub { margin: 0; font-size: 18px; line-height: 1.6; color: var(--m-text-2); }
+.m-picker-cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 360px)); gap: 20px; justify-content: center; width: 100%;
+}
+.m-body .m-picker-card {
+  display: flex; flex-direction: column; gap: 10px; padding: 28px 28px 24px;
+  background: var(--m-card); border: 1px solid var(--m-card-edge); border-radius: 20px; box-shadow: var(--m-card-shadow);
+  color: var(--m-ink); transition: transform 0.12s ease;
+}
+.m-body .m-picker-card:hover { color: var(--m-ink); transform: translateY(-2px); }
+.m-body .m-picker-card--strong, .m-body .m-picker-card--strong:hover {
+  background: var(--m-strong); border-color: var(--m-strong); color: var(--m-on-strong);
+}
+.m-picker-card-head { display: flex; align-items: center; gap: 10px; }
+.m-picker-card-title { font-size: 22px; font-weight: 700; letter-spacing: -0.015em; }
+.m-picker-card-last { margin-left: auto; font-size: 11px; color: var(--m-text-3); }
+.m-picker-card-body { font-size: 14.5px; line-height: 1.6; color: var(--m-text-2); }
+.m-picker-card--strong .m-picker-card-body { color: var(--m-on-strong-2); }
+.m-picker-card-go { padding-top: 6px; font-size: 14px; font-weight: 600; color: var(--m-purple); }
+.m-picker-card--strong .m-picker-card-go { color: var(--m-accent-on-strong); }
+.m-picker-mark { flex: none; width: 9px; height: 9px; border-radius: 50%; }
+.m-picker-mark--manual { background: var(--m-accent-on-strong); }
+.m-picker-mark--dev { border: 1.5px solid var(--m-ring); }
+.m-picker-foot { margin: 0; font-size: 13px; color: var(--m-text-3); text-align: center; }
+
+/* ---- narrow screens: the rail stacks above the page ---- */
+@media (max-width: 760px) {
+  .m-shell { grid-template-columns: 1fr; }
+  .m-rail { position: static; height: auto; margin: 12px 12px 0; padding: 16px 8px; }
+  .m-rail-logo { padding-bottom: 14px; }
+  .m-rail-foot { padding-top: 14px; }
+  .m-main { padding: 24px 16px; }
+  .m-body .m-nudge { margin: 16px 16px 0; }
+  .m-rows > * { padding-left: 18px; padding-right: 18px; }
+  .m-rows > * + * { background-size: calc(100% - 36px) 1px; background-position: 18px 0; }
+  .m-row, .m-row--act { grid-template-columns: 24px minmax(0, 1fr) auto; }
+  .m-row--act > .m-row-meta { display: none; }
+  .m-stages { --m-stage-gap: 30px; }
+  .m-picker { padding: 24px 16px; }
+  .m-picker-title { font-size: 32px; }
+}
+
+/* ---- motion ----
+ * Motion marks an arrival, a change, or a run happening now, and ends on the still (styleguide §7):
+ * opacity, a few px of travel, a square or a dot settling in, a ring rippling out. Only an in-flight dot
+ * repeats, and only while its run is live. html.m-arrive (pub/manual.js, set before first paint) gates the
+ * entrance and is dropped once the page has arrived, so a live refresh never replays it; a refreshed
+ * figure that moved gets .m-changed instead. prefers-reduced-motion and print get the still.
+ */
+:root { --m-ease: cubic-bezier(0.2, 0.75, 0.25, 1); }
+@keyframes m-rise { from { opacity: 0; transform: translate3d(0, 12px, 0); } }
+@keyframes m-rise-sm { from { opacity: 0; transform: translate3d(0, 6px, 0); } }
+@keyframes m-fade { from { opacity: 0; } }
+@keyframes m-pop { from { opacity: 0; transform: scale(0.3); } 60% { opacity: 1; } }
+@keyframes m-zoom { from { opacity: 0; transform: scale(0.96); } }
+@keyframes m-ping { from { box-shadow: 0 0 0 0 var(--m-ping); } to { box-shadow: 0 0 0 var(--m-ping-to, 7px) transparent; } }
+@keyframes m-glow { from { background-color: var(--m-rail-current); } }
+@keyframes m-refresh { from { opacity: 0.55; } }
+
+/* arrival — the header, then each block in reading order, then the items inside a block */
+html.m-arrive section.m-page > :nth-child(2) { --m-d: 60ms; }
+html.m-arrive section.m-page > :nth-child(3) { --m-d: 120ms; }
+html.m-arrive section.m-page > :nth-child(4) { --m-d: 180ms; }
+html.m-arrive section.m-page > :nth-child(5) { --m-d: 240ms; }
+html.m-arrive section.m-page > :nth-child(n+6) { --m-d: 300ms; }
+html.m-arrive section.m-page > :not(.m-req-list, .m-stages, .m-page) {
+  animation: m-rise 0.5s var(--m-ease) both; animation-delay: var(--m-d, 0ms);
+}
+html.m-arrive :is(.m-rows, .m-req-list, .m-stages, div.m-page, .m-picker-cards) > :nth-child(2) { --m-j: 1; }
+html.m-arrive :is(.m-rows, .m-req-list, .m-stages, div.m-page, .m-picker-cards) > :nth-child(3) { --m-j: 2; }
+html.m-arrive :is(.m-rows, .m-req-list, .m-stages, div.m-page, .m-picker-cards) > :nth-child(4) { --m-j: 3; }
+html.m-arrive :is(.m-rows, .m-req-list, .m-stages, div.m-page, .m-picker-cards) > :nth-child(5) { --m-j: 4; }
+html.m-arrive :is(.m-rows, .m-req-list, .m-stages, div.m-page, .m-picker-cards) > :nth-child(6) { --m-j: 5; }
+html.m-arrive :is(.m-rows, .m-req-list, .m-stages, div.m-page, .m-picker-cards) > :nth-child(7) { --m-j: 6; }
+html.m-arrive :is(.m-rows, .m-req-list, .m-stages, div.m-page, .m-picker-cards) > :nth-child(8) { --m-j: 7; }
+html.m-arrive :is(.m-rows, .m-req-list, .m-stages, div.m-page, .m-picker-cards) > :nth-child(n+9) { --m-j: 8; }
+html.m-arrive :is(.m-req-list, div.m-page) > * {
+  animation: m-rise 0.5s var(--m-ease) both; animation-delay: calc(var(--m-d, 0ms) + 60ms + var(--m-j, 0) * 60ms);
+}
+html.m-arrive .m-rows > * {
+  animation: m-rise-sm 0.42s var(--m-ease) both; animation-delay: calc(var(--m-d, 0ms) + 110ms + var(--m-j, 0) * 38ms);
+}
+/* the coverage squares fill in one by one, in reading order */
+html.m-arrive .m-squares > :nth-child(2) { --m-k: 1; }   html.m-arrive .m-squares > :nth-child(3) { --m-k: 2; }
+html.m-arrive .m-squares > :nth-child(4) { --m-k: 3; }   html.m-arrive .m-squares > :nth-child(5) { --m-k: 4; }
+html.m-arrive .m-squares > :nth-child(6) { --m-k: 5; }   html.m-arrive .m-squares > :nth-child(7) { --m-k: 6; }
+html.m-arrive .m-squares > :nth-child(8) { --m-k: 7; }   html.m-arrive .m-squares > :nth-child(9) { --m-k: 8; }
+html.m-arrive .m-squares > :nth-child(10) { --m-k: 9; }  html.m-arrive .m-squares > :nth-child(11) { --m-k: 10; }
+html.m-arrive .m-squares > :nth-child(12) { --m-k: 11; } html.m-arrive .m-squares > :nth-child(13) { --m-k: 12; }
+html.m-arrive .m-squares > :nth-child(14) { --m-k: 13; } html.m-arrive .m-squares > :nth-child(15) { --m-k: 14; }
+html.m-arrive .m-squares > :nth-child(16) { --m-k: 15; } html.m-arrive .m-squares > :nth-child(n+17) { --m-k: 16; }
+html.m-arrive .m-squares > * {
+  animation: m-pop 0.38s var(--m-ease) both; animation-delay: calc(var(--m-d, 0ms) + 240ms + var(--m-k, 0) * 45ms);
+}
+/* the picker: the question, then the two answers */
+html.m-arrive .m-picker-logo { animation: m-fade 0.5s var(--m-ease) both; }
+html.m-arrive .m-picker-head { animation: m-rise 0.55s var(--m-ease) both; }
+html.m-arrive .m-picker-cards > * { animation: m-rise 0.55s var(--m-ease) both; animation-delay: calc(150ms + var(--m-j, 0) * 90ms); }
+html.m-arrive .m-picker-foot { animation: m-fade 0.5s var(--m-ease) 0.45s both; }
+
+/* live — a run in flight pings; a step that settles pops into its colour */
+.m-dot--inflight, .m-rail .m-dot--live {
+  --m-ping: color-mix(in srgb, var(--m-purple) 50%, transparent);
+  animation: m-ping 1.8s var(--m-ease) infinite;
+}
+.m-rail .m-dot--live { --m-ping: color-mix(in srgb, var(--m-rail-live) 55%, transparent); }
+.m-dot--settle { animation: m-pop 0.34s var(--m-ease) both; }
+
+/* the stage strip — entering the flow, each step's bubble buds off the one before it; at each step the
+ * black bubble travels on and leaves a ✓ copy behind (a view transition named m-stage-now: across pages,
+ * and in-page through pub/manual-runs.js stageAt). Arriving from a page that showed the strip
+ * (html.m-strip-carry, pub/manual.js), the strip stays put and only the bubble moves. */
+@keyframes m-bubble { from { opacity: 0; transform: scale(0.6); } 55% { opacity: 1; } }
+@keyframes m-bud { from { opacity: 0; transform: translate3d(calc(-100% - var(--m-stage-gap)), 0, 0) scale(0.8); } 40% { opacity: 1; } }
+@keyframes m-stretch { 45% { transform: scale(1.14, 0.9); } }
+.m-stages > :nth-child(1) { z-index: 4; }  .m-stages > :nth-child(2) { z-index: 3; }
+.m-stages > :nth-child(3) { z-index: 2; }  .m-stages > :nth-child(n+4) { z-index: 1; }
+html.m-arrive:not(.m-strip-carry) .m-stages > :first-child { animation: m-bubble 0.42s var(--m-ease) both; }
+html.m-arrive:not(.m-strip-carry) .m-stages > * + * {
+  animation: m-bud 0.6s var(--m-ease) both; animation-delay: calc(var(--m-j, 0) * 280ms);
+}
+html.m-arrive:not(.m-strip-carry) .m-stages > * + *::before {
+  animation: m-fade 0.3s ease both; animation-delay: calc(var(--m-j, 0) * 280ms + 420ms);
+}
+@media (max-width: 760px) {
+  html.m-arrive:not(.m-strip-carry) .m-stages > * + * { animation-name: m-rise-sm; }
+}
+.m-stage { transition: background-color 0.35s var(--m-ease), border-color 0.35s var(--m-ease), color 0.35s var(--m-ease); }
+.m-stage--done .m-stage-n::after { display: inline-block; }
+.m-stage--done:has(+ .m-stage--now) .m-stage-n::after { animation: m-pop 0.36s var(--m-ease) 0.3s both; }
+.m-stage--now { view-transition-name: m-stage-now; }
+::view-transition-group(m-stage-now) { animation-duration: 0.62s; animation-timing-function: cubic-bezier(0.5, 0, 0.2, 1); }
+::view-transition-image-pair(m-stage-now) { animation: m-stretch 0.62s cubic-bezier(0.5, 0, 0.2, 1); }
+
+/* a live refresh that moved a figure: the verdict lights up and pings, a count rolls in, a section blinks */
+.m-body .m-verdict.m-changed { animation: m-glow 1.8s var(--m-ease); }
+.m-verdict.m-changed .m-dot {
+  --m-ping: color-mix(in srgb, var(--m-rail-text) 55%, transparent); --m-ping-to: 10px;
+  animation: m-ping 0.9s var(--m-ease) 2;
+}
+.m-verdict.m-changed :is(.m-verdict-state, .m-verdict-note) { animation: m-rise-sm 0.5s var(--m-ease) both; }
+.m-nav-count.m-changed { animation: m-rise-sm 0.45s var(--m-ease) both; }
+[data-m-live].m-changed { animation: m-refresh 0.6s var(--m-ease); }
+
+/* the rail's current item is a pill that glides to the next page's item (a same-document-look page change) */
+.m-body .m-nav-item { position: relative; isolation: isolate; }
+.m-nav-pill {
+  position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--m-rail-current);
+  pointer-events: none; view-transition-name: m-nav-pill;
+}
+.m-body .m-nav-item[aria-current="page"]:has(> .m-nav-pill) { background: transparent; }
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition { navigation: auto; }
+}
+::view-transition-old(root) { animation: none; opacity: 0; }
+::view-transition-new(root) { animation: none; }
+::view-transition-group(m-nav-pill) { animation-duration: 0.42s; animation-timing-function: var(--m-ease); }
+
+/* the button a flow waits on (m-beacon) — two rings ripple out of it, a beat at a time, until it is used; late
+ * (m-beacon--late) holds the first beat back, for a button someone reaches only once they are done. Each ring is
+ * a fixed outline that grows (transform) and fades (opacity), so the compositor draws every frame; pub/manual.js
+ * sets the per-axis scale that makes it grow the same 12px on every side of a button of any width. */
+@keyframes m-beacon {
+  from { opacity: 1; transform: scale(1); }
+  65%, to { opacity: 0; transform: scale(var(--m-beacon-sx, 1.14), var(--m-beacon-sy, 1.5)); }
+}
+.m-beacon { position: relative; --m-beacon: color-mix(in srgb, var(--m-purple) 55%, transparent); --m-beacon-in: 0.8s; }
+.m-beacon--late { --m-beacon-in: 10s; }
+.m-beacon::before, .m-beacon::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: 0 0 0 2px var(--m-beacon); opacity: 0; will-change: transform, opacity;
+  animation: m-beacon 3.6s cubic-bezier(0.25, 0.45, 0.35, 1) infinite; animation-delay: var(--m-beacon-in);
+}
+.m-beacon::after { animation-delay: calc(var(--m-beacon-in) + 0.8s); }
+.m-beacon:disabled::before, .m-beacon:disabled::after, .m-beacon:hover::before, .m-beacon:hover::after { animation: none; }
+
+/* under the pointer — colours ease, a button lifts and presses */
+.m-body :is(.m-nav-item, a.m-row, .m-verdict, .m-rail-inflight) { transition: background-color 0.18s ease, color 0.18s ease; }
+.m-body :is(.m-link, .m-row-act, .m-quiet, .m-tab, .m-chip-x) { transition: color 0.15s ease, border-color 0.15s ease; }
+.m-input { transition: border-color 0.18s ease, box-shadow 0.18s ease; }
+.m-body .m-btn {
+  transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.22s ease,
+    transform 0.22s var(--m-ease);
+}
+.m-body .m-btn:not(:disabled, [aria-disabled="true"]):hover { transform: translateY(-1px); }
+.m-body .m-btn:not(:disabled, [aria-disabled="true"]):active { transform: translateY(0) scale(0.98); transition-duration: 0.06s; }
+.m-body .m-picker-card { transition: transform 0.25s var(--m-ease); }
+
+/* what appears on its own — a toast, the video/screenshot viewer */
+.m-toast { animation: m-rise 0.36s var(--m-ease) both; }
+.m-lightbox[open], .m-dialog[open] { animation: m-zoom 0.24s var(--m-ease); }
+.m-lightbox[open]::backdrop, .m-dialog[open]::backdrop { animation: m-fade 0.24s ease; }
+
+@media (prefers-reduced-motion: reduce), print {
+  .m-body *, .m-body *::before, .m-body *::after, .m-body .m-lightbox::backdrop, .m-body .m-dialog::backdrop {
+    animation: none !important; transition: none !important;
+  }
+  .m-beacon:not(:disabled)::before { opacity: 1; transform: none; box-shadow: 0 0 0 3px var(--m-beacon); }   /* still: one steady ring */
+}

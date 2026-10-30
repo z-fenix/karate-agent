@@ -1,0 +1,202 @@
+<!--/* Manual mode — Runs (/manual/runs): everything the console has done, newest first, grouped by day.
+     One row per run on disk (harness.runs(), under request.cache 'manual.runs'; the rail counts the same folders
+     off rail.runs()): its state mark, what it did in plain words (from the run's kind, naming the test), and
+     age · duration, with "AI" when it used some.
+     A mark never merges two states: passed (green dot) · failed (red dot) · ended before an answer
+     (grey dot — stopped, hit its limit, interrupted, blocked) · nothing tested (grey ring — ran nothing,
+     parsed only, a recording or a live session) · in flight (purple ring). The list is data-m-live, so a
+     run starting or settling re-renders it (pub/manual.js). "Run the tests I have" replays every test on
+     the Tests list as one set (Runner.run over /api/eval — a run kickoff, D98). */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'Runs · Karate Agent');
+  var PAGE = 50;
+
+  var data = request.cache('manual.runs', function () { return harness.runs(); });
+  var every = (data && data.runs) ? data.runs : [];
+  // the API test page's assistant turns are runs too, listed only when asked for: the ledger is what was tested
+  var withChat = request.param('chat') ? true : false;
+  var all = [], chatTurns = 0;
+  for (var ca = 0; ca < every.length; ca++) {
+    if (String(every[ca].kind || '') == 'api') { chatTurns++; if (!withChat) continue; }
+    all.push(every[ca]);
+  }
+  _.chatTurns = chatTurns ? kaWords.plural(chatTurns, 'assistant chat turn', 'assistant chat turns') : null;
+  _.withChat = withChat ? true : null;
+  _.allHref = '/manual/runs?all=1' + (withChat ? '&chat=1' : '');
+  var showAll = request.param('all') ? true : false;
+  var shown = showAll ? all.length : Math.min(all.length, PAGE);
+  // a live session settled before its record said whether it recorded is read off its transcript, for the rows shown
+  var unsaid = [];
+  for (var u = 0; u < shown; u++) {
+    var su = all[u];
+    if (String(su.kind || '') == 'live' && !su.check && su.live !== true && su.recordable == null) unsaid.push(String(su.runId));
+  }
+  var recorded = unsaid.length ? recordings.of(unsaid) : {};
+  var nowMs = Date.now();
+  var plural = kaWords.plural, fileOf = kaWords.fileOf, firstLine = kaWords.firstLine, age = kaWords.age;
+  // the one browser-holding run — a live run recording a flow holds the slot in 'record' mode
+  var slot = harness.status();
+  var recordingId = (slot && slot.mode == 'record' && slot.status == 'running') ? String(slot.runId) : null;
+
+  function selectorLabel(sel) {
+    if (!sel || sel.length == 0) return 'your tests';
+    if (sel.length == 1) return String(sel[0]) == '.' ? 'every test' : 'the tests in ' + sel[0];
+    return plural(sel.length, 'test', 'tests');
+  }
+
+  // what the run did, in the words a tester uses — from its kind (never re-derived from its status)
+  function what(s, live, recordable) {
+    var kind = s.kind ? String(s.kind) : '';
+    var n = s.members ? s.members.length : 0;
+    if (kind == 'suite') {
+      // a campaign's launch is named by its campaign
+      if (s.campaign && !s.dryRun) return (live ? 'Launching ' : 'Launched ') + s.campaign;
+      if (s.dryRun) return 'Looked over ' + (n ? plural(n, 'test', 'tests') : selectorLabel(s.selector)) + ' without running them';
+      // one test is named; a set is counted
+      var one = n == 1 ? fileOf(s.members[0].path) : (!n && s.selector && s.selector.length == 1
+          && /\.(js|feature)$/.test(String(s.selector[0])) ? fileOf(s.selector[0]) : null);
+      return (live ? 'Replaying ' : 'Replayed ') + (one ? one : n ? plural(n, 'test', 'tests') : selectorLabel(s.selector));
+    }
+    if (kind == 'check') return (live ? 'Replaying ' : 'Replayed ') + (s.check ? fileOf(s.check) : 'a test');
+    // a write or repair that did not complete wrote nothing — say it was tried
+    var done = String(s.status || '') == 'completed' && !kaWords.wroteNothing(s);
+    if (kind == 'author') return (live ? 'Writing ' : done ? 'Wrote ' : 'Tried to write ') + (s.check ? fileOf(s.check) : 'a test');
+    if (kind == 'heal') return (live ? 'Repairing ' : done ? 'Repaired ' : 'Tried to repair ') + (s.check ? fileOf(s.check) : 'a test');
+    if (kind == 'revise') return (live ? 'Changing ' : kaWords.unchanged(s) ? 'Nothing changed in ' : done ? 'Changed ' : 'Tried to change ')
+        + (s.check ? fileOf(s.check) : 'a test');
+    if (kind == 'explore') {
+      var goal = firstLine(s.goal || s.task, 80);
+      return (live ? 'Exploring' : 'Explored') + (goal ? ': ' + goal : '');
+    }
+    if (kind == 'troubleshoot') return live ? 'Looking into a failed run' : 'Looked into a failed run';
+    if (kind == 'codify') return live ? 'Writing rules from what it saw' : 'Wrote rules from what it saw';
+    if (kind == 'api') return (live ? 'Assistant working: ' : 'Assistant: ') + (firstLine(s.task, 80) || 'a chat turn');
+    if (kind == 'live') {
+      if (s.check) return (live ? 'Replaying ' : 'Replayed ') + fileOf(s.check);
+      if (recordable) return live ? 'Recording a flow' : 'Recorded a flow';
+      return live ? 'Working in a live browser' : 'Worked in a live browser';
+    }
+    return firstLine(s.task, 80) || 'A run';
+  }
+
+  // the calendar day a run started on (the server's clock), as the ledger groups it: Today, Yesterday,
+  // then "23 September" (the year only when it is not this one)
+  var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
+    'November', 'December'];
+  function dayOf(ms) { return Math.floor(ms / 86400000); }
+  function civil(days) {   // days since 1970-01-01 → {y, m, d} (the proleptic Gregorian calendar)
+    var z = days + 719468, era = Math.floor(z / 146097), doe = z - era * 146097;
+    var yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+    var doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+    var mp = Math.floor((5 * doy + 2) / 153), d = doy - Math.floor((153 * mp + 2) / 5) + 1, m = mp < 10 ? mp + 3 : mp - 9;
+    return { y: yoe + era * 400 + (m <= 2 ? 1 : 0), m: m, d: d };
+  }
+  function dayLabel(ms) {
+    if (!ms) return 'Earlier';
+    var diff = dayOf(nowMs) - dayOf(ms);
+    if (diff <= 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    var c = civil(dayOf(ms));
+    return c.d + ' ' + MONTHS[c.m - 1] + (c.y != civil(dayOf(nowMs)).y ? ' ' + c.y : '');
+  }
+
+  var rows = [];
+  var groups = [];
+  for (var i = 0; i < shown; i++) {
+    var s = all[i];
+    var id = String(s.runId);
+    var live = s.live === true;
+    // a live session is a recording while the recorder holds the browser, and once settled when its record says it
+    // captured replayable steps
+    var recordable = String(s.kind || '') == 'live' && !s.check
+        && (live ? id == recordingId : (s.recordable === true || recorded[id] === true));
+    var mk = kaWords.runMark(s, live);
+    var bits = [];
+    if (live) {
+      var started = age(s.startedMs);
+      bits.push(started ? 'started ' + started : 'in flight');
+    } else {
+      var when = age(s.finishedMs || s.startedMs);
+      if (when) bits.push(when);
+      var took = kaWords.duration(s.durationMs);
+      if (took) bits.push(took);
+    }
+    if (s.ai === true) bits.push('AI');
+    var row = {
+      id: id,
+      href: '/manual/runs/' + encodeURIComponent(id),
+      what: what(s, live, recordable),
+      dot: 'm-dot ' + mk.dot,
+      label: mk.label,
+      note: mk.note,
+      meta: bits.join(' · '),
+      status: String(s.status || '')
+    };
+    rows.push(row);
+    var day = dayLabel(s.startedMs);
+    if (!groups.length || groups[groups.length - 1].label != day) groups.push({ label: day, rows: [] });
+    groups[groups.length - 1].rows.push(row);
+  }
+  _.rows = rows;
+  _.groups = groups;
+  _.total = all.length;
+  _.more = (!showAll && all.length > shown) ? true : null;
+
+  // "Run the tests I have" — every test on the Tests list (the rail counts the same list), one set;
+  // the verb already drops the *.karate.js orchestrators and a mutation corpus: neither is a tester's test
+  var tests = request.cache('manual.tests', function () { return runner.tests(); });
+  var selector = [];
+  for (var c = 0; tests && c < tests.length; c++) selector.push(String(tests[c].path));
+  _.replayAll = selector.length ? JSON.stringify(selector) : null;
+  _.replayTitle = 'Replays ' + plural(selector.length, 'test', 'tests') + ' — no AI';
+</script>
+<link rel="stylesheet" href="/pub/manual-runs.css" ka:nocache="true">
+<section class="m-page" data-ka-section="manual.runs">
+  <header class="m-head">
+    <div class="m-head-text">
+      <h1 class="m-title">Runs</h1>
+      <p class="m-sub">Everything the console has done, newest first.</p>
+    </div>
+    <div class="m-head-end">
+      <button th:if="replayAll" type="button" class="m-btn m-btn--ghost" data-m-run-all
+              th:attr="'data-m-selector': replayAll, 'title': replayTitle"
+              onclick="kaManualRuns.runAll(this)">Run all tests</button>
+      <a th:unless="replayAll" class="m-link" href="/manual/tests/new">New test</a>
+    </div>
+  </header>
+  <p class="m-runs-error" data-m-error></p>
+
+  <div class="m-section" data-ka-section="manual.runs.list" data-m-live>
+    <div th:if="rows.length == 0" class="m-empty">
+      <div class="m-empty-title">No runs yet</div>
+      <div class="m-empty-sub">Replay the tests you have, or do a flow once and it writes a new test.</div>
+    </div>
+    <div class="m-runs-day" th:each="g: groups">
+      <h2 class="m-runs-day-title" th:text="g.label">Today</h2>
+      <div class="m-rows m-runs-rows">
+        <a th:each="r: g.rows" class="m-row m-row--act" th:href="r.href"
+           th:attr="'data-m-run': r.id, 'data-m-status': r.status">
+          <span th:class="r.dot" role="img" th:attr="'aria-label': r.label, 'title': r.label"></span>
+          <span class="m-row-main">
+            <span class="m-row-title" th:text="r.what">Replayed 2 tests</span>
+            <span th:if="r.note" class="m-row-sub m-runs-note" th:text="r.note">stopped before it finished</span>
+          </span>
+          <span class="m-row-meta" th:text="r.meta">12 min ago · 4.4 s</span>
+          <span class="m-row-act">Open</span>
+        </a>
+      </div>
+    </div>
+    <p th:if="chatTurns" class="m-runs-more" data-m-chat-turns="">
+      <span th:text="(withChat ? 'Showing ' : 'Not showing ') + chatTurns + ' from the API test page.'">Not showing 4 assistant chat turns.</span>
+      <a th:href="withChat ? '/manual/runs' : '/manual/runs?chat=1'" th:text="withChat ? 'Hide them' : 'Show them'">Show them</a>
+    </p>
+    <p th:if="more" class="m-runs-more">
+      <span th:text="'Showing the newest ' + rows.length + ' of ' + total + ' runs.'">Showing the newest 50.</span>
+      <a th:href="allHref">Show all</a>
+    </p>
+  </div>
+
+</section>
+<script src="/pub/run-modal.js" ka:nocache="true"></script>
+<script src="/pub/manual-runs.js" ka:nocache="true"></script>

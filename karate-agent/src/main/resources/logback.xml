@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  karate-agent / karate-async fatjar logging — bundled ONLY into the shipped runnable jars
+  (this dir is copied into the build by the fatjar/agentjar/asyncjar profiles; the published
+  karate-max library jar does NOT carry a logback.xml). Replaces karate-core's stderr-only
+  logback.xml (excluded in the shade steps) so every surface — container or plain `java -jar` —
+  logs the same way: the stderr console PLUS a persisted, size-capped rolling file, so a run's
+  diagnostics survive the process and are an artifact support can ask for.
+
+  Two env knobs (system property or environment variable):
+    KARATE_LOG_LEVEL  (default INFO)  — the io.karatelabs level; set DEBUG to capture the
+                                        MCP request / karate_eval trace (answers "was the
+                                        MCP server actually used, and with what input?").
+    KARATE_LOG_FILE   (default target/karate-agent.log, relative to the working directory —
+                       the project folder in the documented `serve` flow, /work in the
+                       container which sets this var absolutely) — repoint, or /dev/null to skip.
+-->
+<configuration>
+
+    <!-- Suppress logback's own internal status chatter -->
+    <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+
+    <!-- Drops ONLY the ClosedSelectorException that HC5's IO-reactor shutdown race logs to its
+         swallowed-exception sink; the reactor's genuine failures on that logger still surface. -->
+    <turboFilter class="io.karatelabs.ext.common.ClosedSelectorNoiseFilter"/>
+
+    <!-- Console → stderr (not stdout) for CLI compatibility; `docker logs` unchanged -->
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Persisted, size-capped file. A write failure (e.g. a non-writable work folder — the
+         very case this exists to diagnose) disables THIS appender with a console status line
+         and never crashes the run; STDERR still carries everything. -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${KARATE_LOG_FILE:-target/karate-agent.log}</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
+            <fileNamePattern>${KARATE_LOG_FILE:-target/karate-agent.log}.%i.gz</fileNamePattern>
+            <minIndex>1</minIndex>
+            <maxIndex>3</maxIndex>
+        </rollingPolicy>
+        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+            <maxFileSize>10MB</maxFileSize>
+        </triggeringPolicy>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- io.karatelabs level is env-driven: INFO by default, DEBUG surfaces the MCP/eval trace -->
+    <logger name="io.karatelabs" level="${KARATE_LOG_LEVEL:-INFO}"/>
+    <logger name="karate.runtime" level="INFO"/>
+    <logger name="karate.http" level="DEBUG"/>
+    <logger name="karate.scenario" level="INFO"/>
+
+    <!-- Suppress noisy libraries (mirror core) -->
+    <logger name="io.netty" level="WARN"/>
+    <logger name="ch.qos.logback" level="WARN"/>
+
+    <root level="WARN">
+        <appender-ref ref="STDERR" />
+        <appender-ref ref="FILE" />
+    </root>
+
+</configuration>

@@ -1,0 +1,145 @@
+<!--/* The Reports tab (D96 follow-up) — the BA's click-path to the traceability report (K-RTM).
+     Pick the PROJECT (all runs), ONE run, or a CHECKED SET in the left rail; Generate runs
+     the run-free recompute over /api/eval (Report.aggregate → Report.traceability) and links the
+     rendered artifact. A scoped RTM answers "what did the selected run(s) verify?" — the requirements
+     universe stays full so gaps stay visible — and renders under target/ (reportDir/rtm/<id>/) or,
+     for a multi-pick, reportDir/rtm-selection/ (an ad-hoc view), never next to the evidence in runs/;
+     the project-wide graph is never clobbered. Deep link: /reports?run=<id> (the /runs rows' "rtm"
+     button) auto-generates — one click from a completed run to its RTM. Every run mode (suite/check/
+     harness) is unified under runs/ (D128), so a scoped RTM is a complete per-run verification report
+     spanning API + UI evidence. */-->
+<script ka:scope="global">
+  // SSR the run list (D88) — an engine-free registry read; harness is absent on a profile
+  // without the loop, where the page still offers the project-level RTM
+  var rows = [];
+  if (typeof harness !== 'undefined') {
+    rows = harness.runs().runs;
+  }
+  _.repdata = rows;
+</script>
+<div ka:island="repdata"/>
+
+<script>
+  function reportsTab() {
+    const runs = JSON.parse(document.getElementById('repdata-data').textContent) || [];
+    const params = new URLSearchParams(location.search);
+    return {
+      runs,
+      picked: params.has('run') ? [params.get('run')] : [],   // [] = the project (all runs)
+      busy: false, err: '', result: null,
+      init() {
+        // the one-click path from a run row: deep link arrives pre-scoped — generate immediately
+        if (params.has('run')) this.generate();
+      },
+      isPicked(id) { return this.picked.indexOf(id) >= 0; },
+      toggle(id) {
+        this.picked = this.isPicked(id) ? this.picked.filter(p => p !== id) : this.picked.concat(id);
+        this.result = null; this.err = '';
+      },
+      clearPicked() { this.picked = []; this.result = null; this.err = ''; },
+      dot(s) {
+        return ({ running: 'bg-emerald-500 animate-pulse', completed: 'bg-emerald-500',
+                  failed: 'bg-rose-500', interrupted: 'bg-amber-500' })[s.status] || 'bg-slate-300 dark:bg-slate-600';
+      },
+      rtmUrl() {
+        // the ONE traceability page shell (D191) always renders at ext/traceability/pages/ under its home
+        const page = 'ext/traceability/pages/traceability.html';
+        if (!this.picked.length) return '/api/artifacts/reports/' + page;
+        if (this.picked.length === 1) {
+          return '/api/artifacts/reports/rtm/' + encodeURIComponent(this.picked[0]) + '/' + page;
+        }
+        return '/api/artifacts/reports/rtm-selection/' + page;
+      },
+      scopeLabel() {
+        if (!this.picked.length) return 'the whole project (all runs)';
+        if (this.picked.length === 1) return 'run ' + this.picked[0];
+        return this.picked.length + ' selected runs';
+      },
+      async generate() {
+        if (this.busy) return;
+        this.busy = true; this.err = ''; this.result = null;
+        try {
+          // the same two verbs an LLM composes (P3) — aggregate then render — via the /ui/ page-data
+          // channel (D98: a fresh per-request engine, never queued behind a bot op on the eval lock)
+          const out = await (await fetch('/ui/reports/generate', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ runs: this.picked })
+          })).json();
+          if (out && out.error) throw new Error((out.code ? out.code + ': ' : '') + out.error);
+          this.result = out;
+        } catch (e) { this.err = String(e); }
+        this.busy = false;
+      }
+    };
+  }
+</script>
+
+<div x-data="reportsTab()" x-cloak class="flex" style="height: calc(100vh - 57px)" data-ka-section="reports">
+
+  <!-- left rail: the report scope — project, one run, or a checked set -->
+  <aside class="w-80 shrink-0 border-r border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 overflow-y-auto" data-ka-section="reports.scope">
+    <div class="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Traceability scope</div>
+    <button @click="clearPicked()"
+            :class="!picked.length ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300' : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'"
+            class="w-full text-left px-4 py-2.5 text-sm font-medium border-b border-slate-200 dark:border-slate-700">
+      Project — all runs
+      <div class="text-[11px] font-normal text-slate-400">requirements/ + every run's evidence</div>
+    </button>
+    <div class="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Per run — check one or more</div>
+    <p x-show="!runs.length" class="px-4 py-6 text-xs text-slate-400">no runs yet — run one from the Runs tab</p>
+    <template x-for="s in runs" :key="s.runId">
+      <button @click="toggle(s.runId)"
+              :class="isPicked(s.runId) ? 'bg-indigo-50 dark:bg-indigo-950/40' : 'hover:bg-slate-100 dark:hover:bg-slate-800'"
+              class="w-full text-left px-4 py-2 flex items-center gap-2.5">
+        <input type="checkbox" :checked="isPicked(s.runId)" tabindex="-1"
+               class="pointer-events-none shrink-0 rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500">
+        <span class="inline-block h-2 w-2 rounded-full shrink-0" :class="dot(s)"></span>
+        <span class="min-w-0">
+          <span class="font-mono text-xs" :class="isPicked(s.runId) ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-300'" x-text="s.runId"></span>
+          <span class="block text-[11px] text-slate-400 truncate" x-text="s.task || s.check || '(no goal recorded)'"></span>
+        </span>
+      </button>
+    </template>
+  </aside>
+
+  <!-- main: generate + open the rendered artifact -->
+  <main class="flex-1 min-w-0 overflow-y-auto" data-ka-section="reports.rtm">
+    <div class="max-w-2xl mx-auto px-8 py-10">
+      <h1 class="text-base font-semibold text-slate-900 dark:text-slate-100">Requirements traceability (RTM)<!--
+        D124 context-sensitive "?" — a same-origin deep-link into the Help deep-dive. -->
+        <a href="/help#report.traceability" target="ka-help" rel="noopener" title="What is the traceability report? Open the Help deep-dive"
+           class="inline-flex items-center justify-center w-4 h-4 ml-1 align-middle rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold no-underline hover:ring-1 hover:ring-indigo-400">?</a></h1>
+      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+        Rebuilds the traceability graph <b>run-free</b> from <code>requirements/</code> plus the selected
+        evidence, then renders the report. Scope: <span class="font-medium text-slate-700 dark:text-slate-300" x-text="scopeLabel()"></span>.
+      </p>
+      <p x-show="picked.length" class="mt-1 text-xs text-slate-400">
+        A scoped RTM shows what the selected run<span x-show="picked.length > 1">s</span> verified — uncovered
+        requirements stay visible as gaps. It renders under
+        <span x-show="picked.length === 1">the report dir's <code x-text="'rtm/' + picked[0] + '/'"></code> (regenerable — the evidence stays in <code>runs/</code>).</span>
+        <span x-show="picked.length > 1">the report dir's <code>rtm-selection/</code> (an ad-hoc view — regenerated per pick).</span>
+      </p>
+
+      <div class="mt-5 flex items-center gap-3">
+        <button @click="generate()" :disabled="busy"
+                class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                x-text="busy ? 'Generating…' : (result ? 'Regenerate ↻' : 'Generate ▶')"></button>
+        <a x-show="result" :href="rtmUrl()" target="_blank" rel="noopener"
+           class="rounded-lg border border-indigo-300 dark:border-indigo-700 px-4 py-2 text-sm font-medium text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/40">Open RTM →</a>
+      </div>
+
+      <div x-show="err" class="mt-4 rounded-lg bg-rose-50 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-700 dark:text-rose-300" x-text="err"></div>
+
+      <div x-show="result" class="mt-6 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5" data-ka-section="reports.result">
+        <div class="text-xs font-semibold uppercase tracking-wide text-slate-400">Verdict</div>
+        <div class="mt-1 text-sm text-slate-800 dark:text-slate-200" x-text="result && result.verdict"></div>
+        <div class="mt-4 grid grid-cols-4 gap-3 text-center">
+          <div><div class="text-lg font-bold text-slate-800 dark:text-slate-100" x-text="result && result.items"></div><div class="text-[11px] text-slate-400">items</div></div>
+          <div><div class="text-lg font-bold text-slate-800 dark:text-slate-100" x-text="result && result.hits"></div><div class="text-[11px] text-slate-400">hits</div></div>
+          <div><div class="text-lg font-bold text-slate-800 dark:text-slate-100" x-text="result && result.attestedHits"></div><div class="text-[11px] text-slate-400">attested hits</div></div>
+          <div><div class="text-lg font-bold text-slate-800 dark:text-slate-100" x-text="result && result.attestedRuns"></div><div class="text-[11px] text-slate-400">attested runs</div></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>

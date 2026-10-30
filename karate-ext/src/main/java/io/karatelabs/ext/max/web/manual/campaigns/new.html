@@ -1,0 +1,189 @@
+<!--/* Manual mode — New campaign (/manual/campaigns/new): a name and the tests to launch together.
+     Reads, server-side: runner.tests() (the tests, with the ids each declares — a mutation corpus is
+     instrumentation, not a tester's test) · requirement.list() (the requirement a quick pick is titled by) ·
+     campaign.list() (names already taken). Hand-off in: ?req=<requirement id> preselects its tests.
+     Create calls Campaign.create over /api/eval, then lands on the campaign's page. A test keeps its own
+     links: picking by requirement only selects the tests that declare it. */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'New campaign · Karate Agent');
+  (function () {
+    function safe(fn) { try { return fn(); } catch (e) { return null; } }
+    function isList(v) { return v != null && v.length != null && typeof v != 'string'; }
+    var fileOf = kaWords.fileOf;
+
+    var all = request.cache('manual.tests', function () { return runner.tests(); });
+    all = isList(all) ? all : [];
+    var reqs = safe(function () { return requirement.list(); });
+    var reqTitle = {}, reqOrder = [], reqRisk = {};
+    if (isList(reqs)) {
+      for (var r = 0; r < reqs.length; r++) {
+        reqTitle[reqs[r].id] = String(reqs[r].title || reqs[r].id);
+        reqRisk[reqs[r].id] = String(reqs[r].criticality || '') == 'high';
+        reqOrder.push(String(reqs[r].id));
+      }
+    }
+
+    var tests = [];
+    var byReq = {};
+    for (var i = 0; i < all.length; i++) {
+      var t = all[i];
+      var path = String(t.path);
+      var ids = isList(t.req) ? t.req : [];
+      var reqIds = [];
+      for (var k = 0; k < ids.length; k++) {
+        var rid = String(ids[k]).split('/')[0];
+        if (reqIds.indexOf(rid) < 0) reqIds.push(rid);
+        if (!byReq[rid]) byReq[rid] = [];
+        if (byReq[rid].indexOf(path) < 0) byReq[rid].push(path);
+      }
+      var verifies = [];
+      for (var v = 0; v < ids.length; v++) verifies.push(String(ids[v]));
+      tests.push({
+        path: path,
+        name: t.title ? String(t.title) : fileOf(path),
+        sub: (t.title ? fileOf(path) + ' · ' : '') + (!verifies.length ? 'not linked to a requirement'
+            : 'verifies ' + (verifies.length <= 3 ? verifies.join(', ') : verifies.slice(0, 2).join(', ') + ' and ' + (verifies.length - 2) + ' more')),
+        reqs: reqIds
+      });
+    }
+    // the quick picks: every requirement some test declares, in the requirements file's order
+    var picks = [];
+    for (var o = 0; o < reqOrder.length; o++) {
+      var id = reqOrder[o];
+      if (byReq[id]) picks.push({ id: id, title: reqTitle[id], risk: reqRisk[id] ? true : false, tests: byReq[id] });
+    }
+    for (var extra in byReq) {
+      if (reqOrder.indexOf(extra) < 0) picks.push({ id: extra, title: extra, risk: false, tests: byReq[extra] });
+    }
+
+    var asked = request.param('req') ? String(request.param('req')).split('/')[0] : null;
+    var campaigns = request.cache('manual.campaigns', function () { return campaign.list(); });
+    var taken = [];
+    if (isList(campaigns)) for (var c = 0; c < campaigns.length; c++) taken.push(String(campaigns[c].name).toLowerCase());
+
+    _.hasTests = tests.length > 0;
+    _.newCampaign = {
+      tests: tests,
+      picks: picks,
+      picked: asked && byReq[asked] ? byReq[asked] : [],
+      name: asked && reqTitle[asked] ? reqTitle[asked] : '',
+      taken: taken
+    };
+  })();
+</script>
+<div ka:island="newCampaign"/>
+<style>
+  .m-camp-form { display: flex; flex-direction: column; gap: 30px; padding-top: 26px; max-width: 900px; }
+  .m-camp-name { max-width: 420px; }
+  .m-camp-picks { display: flex; flex-wrap: wrap; gap: 10px; padding-bottom: 6px; }
+  /* a quick pick is a small card; a picked one takes the accent (black stays the one emphasis: where you are) */
+  .m-camp-pick {
+    display: inline-flex; align-items: baseline; gap: 8px; padding: 9px 14px; border-radius: var(--m-radius-sm); cursor: pointer;
+    background: var(--m-card); border: 1px solid var(--m-card-edge); box-shadow: var(--m-card-shadow);
+    color: var(--m-ink); font-family: inherit; font-size: 13.5px; font-weight: 500;
+  }
+  .m-camp-pick:hover { border-color: var(--m-purple); }
+  .m-camp-pick[aria-pressed="true"] { background: var(--m-purple-soft); border-color: var(--m-purple); }
+  .m-camp-pick-id { font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--m-purple); }
+  .m-camp-tests { padding: 4px 24px; }
+  .m-camp-test { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 14px; align-items: start; padding: 15px 0; cursor: pointer; }
+  .m-camp-test + .m-camp-test { border-top: 1px solid var(--m-line); }
+  .m-camp-test .m-checkbox { justify-self: center; }
+  .m-camp-count { font-size: 13.5px; color: var(--m-text-2); }
+  .m-camp-err { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+</style>
+<section class="m-page" data-ka-section="manual.campaigns.new">
+  <header class="m-head">
+    <div class="m-head-text">
+      <h1 class="m-title">New campaign</h1>
+      <p class="m-sub">Name it, pick its tests, then launch them together as often as it takes.</p>
+    </div>
+    <div class="m-head-end"><a class="m-quiet" href="/manual/campaigns">Cancel</a></div>
+  </header>
+
+  <div th:unless="hasTests" class="m-section">
+    <div class="m-empty">
+      <div class="m-empty-title">No test to launch yet</div>
+      <div class="m-empty-sub">A campaign groups tests you already have. <a href="/manual/tests/new">Create a test</a> first.</div>
+    </div>
+  </div>
+
+  <div th:if="hasTests" class="m-camp-form" data-ka-section="manual.campaigns.new.form" x-data="kaNewCampaign()">
+    <label class="m-field m-camp-name">
+      <span class="m-label">Name</span>
+      <input class="m-input" x-ref="name" x-model="name" @input="err = ''" placeholder="Release 1.3" autocomplete="off" aria-label="Campaign name">
+      <span x-show="isTaken()" x-cloak class="m-hint">A campaign with this name exists. Pick another name.</span>
+    </label>
+
+    <div class="m-field">
+      <span class="m-label-row"><span class="m-label">Tests</span>
+        <span class="m-hint"><button type="button" class="m-link" style="font-size: 13px" @click="all()">Select all</button> · <button type="button" class="m-link" style="font-size: 13px" @click="picked = []">Clear</button></span></span>
+      <div class="m-camp-picks" x-show="picks.length" aria-label="Pick by requirement">
+        <template x-for="p in picks" :key="p.id">
+          <button type="button" class="m-camp-pick" :aria-pressed="hasAll(p) ? 'true' : 'false'" @click="toggleReq(p)" :title="p.tests.length + (p.tests.length == 1 ? ' test' : ' tests')">
+            <span class="m-camp-pick-id" x-text="p.id"></span><span x-text="p.title"></span>
+          </button>
+        </template>
+      </div>
+      <div class="m-camp-tests m-card">
+        <template x-for="t in tests" :key="t.path">
+          <label class="m-camp-test">
+            <input type="checkbox" class="m-checkbox" :value="t.path" x-model="picked">
+            <span class="m-row-main">
+              <span class="m-row-title" x-text="t.name"></span>
+              <span class="m-row-sub" x-text="t.sub"></span>
+            </span>
+          </label>
+        </template>
+      </div>
+      <span class="m-camp-count" x-text="picked.length ? picked.length + (picked.length == 1 ? ' test selected' : ' tests selected') : 'No test selected'"></span>
+    </div>
+
+    <div class="m-actions">
+      <button type="button" class="m-btn m-btn--lg" data-m-create :disabled="busy" @click="create()"><span x-text="busy ? 'Saving…' : 'Create campaign'">Create campaign</span></button>
+      <span class="m-camp-err" role="alert" x-show="err" x-cloak><span class="m-dot m-dot--xs m-dot--failed"></span><span x-text="err"></span></span>
+    </div>
+  </div>
+</section>
+<script>
+  // The New campaign form (Alpine): its initial state is the SSR island; Create saves the set with
+  // Campaign.create and opens the campaign.
+  function kaNewCampaign() {
+    var el = document.getElementById('newCampaign-data');
+    var s = (el && JSON.parse(el.textContent)) || {};
+    return {
+      name: s.name || '', tests: s.tests || [], picks: s.picks || [], picked: (s.picked || []).slice(),
+      err: '', busy: false,
+      isTaken() { return (s.taken || []).indexOf(this.name.trim().toLowerCase()) >= 0; },
+      all() { this.picked = this.tests.map((t) => t.path); },
+      hasAll(p) { return p.tests.every((x) => this.picked.indexOf(x) >= 0); },
+      // a quick pick selects every test declaring the requirement; pressed again, it lets them go
+      toggleReq(p) {
+        if (this.hasAll(p)) this.picked = this.picked.filter((x) => p.tests.indexOf(x) < 0);
+        else p.tests.forEach((x) => { if (this.picked.indexOf(x) < 0) this.picked.push(x); });
+        if (!this.name.trim()) this.name = p.title;
+      },
+      async create() {
+        if (this.busy) return;
+        this.err = '';
+        var name = this.name.trim();
+        if (!name) { this.err = 'Name the campaign first.'; this.$refs.name.focus(); return; }
+        if (!this.picked.length) { this.err = 'Pick at least one test.'; return; }
+        // the list order is the launch order
+        var tests = this.tests.map((t) => t.path).filter((p) => this.picked.indexOf(p) >= 0);
+        this.busy = true;
+        try {
+          var out = await window.karate.value('Campaign.create(' + JSON.stringify({ name: name, tests: tests }) + ')');
+          if (!out || out.error) {
+            this.err = out && out.code == 'EXISTS' ? 'A campaign with this name exists. Pick another name.'
+                : String((out && out.error) || 'The campaign could not be saved.');
+            this.busy = false;
+            return;
+          }
+          location.href = '/manual/campaign?c=' + encodeURIComponent(out.name);
+        } catch (e) { this.err = String(e && e.message ? e.message : e).replace(/^Error: /, ''); this.busy = false; }
+      }
+    };
+  }
+</script>

@@ -1,0 +1,18 @@
+<script ka:scope="local">
+  const kind = function (x) { return Array.isArray(x) ? 'array' : typeof x };
+  _.kind = kind;
+  _.list = function (x) {
+    const type = kind(x);
+    if (type === 'array') {
+      return x.map((y, i) => [i, y, kind(y)]);
+    }
+    if (type === 'object') {
+      return Object.entries(x).map(y => {
+          return [y[0], y[1], kind(y[1])]
+      });
+    }
+    const item = [-1, x, type];
+    return [item];
+  }
+</script>
+<div class="json-grid-container mt-2 my-4" th:insert="this:json-grid-called" th:with="data:value,type:kind(value)"></div>

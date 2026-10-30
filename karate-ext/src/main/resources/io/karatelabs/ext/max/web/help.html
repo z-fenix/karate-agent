@@ -1,0 +1,232 @@
+<!--/* The Help tab (D124) — the in-app product datasheet + deep help, license-gated for free via the
+     serve gate (ServeCommand → Main.requireProduct("serve", MAX); no port opens without `max`).
+     Renders jar-baked markdown (the `help` template global / Help.* over MCP) client-side via the
+     vendored marked. Heading anchors use the `{#help-id}` convention → element ids, so the "?" help
+     affordances scattered across the UI AND the offline reports can deep-link to /help#<id> (the
+     report path: a report's "?" copies the slug, the user pastes it into the lookup box here).
+     Text-only first slice — no syntax highlighting, no images (code blocks render plain). The page
+     SSR-embeds the manifest (pages + the help-id index) so the TOC + slug-lookup need no fetch. */-->
+<link rel="stylesheet" href="/pub/help.css" ka:nocache="true">
+
+<script ka:scope="global">
+  // SSR the manifest (D88): the help-id index + page list — an engine-free jar read, no /api/eval on load.
+  _.helpmeta = { pages: help.pages(), ids: help.topics() };
+</script>
+<div ka:island="helpmeta"/>
+
+<script>
+  function helpApp() {
+    return {
+      meta: { pages: [], ids: [] },
+      currentPage: null,
+      toc: [],
+      lookupVal: '',
+      results: [],        // the live client-search matches (over the SSR-embedded id index)
+      showResults: false,
+      notFound: false,
+      notFoundMsg: '',
+      licensedTo: '',
+
+      init() {
+        try { this.meta = JSON.parse(document.getElementById('helpmeta-data').textContent) || this.meta; }
+        catch (e) { /* keep the empty default */ }
+        const anchor = (location.hash || '').replace(/^#/, '');
+        let pageId = (this.meta.pages[0] && this.meta.pages[0].id) || 'datasheet';
+        if (anchor) {
+          const entry = this.findId(anchor);
+          if (entry) pageId = entry.page;
+          else { this.notFound = true; this.notFoundMsg = 'No help for “' + anchor + '” — showing the contents. Try search or the slug lookup.'; }
+        }
+        this.loadPage(pageId, anchor);
+        // a later #id change (a "?" link from another page, or a manual edit) re-navigates
+        window.addEventListener('hashchange', () => {
+          const a = (location.hash || '').replace(/^#/, '');
+          if (a) this.gotoId(a);
+        });
+      },
+
+      findId(id) { return (this.meta.ids || []).find((e) => e.id === id) || null; },
+
+      // lazy-load the vendored marked once (the requirements.html recipe)
+      async ensureMarked() {
+        if (window.marked) return true;
+        try {
+          await new Promise((res, rej) => {
+            const sc = document.createElement('script');
+            sc.src = '/pub/vendor/marked.min.js';
+            sc.onload = res; sc.onerror = rej;
+            document.head.appendChild(sc);
+          });
+          return true;
+        } catch (e) { return false; }
+      },
+
+      async loadPage(pageId, anchor) {
+        const ok = await this.ensureMarked();
+        const out = await (await fetch('/ui/help/page?id=' + encodeURIComponent(pageId))).json();
+        const body = this.$refs.body;
+        if (!out || out.error) {
+          body.innerHTML = '<p class="k-help-notfound">' + ((out && out.error) || 'help not found') + '</p>';
+          return;
+        }
+        this.currentPage = pageId;
+        this.licensedTo = out.licensedTo || '';
+        body.innerHTML = ok ? window.marked.parse(out.markdown || '')
+          : '<pre>' + (out.markdown || '').replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</pre>';
+        this.processBody();
+        this.playMotionOnView();
+        if (anchor) this.scrollToAnchor(anchor);
+        else window.scrollTo(0, 0);
+      },
+
+      // an animated diagram (docs/assets/*-motion.svg, styleguide §7) holds its first frame until half
+      // of it is on screen, then plays once — else it finishes before the reader scrolls to it. One observer
+      // per body: a page change disconnects the last, which still holds the replaced page's figures.
+      playMotionOnView() {
+        const body = this.$refs.body;
+        if (body.kmoIO) { body.kmoIO.disconnect(); body.kmoIO = null; }
+        if (!('IntersectionObserver' in window)) return;
+        const io = body.kmoIO = new IntersectionObserver((entries) => entries.forEach((e) => {
+          if (e.isIntersecting) { e.target.classList.remove('kmo-hold'); io.unobserve(e.target); }
+        }), { threshold: 0.5 });
+        body.querySelectorAll('svg.k-diagram').forEach((svg) => {
+          if (svg.querySelector('.kmo')) { svg.classList.add('kmo-hold'); io.observe(svg); }
+        });
+      },
+
+      // assign element ids from the trailing `{#id}` marker on each heading (preserving inline
+      // markdown the heading text already rendered), and build the TOC from h2/h3.
+      processBody() {
+        const body = this.$refs.body;
+        const toc = [];
+        body.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h) => {
+          const m = h.innerHTML.match(/\s*\{#([\w.\-]+)\}\s*$/);
+          if (m) { h.id = m[1]; h.innerHTML = h.innerHTML.replace(/\s*\{#[\w.\-]+\}\s*$/, ''); }
+          if ((h.tagName === 'H2' || h.tagName === 'H3') && h.id) {
+            toc.push({ id: h.id, text: h.textContent, sub: h.tagName === 'H3' });
+          }
+        });
+        this.toc = toc;
+      },
+
+      scrollToAnchor(anchor) {
+        this.$nextTick(() => {
+          const el = document.getElementById(anchor);
+          if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); this.notFound = false; }
+          else { this.notFound = true; this.notFoundMsg = 'No help anchor “' + anchor + '” on this page.'; }
+        });
+      },
+
+      // navigate to a help-id (switching pages if needed) — the shared entry point for the TOC,
+      // hash changes, and the slug lookup. Dangling-tolerant (D124): unknown id → a soft notice.
+      gotoId(id) {
+        const entry = this.findId(id);
+        if (!entry) {
+          this.notFound = true;
+          this.notFoundMsg = 'Unknown help id “' + id + '” — try the search/lookup or the contents on the left.';
+          return;
+        }
+        this.notFound = false;
+        history.replaceState(null, '', '/help#' + entry.anchor);
+        if (entry.page !== this.currentPage) this.loadPage(entry.page, entry.anchor);
+        else this.scrollToAnchor(entry.anchor);
+      },
+
+      openPage(pageId) {
+        history.replaceState(null, '', '/help');
+        this.notFound = false;
+        this.loadPage(pageId, null);
+      },
+
+      // The client search index (D124): a token scan over the SSR-embedded id index (id + title +
+      // section) — no fetch, no server round-trip. Runs as the user types and ranks id-prefix /
+      // title hits first. Pairs with the exact-id paste path in lookup() (the offline-report seam).
+      onInput() {
+        const raw = (this.lookupVal || '').trim().toLowerCase();
+        if (!raw) { this.closeSearch(); return; }
+        const terms = raw.split(/[^\w.\-]+/).filter(Boolean);
+        const scored = [];
+        for (const e of (this.meta.ids || [])) {
+          const id = (e.id || '').toLowerCase();
+          const hay = (id + ' ' + (e.title || '') + ' ' + (e.section || '')).toLowerCase();
+          let score = 0;
+          for (const t of terms) { if (hay.indexOf(t) >= 0) score++; }
+          if (score < terms.length) continue;           // every term must appear (AND semantics)
+          if (id.indexOf(raw) === 0) score += 3;          // id-prefix match ranks highest
+          else if (id.indexOf(raw) >= 0) score += 1;
+          if ((e.title || '').toLowerCase().indexOf(raw) >= 0) score += 1;
+          scored.push({ e, score });
+        }
+        scored.sort((a, b) => b.score - a.score || a.e.id.localeCompare(b.e.id));
+        this.results = scored.slice(0, 12).map((s) => s.e);
+        this.showResults = this.results.length > 0;
+      },
+
+      // click (or Enter on the top hit) a search result
+      pick(id) { this.closeSearch(); this.lookupVal = ''; this.gotoId(id); },
+      closeSearch() { this.showResults = false; this.results = []; },
+
+      // submit: an exact pasted slug / URL from an offline report's "?" wins (the file:// seam — accepts
+      // "rule.execute", "#id", "/help#id", or a full ".../help#id" URL); otherwise jump to the best
+      // search match; otherwise a soft not-found notice (dangling-tolerant, D124).
+      lookup() {
+        let v = (this.lookupVal || '').trim();
+        if (!v) return;
+        let bare = v;
+        if (bare.indexOf('#') >= 0) bare = bare.substring(bare.lastIndexOf('#') + 1);
+        bare = bare.replace(/^\/?help\/?/i, '').replace(/^#/, '').trim();
+        if (bare && this.findId(bare)) { this.closeSearch(); this.lookupVal = ''; this.gotoId(bare); return; }
+        if (this.results.length) { this.pick(this.results[0].id); return; }
+        this.notFound = true;
+        this.notFoundMsg = 'No help matches “' + v + '”. Try fewer or different words, or browse the contents on the left.';
+      }
+    };
+  }
+</script>
+
+<div x-data="helpApp()" x-cloak class="k-help" data-ka-section="help">
+  <div class="k-help-shell">
+
+    <!-- contents: pages + the current page's headings -->
+    <aside class="k-help-toc" data-ka-section="help.toc">
+      <div class="k-toc-page">Help</div>
+      <template x-for="p in meta.pages" :key="p.id">
+        <a href="#" @click.prevent="openPage(p.id)"
+           :class="currentPage === p.id ? 'active' : ''" x-text="p.title"></a>
+      </template>
+      <div class="k-toc-page">On this page</div>
+      <template x-for="t in toc" :key="t.id">
+        <a href="#" @click.prevent="gotoId(t.id)"
+           :class="t.sub ? 'k-toc-sub' : ''" x-text="t.text"></a>
+      </template>
+    </aside>
+
+    <main class="k-help-main">
+      <!-- search + slug lookup: type to search the help-id index live (client-side, no fetch); or
+           paste a help-id a report's "?" copied to the clipboard, and Enter jumps straight to it. -->
+      <div class="k-help-search-wrap" @click.away="closeSearch()" data-ka-section="help.lookup">
+        <form class="k-help-lookup" @submit.prevent="lookup()">
+          <input x-model="lookupVal" @input="onInput()" @focus="onInput()" @keydown.escape="closeSearch()"
+                 autocomplete="off" placeholder="search help, or paste a help-id from a report's “?”  (e.g. rule.execute)"
+                 aria-label="search help" />
+          <button type="submit">Go</button>
+        </form>
+        <ul x-show="showResults" class="k-help-results" x-cloak>
+          <template x-for="r in results" :key="r.id">
+            <li @click="pick(r.id)">
+              <span class="k-help-r-title" x-text="r.title"></span>
+              <span class="k-help-r-id" x-text="r.id"></span>
+              <span class="k-help-r-sec" x-show="r.section" x-text="r.section"></span>
+            </li>
+          </template>
+        </ul>
+      </div>
+      <p class="k-help-hint">Tip: a “?” in a report copies its help-id — paste it above to open the topic here, or paste it into your AI chat (it knows the <span style="font-family:monospace">Help.*</span> API and will look it up).</p>
+
+      <div x-show="notFound" class="k-help-notfound" x-text="notFoundMsg"></div>
+
+      <div class="k-help-stamp" x-show="licensedTo" x-cloak x-text="'Licensed to: ' + licensedTo"></div>
+      <div class="k-help-body" x-ref="body" data-ka-section="help.body">Loading help…</div>
+    </main>
+  </div>
+</div>

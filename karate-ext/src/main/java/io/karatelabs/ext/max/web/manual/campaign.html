@@ -1,0 +1,326 @@
+<!--/* Manual mode — one campaign (/manual/campaign?c=<name>): a set of tests launched together.
+     Everything comes from campaign.get(name): each test's latest launch (its verdict, the run behind it),
+     the criteria its tests are linked to — each launch read under the links it ran under — and the launch
+     history. Launch and "Relaunch the failed" call Campaign.run over /api/eval (async, with the video, as
+     Run all tests does) and open the launch's run page; Delete calls Campaign.delete. The live sections
+     re-render as a launch starts and settles. A mark never merges two states: passed (green dot) · failed
+     (red dot) · launching (purple ring) · not launched yet (grey ring). */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  (function () {
+    var name = request.param('c') ? String(request.param('c')) : '';
+    var c = name ? campaign.get(name) : null;
+    _.found = c && !c.error ? true : null;
+    _.asked = name;
+    context.setGlobal('pageTitle', (_.found ? String(c.name) : 'Campaign') + ' · Karate Agent');
+    if (!_.found) return;
+
+    var plural = kaWords.plural, fileOf = kaWords.fileOf, firstLine = kaWords.firstLine,
+        duration = kaWords.duration, age = kaWords.age;
+    var DOT = { passed: 'm-dot--passed', failed: 'm-dot--failed', running: 'm-dot--inflight', notrun: 'm-dot--notrun' };
+    var LABEL = { passed: 'passed', failed: 'failed', running: 'launching', notrun: 'not launched yet' };
+    var SQ = { passed: 'm-sq--covered', failed: 'm-sq--failing', running: 'm-sq--notrun', notrun: '' };
+    function runHref(id) { return '/manual/runs/' + encodeURIComponent(String(id)); }
+
+    var st = String(c.status || 'notrun');
+    var t = c.totals.tests;
+    var running = st == 'running';
+
+    // the tests, each by its latest launch
+    var tests = [];
+    var squares = [];
+    for (var i = 0; i < c.tests.length; i++) {
+      var x = c.tests[i];
+      var s = String(x.status);
+      var sub = [];
+      if (x.title) sub.push(fileOf(x.path));
+      if (x.missing) sub.push('this test no longer exists');
+      else if (s == 'failed' && x.error) sub.push(kaWords.why(x.error, 110));
+      else if (s == 'notrun' && c.launches) sub.push('not launched yet');   // a never-launched campaign says it once
+      tests.push({
+        name: x.title ? String(x.title) : fileOf(x.path),
+        path: String(x.path),
+        sub: sub.length ? sub.join(' · ') : null,
+        dot: 'm-dot ' + DOT[s],
+        label: LABEL[s],
+        meta: s == 'passed' || s == 'failed' ? duration(x.durationMs) : null,
+        href: x.runId ? runHref(x.runId) : (x.missing ? null : '/manual/tests/edit?test=' + encodeURIComponent(String(x.path))),
+        act: x.runId ? 'Open run' : 'Open test',
+        status: s
+      });
+      squares.push('m-sq ' + SQ[s]);
+    }
+    _.tests = tests;
+
+    // the summary: the campaign's state in one sentence
+    var launches = c.runs || [];
+    var last = launches.length ? launches[0] : null;
+    var title, sub = null;
+    if (running) {
+      title = 'Launching ' + plural(t.running + t.passed + t.failed + t.notrun, 'test', 'tests');
+      sub = last ? 'Started ' + age(last.startedMs) : null;
+    } else if (!launches.length) {
+      title = 'Not launched yet';
+      sub = 'Launch replays its ' + plural(t.total, 'test', 'tests') + ' in one go. No AI is used.';
+    } else if (t.failed) {
+      title = t.failed + ' of ' + plural(t.total, 'test', 'tests') + ' failed';
+    } else if (t.passed == t.total) {
+      title = t.total == 1 ? 'The test passed' : 'All ' + t.total + ' tests passed';
+    } else {
+      title = t.passed + ' of ' + plural(t.total, 'test', 'tests') + ' passed';
+      sub = plural(t.notrun, 'test has', 'tests have') + ' not been launched yet';
+    }
+    if (!running && last) {
+      var took = last.finishedMs && last.startedMs ? duration(last.finishedMs - last.startedMs) : null;
+      var lastLine = 'Last launch ' + age(last.startedMs) + (took ? ' · ' + took : '');
+      sub = sub ? sub + ' · ' + lastLine : lastLine;
+    }
+    _.summary = {
+      dot: 'm-dot m-dot--lg ' + DOT[st],
+      label: LABEL[st],
+      title: title,
+      sub: sub,
+      squares: squares,
+      watch: running && last ? runHref(last.runId) : null
+    };
+
+    // what it checks: the criteria its tests are linked to, by requirement
+    var groups = [];
+    var byReq = {};
+    for (var k = 0; k < c.criteria.length; k++) {
+      var cr = c.criteria[k];
+      var rid = String(cr.req);
+      var g = byReq[rid];
+      if (!g) {
+        g = { id: rid, title: cr.title ? String(cr.title) : null, risk: String(cr.criticality || '') == 'high' ? 'high risk' : null,
+              rows: [], passed: 0, failed: 0 };
+        byReq[rid] = g;
+        groups.push(g);
+      }
+      var cs = String(cr.status);
+      if (cs == 'passed') g.passed++;
+      if (cs == 'failed') g.failed++;
+      var files = [];
+      for (var f = 0; f < cr.tests.length; f++) files.push(fileOf(cr.tests[f]));
+      var said = cs == 'passed' ? 'Passed in ' : cs == 'failed' ? 'Failed in ' : cs == 'running' ? 'Launching: ' : 'Checked by ';
+      g.rows.push({
+        id: String(cr.id),
+        text: cr.text ? String(cr.text) : (String(cr.id) == rid ? 'This requirement is tested as a whole.' : String(cr.id)),
+        sub: said + files.join(', '),
+        dot: 'm-dot ' + DOT[cs],
+        label: LABEL[cs],
+        status: cs
+      });
+    }
+    for (var q = 0; q < groups.length; q++) {
+      var gr = groups[q];
+      gr.count = gr.passed == gr.rows.length ? 'all passed' : gr.passed + ' of ' + gr.rows.length + ' passed';
+      gr.pillDot = gr.passed == gr.rows.length ? 'm-dot--passed' : gr.failed ? 'm-dot--failed' : 'm-dot--notrun';
+    }
+    _.groups = groups;
+
+    // the launch history, newest first
+    var history = [];
+    for (var h = 0; h < launches.length; h++) {
+      var l = launches[h];
+      var ls = String(l.status || '');
+      var lr = ls == 'running' || ls == 'started';
+      var dot = kaWords.runMark(l, lr).dot;
+      var what = lr ? 'Launching ' + plural(l.tests, 'test', 'tests')
+          : plural(l.tests, 'test', 'tests') + ' · ' + l.passed + ' passed' + (l.failed ? ', ' + l.failed + ' failed' : '');
+      var bits = [];
+      var when = age(l.startedMs);
+      if (when) bits.push(when);
+      var d = l.finishedMs && l.startedMs ? duration(l.finishedMs - l.startedMs) : null;
+      if (d) bits.push(d);
+      history.push({ id: String(l.runId), href: runHref(l.runId), dot: 'm-dot ' + dot, what: what,
+                     note: (ls == 'failed' || ls == 'error') && l.error && !l.passed && !l.failed ? firstLine(l.error, 100) : null,
+                     meta: bits.join(' · ') });
+    }
+    _.history = history;
+
+    _.camp = {
+      name: String(c.name),
+      sub: plural(t.total, 'test', 'tests') + (c.createdMs ? ' · created ' + age(c.createdMs) : ''),
+      file: String(c.file),
+      running: running ? true : null,
+      launch: launches.length ? 'Launch again' : 'Launch',
+      failed: !running && t.failed ? (t.failed == 1 ? 'Relaunch the failed test' : 'Relaunch the ' + t.failed + ' failed') : null
+    };
+  })();
+</script>
+<style>
+  .m-camp-summary { margin-top: 26px; }
+  .m-camp-summary .m-squares { gap: 6px; }
+  /* one card per requirement: its id and risk as the kicker, its title, then its criteria */
+  .m-camp-req { margin-top: 14px; padding: 20px 26px 8px; }
+  .m-section-head + .m-camp-req { margin-top: 0; }
+  .m-camp-req-head {
+    display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; column-gap: 8px; row-gap: 3px;
+    grid-template-areas: "id risk . count" "title title title count"; align-items: baseline; padding-bottom: 8px;
+  }
+  .m-camp-req-id { grid-area: id; font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--m-text-2); }
+  .m-camp-req-risk { grid-area: risk; font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--m-text-2); }
+  .m-camp-req-risk::before { content: '· '; }
+  .m-camp-req-title { grid-area: title; font-size: 18px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; }
+  .m-camp-req-count {
+    grid-area: count; align-self: center; display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px;
+    border-radius: 999px; background: var(--m-surface); font-size: 13px; font-weight: 500; color: var(--m-text-2); white-space: nowrap;
+  }
+  .m-camp-crit { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 16px; align-items: center; padding: 13px 0; }
+  .m-camp-crit + .m-camp-crit { border-top: 1px solid var(--m-line); }
+  .m-camp-crit > .m-dot { justify-self: center; }
+  .m-camp-crit-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 15px; line-height: 1.5; }
+  .m-camp-err { margin: 10px 0 0; font-size: 13.5px; color: var(--m-red); }
+  .m-camp-err:empty { display: none; }
+</style>
+<section class="m-page" data-ka-section="manual.campaign">
+  <th:block th:unless="found">
+    <header class="m-head">
+      <h1 class="m-title">No such campaign</h1>
+      <div class="m-head-end"><a class="m-link" href="/manual/campaigns">All campaigns</a></div>
+    </header>
+    <div class="m-section">
+      <div class="m-empty">
+        <div class="m-empty-title" th:text="asked ? 'There is no campaign named ' + asked + '.' : 'No campaign was named.'">There is no campaign named X.</div>
+        <div class="m-empty-sub">It may have been deleted. Every campaign is on the Campaigns page.</div>
+      </div>
+    </div>
+  </th:block>
+
+  <th:block th:if="found">
+    <header class="m-head">
+      <div class="m-head-text">
+        <span class="m-eyebrow">Campaign</span>
+        <h1 class="m-title" th:text="camp.name">Release 1.3</h1>
+        <p class="m-sub" th:text="camp.sub">3 tests · created yesterday</p>
+      </div>
+      <div class="m-head-end" data-ka-section="manual.campaign.actions" data-m-live>
+        <button th:if="camp.failed" type="button" class="m-btn m-btn--ghost" data-m-relaunch
+                th:attr="'data-m-campaign': camp.name" onclick="kaCampaign.launch(this, true)" th:text="camp.failed">Relaunch the failed</button>
+        <a th:if="summary.watch" class="m-link" th:href="summary.watch">Watch it</a>
+        <button type="button" class="m-btn" data-m-launch th:attr="'data-m-campaign': camp.name, 'disabled': camp.running ? 'disabled' : null"
+                onclick="kaCampaign.launch(this, false)" th:text="camp.launch">Launch</button>
+      </div>
+    </header>
+    <p class="m-camp-err" data-m-error role="alert"></p>
+
+    <div class="m-summary m-summary--lg m-camp-summary" data-ka-section="manual.campaign.summary" data-m-live>
+      <span th:class="summary.dot" role="img" th:attr="'aria-label': summary.label, 'title': summary.label"></span>
+      <div>
+        <div class="m-summary-title" th:text="summary.title">2 of 3 tests failed</div>
+        <div th:if="summary.sub" class="m-summary-sub" th:text="summary.sub">Last launch 2 h ago</div>
+      </div>
+      <div class="m-summary-end"><span class="m-squares"><span th:each="sq: summary.squares" th:class="sq"></span></span></div>
+    </div>
+
+    <div class="m-section" data-ka-section="manual.campaign.tests" data-m-live>
+      <div class="m-section-head"><h2 class="m-section-title">Tests</h2><span class="m-section-sub">each by its latest launch</span></div>
+      <div class="m-rows">
+        <th:block th:each="x: tests">
+          <a th:if="x.href" class="m-row m-row--act" th:href="x.href" th:attr="'data-m-test': x.path, 'data-m-status': x.status">
+            <span th:class="x.dot" role="img" th:attr="'aria-label': x.label, 'title': x.label"></span>
+            <span class="m-row-main">
+              <span class="m-row-title" th:text="x.name">cart.js</span>
+              <span th:if="x.sub" class="m-row-sub" th:text="x.sub">checks/cart.js</span>
+            </span>
+            <span class="m-row-meta" th:text="x.meta">2.1 s</span>
+            <span class="m-row-act" th:text="x.act">Open run</span>
+          </a>
+          <div th:unless="x.href" class="m-row" th:attr="'data-m-test': x.path, 'data-m-status': x.status">
+            <span th:class="x.dot" role="img" th:attr="'aria-label': x.label, 'title': x.label"></span>
+            <span class="m-row-main">
+              <span class="m-row-title" th:text="x.name">cart.js</span>
+              <span th:if="x.sub" class="m-row-sub" th:text="x.sub">this test no longer exists</span>
+            </span>
+            <span class="m-row-meta"></span>
+          </div>
+        </th:block>
+      </div>
+    </div>
+
+    <div class="m-section" data-ka-section="manual.campaign.criteria" data-m-live>
+      <div class="m-section-head"><h2 class="m-section-title">What it checks</h2></div>
+      <div th:if="groups.length == 0" class="m-empty">
+        <div class="m-empty-sub">None of these tests is linked to a requirement. Link them from Tests to see what this campaign proves.</div>
+      </div>
+      <div class="m-camp-req m-card" th:each="g: groups" th:attr="'data-req': g.id">
+        <div class="m-camp-req-head">
+          <span class="m-camp-req-id" th:text="g.id">REQ-001</span>
+          <span th:if="g.title" class="m-camp-req-title" th:text="g.title">title</span>
+          <span th:if="g.risk" class="m-camp-req-risk" th:text="g.risk">high risk</span>
+          <span class="m-camp-req-count"><span class="m-dot m-dot--xs" th:classappend="g.pillDot"></span><span th:text="g.count">2 of 3 passed</span></span>
+        </div>
+        <div class="m-camp-crit" th:each="r: g.rows" th:attr="'data-criterion': r.id, 'data-status': r.status">
+          <span th:class="r.dot" role="img" th:attr="'aria-label': r.label, 'title': r.label"></span>
+          <div class="m-camp-crit-text">
+            <span th:text="r.text">criterion</span>
+            <span class="m-row-sub" th:text="r.sub">Passed in cart.js</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="m-section" data-ka-section="manual.campaign.launches" data-m-live>
+      <th:block th:if="history.length > 0">
+        <div class="m-section-head"><h2 class="m-section-title">Launches</h2></div>
+        <div class="m-rows">
+          <a th:each="l: history" class="m-row m-row--act" th:href="l.href" th:attr="'data-m-run': l.id">
+            <span th:class="l.dot"></span>
+            <span class="m-row-main">
+              <span class="m-row-title" th:text="l.what">3 tests · 2 passed, 1 failed</span>
+              <span th:if="l.note" class="m-row-sub" th:text="l.note">error</span>
+            </span>
+            <span class="m-row-meta" th:text="l.meta">2 h ago · 1 min 04 s</span>
+            <span class="m-row-act">Open</span>
+          </a>
+        </div>
+      </th:block>
+    </div>
+
+    <p class="m-foot">
+      <span>Saved in <span th:text="camp.file">campaigns/release-1-3.json</span></span>
+      · <button type="button" class="m-quiet" data-m-delete th:attr="'data-m-campaign': camp.name" onclick="kaCampaign.remove(this)">Delete</button>
+    </p>
+  </th:block>
+</section>
+<script>
+  // Launch and Delete — Campaign.run / Campaign.delete over /api/eval. A launch opens its run page, as
+  // Run all tests does; a refusal (the one browser is busy, a test is gone) is said under the header.
+  window.kaCampaign = (function () {
+    function say(msg) {
+      var el = document.querySelector('[data-m-error]');
+      if (el) el.textContent = msg || '';
+    }
+    function launch(btn, onlyFailed) {
+      var name = btn.getAttribute('data-m-campaign');
+      var opts = { async: true, video: true };
+      if (onlyFailed) opts.only = 'failed';
+      say('');
+      var label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Starting…';
+      window.karate.value('Campaign.run(' + JSON.stringify(name) + ', ' + JSON.stringify(opts) + ')')
+        .then(function (out) {
+          if (!out || !out.runId) throw new Error((out && out.error) || 'the launch did not start');
+          location.href = '/manual/runs/' + encodeURIComponent(out.runId);
+        })
+        .catch(function (e) {
+          btn.disabled = false;
+          btn.textContent = label;
+          say(String(e && e.message ? e.message : e).replace(/^Error: /, ''));
+        });
+    }
+    function remove(btn) {
+      var name = btn.getAttribute('data-m-campaign');
+      if (!confirm('Delete the campaign “' + name + '”? Its past launches stay on the Runs page.')) return;
+      window.karate.value('Campaign.delete(' + JSON.stringify(name) + ')')
+        .then(function (out) {
+          if (out && out.error) throw new Error(out.error);
+          location.href = '/manual/campaigns';
+        })
+        .catch(function (e) { say(String(e && e.message ? e.message : e).replace(/^Error: /, '')); });
+    }
+    return { launch: launch, remove: remove };
+  })();
+</script>

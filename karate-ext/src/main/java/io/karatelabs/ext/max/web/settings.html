@@ -1,0 +1,144 @@
+<!--/* /settings — the read-only instance status screen (D104/D105, SSR). A content fragment; layout.html
+     provides the shell. Pure SSR (D88): settings.view() is an env/license read off the HTTP thread — zero
+     data calls on load. Read-only by design: licensed-to · products · days-left · LLM key PRESENCE (masked,
+     never the value). NO install / self-serve / eval flow (issuance is managed/manual). The sections
+     self-tag with data-ka-section so View.highlight('settings.license' | 'settings.llm') can steer here. */-->
+<script ka:scope="global">
+  var s = settings.view();
+  _.version = s.version;
+  _.git = (s.git && s.git !== '(unknown)') ? s.git : '';
+  _.lic = s.license;
+  _.llm = s.llm;
+  context.setGlobal('pageTitle', 'Settings · Karate Agent');
+</script>
+
+<div class="max-w-3xl mx-auto px-6 py-8" data-ka-section="settings">
+  <h1 class="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Settings<!--
+    D124 context-sensitive "?" — license resolution + install on-ramp. -->
+    <a href="/help#install" target="ka-help" rel="noopener" title="Install & licensing — open the Help deep-dive"
+       class="inline-flex items-center justify-center w-4 h-4 ml-1 align-middle rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold no-underline hover:ring-1 hover:ring-indigo-400">?</a></h1>
+  <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+    Read-only status for this instance. Licenses are issued out of band — there is nothing to configure
+    here; point a different LLM at the server with environment variables (below) and restart.
+  </p>
+  <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+    Build version <span class="font-mono text-slate-700 dark:text-slate-300" th:text="version ? version : '(unknown)'">(unknown)</span><!--
+    --><span th:if="git"> · commit <span class="font-mono text-slate-700 dark:text-slate-300" th:text="git">git</span></span>
+  </p>
+
+  <!-- LICENSE -->
+  <section class="mt-6 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm"
+           data-ka-section="settings.license">
+    <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">License</h2>
+
+    <!-- a valid, signed, unexpired license -->
+    <div th:if="lic.valid">
+      <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+        <div>
+          <div class="text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500">Licensed to</div>
+          <div class="mt-0.5 text-slate-900 dark:text-slate-100" th:text="lic.licensee ? lic.licensee : '—'">—</div>
+          <div th:if="lic.email" class="text-xs text-slate-500 dark:text-slate-400 font-mono" th:text="lic.email">email</div>
+        </div>
+        <div>
+          <div class="text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500">Expires</div>
+          <div class="mt-0.5 text-slate-900 dark:text-slate-100 font-mono text-xs" th:text="lic.expiry ? lic.expiry : '—'">—</div>
+          <div th:if="lic.daysLeft != null" class="text-xs text-slate-500 dark:text-slate-400">
+            <span th:text="lic.daysLeft">0</span> days left
+          </div>
+        </div>
+      </div>
+      <div class="mt-4">
+        <div class="text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500">Products</div>
+        <div class="mt-1 flex flex-wrap gap-1">
+          <span th:each="p: lic.products"
+                class="text-[10px] font-mono rounded bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-1.5 py-0.5"
+                th:text="p">product</span>
+          <span th:if="lic.products.length == 0" class="text-[10px] text-slate-400 dark:text-slate-500 italic">no entitlements</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- no valid license — report the reason as data, never a hard fail on the read (D106) -->
+    <div th:unless="lic.valid"
+         class="mt-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 p-3 text-sm text-amber-800 dark:text-amber-300">
+      <div class="font-medium">No valid license</div>
+      <div class="mt-1 text-xs font-mono" th:text="lic.reason ? lic.reason : 'license check failed'">reason</div>
+      <div class="mt-2 text-xs">Max features are gated until a valid license is mounted. Licenses are issued manually — contact Karate Labs.</div>
+    </div>
+  </section>
+
+  <!-- LLM CONFIG -->
+  <section class="mt-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm"
+           data-ka-section="settings.llm">
+    <div class="flex items-center justify-between gap-3">
+      <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">LLM providers</h2>
+      <a href="/connect" class="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline">Connect an LLM ↗</a>
+    </div>
+    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+      Whether each provider's API key is set — the key value is never shown. Set the env var and restart to
+      change it. <span class="text-slate-400 dark:text-slate-500">Test</span> sends one minimal completion
+      to answer "can this be reached, with this key, from this machine?".
+    </p>
+    <div class="mt-3 divide-y divide-slate-100 dark:divide-slate-700">
+      <div th:each="p: llm.providers" class="flex items-start justify-between gap-3 py-2"
+           th:attr="'data-provider': p.name" x-data="providerTest($el.dataset.provider)">
+        <div class="min-w-0">
+          <div class="text-sm text-slate-900 dark:text-slate-100" th:text="p.name">provider</div>
+          <div class="text-[11px] font-mono text-slate-400 dark:text-slate-500 truncate" th:text="p.envVar">ENV</div>
+          <!-- the preflight verdict, on the row it belongs to: the provider's own words (full body on
+               hover), with the derived operator sentence beneath -->
+          <div x-show="res" x-cloak class="mt-1 text-[11px] leading-snug">
+            <div :class="res && res.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'"
+                 :title="(res && res.error) || ''" x-text="verdict()"></div>
+            <div x-show="res && res.hint" class="mt-0.5 text-amber-700 dark:text-amber-400" x-text="(res && res.hint) || ''"></div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <span th:if="p.endpointOverridden"
+                class="text-[10px] font-mono rounded bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 px-1.5 py-0.5"
+                title="endpoint overridden">custom endpoint</span>
+          <span th:if="p.present"
+                class="text-[11px] font-medium rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 px-2 py-0.5">key set</span>
+          <span th:unless="p.present"
+                class="text-[11px] font-medium rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 px-2 py-0.5">not set</span>
+          <!-- only where there is something to reach: a key is set, or Ollama (keyless, a local endpoint) -->
+          <button th:if="p.present || p.name == 'ollama'" type="button" @click="test()" :disabled="busy"
+                  class="rounded-lg border border-slate-300 dark:border-slate-600 px-2.5 py-1 text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
+                  x-text="busy ? 'Testing…' : 'Test'">Test</button>
+        </div>
+      </div>
+    </div>
+    <div th:unless="llm.configured" class="mt-3 text-xs text-slate-500 dark:text-slate-400">
+      No provider key detected — the autonomous loop and live LLM features need one. Set
+      <span class="font-mono">ANTHROPIC_API_KEY</span> or <span class="font-mono">OPENROUTER_API_KEY</span> and restart.
+    </div>
+  </section>
+
+  <!-- THEME (a local UI preference — the only writable control here) -->
+  <section class="mt-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm"
+           data-ka-section="settings.theme">
+    <div class="flex items-center justify-between gap-3">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Theme</h2>
+        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Light / dark — a per-browser preference (also the ☾ toggle in the header).</p>
+      </div>
+      <button onclick="kaToggleTheme()"
+              class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700">
+        Toggle theme
+      </button>
+    </div>
+  </section>
+
+  <p class="mt-6 text-xs text-slate-400 dark:text-slate-500">
+    Need a license or a product added? Licensing is handled by Karate Labs — see <a href="/help" class="text-indigo-600 dark:text-indigo-400 hover:underline">Help</a>.
+  </p>
+</div>
+
+<script>
+  // One provider row's preflight — the shared kaProviderTest factory (pub/eval.js), which every
+  // provider·model picker in the console uses. A row tests the provider's own default model, so the
+  // pick carries no `model`.
+  function providerTest(provider) {
+    return kaProviderTest(() => ({ provider: provider }));
+  }
+</script>

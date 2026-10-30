@@ -1,0 +1,852 @@
+<!--/* Manual mode — a Postman collection opened as its own page (/manual/tests/postman?file=<path>[&item=<pointer>]
+     [&run=<runId>][&row=<n>][&env=<name>], postman SPEC §4): the tree with each node's result, the request editor and its
+     scripts, the runner, one result per data row and request, and where each {{variable}} comes from.
+     Reads, all server-side: postman.read(file, {runId}) (the tree, and the roll-up of the run shown; the newest settled
+     run when ?run is absent) · postman.item(file, {item}) (the editor's fields and which of them can change) ·
+     postman.results(runId, {item, row, full}) (the run's exchanges) · postman.env(file, {env}) (the variable table) ·
+     runner.tests({kind: 'postman'}) (the newest run) · runner.envs() (the switcher) · apiTest.config() (the version an
+     environment import is guarded by, and the auth preset form's preset) · runner.auth() and secret.list() (the form's
+     sign-in and stored secrets, api-workspace §6) · postman.data(file, {item}) (the data files to pick from, and a new
+     one's columns and path) · file.list() (the environment files to pick from) ·
+     harness.chat({}) (whether a model is connected, which Migrate needs).
+     The island hands the payloads to kaPostman (pub/postman.js): Save posts /ui/postman/edit, Undo the token the save
+     answered, the switcher /ui/runner/env, an environment import /ui/postman/env, Migrate /ui/postman/migrate and then
+     the side chat's /ui/apitest/chat, a new or uploaded data file /ui/postman/data. Run kicks Runner.run over /api/eval
+     (D98) and reloads on the run once /ui/postman/run says it settled. */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'Postman collection · Karate Agent');
+  (function () {
+    function safe(fn) { try { return fn(); } catch (e) { return null; } }
+    function isList(v) { return v != null && v.length != null && typeof v != 'string'; }
+    function enc(v) { return encodeURIComponent(String(v)); }
+    var DOT = { passed: 'm-dot--passed', failed: 'm-dot--failed', error: 'm-dot--failed', notchecked: 'm-dot--stopped', notrun: 'm-dot--notrun' };
+    var WORD = { passed: 'passed', failed: 'failed', error: 'could not be sent', notchecked: 'not checked', notrun: 'not run',
+      notsupported: 'not supported' };
+
+    var wanted = request.param('file');
+    wanted = wanted ? String(wanted).replace(/^\/+/, '') : null;
+    _.file = wanted;
+    _.title = wanted ? kaWords.fileOf(wanted) : 'Postman collection';
+    _.missing = null; _.notCollection = null; _.found = null; _.unreadable = null;
+    _.tree = []; _.ed = null; _.run = null; _.runNote = null; _.running = null; _.rows = []; _.results = [];
+    _.resultsNote = null; _.envRows = []; _.envFiles = []; _.dataFiles = []; _.envs = []; _.env = 'default';
+    _.switchable = null; _.envListed = null; _.postman = null; _.targets = []; _.rowFilter = null; _.allRowsHref = null;
+    _.itemGone = null; _.root = null; _.envShown = null; _.unreached = null; _.authPreset = null; _.newData = null;
+    var plain = wanted ? safe(function () { return postman.read(wanted); }) : null;
+    if (!plain || plain.error) {
+      if (plain && plain.code == 'NOT_COLLECTION') _.notCollection = true; else _.missing = true;
+      return;
+    }
+    _.found = true;
+    if (plain.name) _.title = String(plain.name);
+    context.setGlobal('pageTitle', _.title + ' · Karate Agent');
+    if (plain.editable === false) _.unreadable = 'This file can only be read here: ' + String(plain.reason || 'it is not plain text') + '.';
+
+    var asked = request.param('item');
+    var selected = asked != null && /^(\/item\/\d+)*$/.test(String(asked)) ? String(asked) : '';
+    var base = '/manual/tests/postman?file=' + enc(wanted);
+
+    // the run shown: the URL's, else the newest settled run of this collection
+    var cols = request.cache('manual.postman', function () { return runner.tests({ kind: 'postman' }); });
+    var listed = null;
+    for (var c = 0; isList(cols) && c < cols.length; c++) { if (cols[c].path == wanted) listed = cols[c]; }
+    var runId = request.param('run') ? String(request.param('run')) : listed && listed.lastRunId ? String(listed.lastRunId) : null;
+    var read = plain;
+    if (runId) {
+      var withRun = safe(function () { return postman.read(wanted, { runId: runId }); });
+      if (withRun && !withRun.error) {
+        read = withRun;
+      } else {
+        var meta = safe(function () { return harness.get(runId); });
+        if (meta && (meta.status == 'running' || meta.status == 'started')) _.running = runId;
+        else _.runNote = 'That run left no results for this collection. Run it again to see each request’s result.';
+        runId = null;
+      }
+    }
+    var shown = read.run || null;
+    var runQ = runId ? '&run=' + enc(runId) : '';
+    var rowAsked = request.paramInt('row');
+    if (shown) {
+      var settled = safe(function () { return harness.get(runId); }) || {};
+      var counts = [];
+      if (settled.passed) counts.push(settled.passed + ' passed');
+      if (settled.failed) counts.push(settled.failed + ' failed');
+      if (settled.notchecked) counts.push(settled.notchecked + ' not checked');
+      _.run = { id: runId, report: '/manual/runs/' + enc(runId), stale: shown.stale ? true : null,
+        dot: shown.stale ? 'm-dot--notrun' : DOT[shown.status] || 'm-dot--notrun',
+        text: shown.stale ? 'The collection changed since the last run. Run it again to see each request’s result.'
+          : (shown.status == 'passed' ? 'Passed' : shown.status == 'failed' ? 'Failed' : shown.status == 'notchecked' ? 'Ran, but not everything was checked' : 'Not run')
+            + (counts.length ? ' — ' + counts.join(', ') + (settled.total ? ' of ' + settled.total : '') : '')
+            + (settled.finishedMs ? ' · ' + (kaWords.ageInWords(settled.finishedMs) || '') : ''),
+        data: settled.data ? String(settled.data) : null };
+      var byRow = isList(shown.byRow) ? shown.byRow : [];
+      for (var r = 0; r < byRow.length; r++) {
+        _.rows.push({ row: r, label: byRow.length > 1 ? 'Row ' + (r + 1) : 'The run', dot: DOT[byRow[r]] || 'm-dot--notrun',
+          state: WORD[byRow[r]] || String(byRow[r]), href: base + '&item=' + enc(selected) + runQ + '&row=' + r,
+          current: rowAsked == r ? 'true' : null });
+      }
+      if (rowAsked != null && rowAsked >= 0 && rowAsked < byRow.length) {
+        _.rowFilter = rowAsked;
+        _.allRowsHref = base + '&item=' + enc(selected) + runQ;
+      }
+    }
+
+    // the tree, flat with its depth; a folder listed as a count is read again when the selection is inside it
+    function expand(nodes) {
+      for (var i = 0; isList(nodes) && i < nodes.length; i++) {
+        var n = nodes[i];
+        if (n.count && !n.children && (selected == n.item || selected.indexOf(n.item + '/') == 0)) {
+          var sub = safe(function () { return postman.read(wanted, runId ? { item: n.item, runId: runId } : { item: n.item }); });
+          if (sub && !sub.error) n.children = sub.items;
+        }
+        if (n.children) expand(n.children);
+      }
+    }
+    function flat(nodes, depth) {
+      for (var i = 0; isList(nodes) && i < nodes.length; i++) {
+        var n = nodes[i];
+        var rows = [];
+        var br = shown && isList(n.byRow) && n.byRow.length > 1 ? n.byRow : [];
+        for (var k = 0; k < br.length; k++) rows.push({ dot: DOT[br[k]] || 'm-dot--notrun', title: 'Row ' + (k + 1) + ': ' + (WORD[br[k]] || br[k]) });
+        _.tree.push({ item: String(n.item), name: String(n.name || (n.kind == 'folder' ? 'Folder' : 'Request')), folder: n.kind == 'folder' ? true : null,
+          method: n.method ? String(n.method).toUpperCase() : null, pad: 'padding-left: ' + (14 + depth * 18) + 'px',
+          href: base + '&item=' + enc(n.item) + runQ, current: n.item == selected ? 'true' : null,
+          dot: n.status ? DOT[n.status] || 'm-dot--notrun' : null, state: n.status ? WORD[n.status] || String(n.status) : null, rows: rows,
+          more: n.count && !n.children ? (n.count.requests + n.count.folders) + ' inside' : null });
+        if (n.children) flat(n.children, depth + 1);
+      }
+    }
+    var top = read.items;
+    expand(top);
+    _.root = { href: base + runQ, current: selected == '' ? 'true' : null, dot: shown && shown.status && !shown.stale ? DOT[shown.status] : null,
+      state: shown && shown.status && !shown.stale ? WORD[shown.status] : null };
+    flat(top, 1);
+
+    // the editor: what postman.item answers, in the words and inputs a tester edits
+    var item = safe(function () { return postman.item(wanted, { item: selected }); });
+    if (!item || item.error) {
+      _.itemGone = 'That request is no longer in the collection. Showing the collection instead.';
+      selected = '';
+      item = postman.item(wanted, { item: '' });
+    }
+    if (selected == '') _.root.current = 'true';
+    function why(f) {
+      if (!f || f.editable !== false) return null;
+      var t = String(f.reason || '');
+      if (/holds a secret/.test(t)) return 'It holds a stored secret, so it is shown masked and can’t be changed here.';
+      if (/read-only in the editor/.test(t)) return 'Folder and collection settings are shown here, not changed. To change them, edit the collection in Postman, export it, and put the exported file in place of this one. Scripts can be changed below.';
+      if (/models oauth2 client credentials only/.test(t)) return 'Only OAuth 2 client-credentials sign-in can be changed here; this one is kept as it is.';
+      var m = t.match(/does not model (\S+) auth/);
+      if (m) return 'This sign-in type (' + m[1] + ') can’t be changed here; it is kept as it is.';
+      if (/by reference/.test(t)) return 'This script points to a file, so it can’t be changed here.';
+      if (/protocolProfileBehavior/.test(t)) return 'Postman’s request settings are kept as they are.';
+      if (/response examples/.test(t)) return 'Saved example responses are kept as they are.';
+      return 'This can’t be changed here: ' + t + '.';
+    }
+    function text(v) { return v == null ? '' : typeof v == 'string' ? v : v.content != null ? String(v.content) : JSON.stringify(v); }
+    function cells(list, kind) {
+      var out = [];
+      for (var i = 0; isList(list) && i < list.length; i++) {
+        var x = list[i];
+        out.push({ kind: kind, row: x.row != null ? String(x.row) : '', key: x.key != null ? String(x.key) : '', value: x.value != null ? text(x.value) : '',
+          on: x.disabled ? null : true, file: x.type == 'file' ? (x.src != null ? String(x.src) : '') : null, isNew: x.row == null ? true : null });
+      }
+      return out;
+    }
+    var kind = String(item.kind);
+    var ed = { kind: kind, request: kind == 'request' ? true : null, item: selected,
+      name: text(item.name.value), nameWhy: why(item.name), description: text(item.description.value), descriptionWhy: why(item.description) };
+    if (ed.request) {
+      var url = item.url || {};
+      var body = item.body || {};
+      var gql = body.graphql || {};
+      ed.method = item.method.value ? String(item.method.value).toUpperCase() : 'GET';
+      ed.methodWhy = why(item.method);
+      ed.methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+      if (ed.methods.indexOf(ed.method) < 0) ed.methods.push(ed.method);
+      ed.url = url.raw ? String(url.raw) : '';
+      ed.urlWhy = why(url);
+      ed.query = cells(url.query, 'query');
+      ed.vars = cells(url.variable, 'variable');
+      ed.headers = cells((item.header || {}).rows, 'header');
+      ed.headerWhy = why(item.header);
+      ed.bodyWhy = why(body);
+      ed.mode = body.mode ? String(body.mode) : null;
+      ed.modeWords = !ed.mode ? 'No body' : ed.mode == 'raw' ? 'Text' + (body.options && body.options.raw && body.options.raw.language ? ' (' + body.options.raw.language + ')' : '')
+        : ed.mode == 'urlencoded' ? 'Form fields (URL-encoded)' : ed.mode == 'formdata' ? 'Form fields (multipart)' : ed.mode == 'graphql' ? 'GraphQL'
+        : ed.mode == 'file' || ed.mode == 'binary' ? 'A file' : ed.mode;
+      ed.raw = ed.mode == 'raw' ? text(body.raw) : null;
+      ed.form = ed.mode == 'urlencoded' ? cells(body.urlencoded, 'urlencoded') : ed.mode == 'formdata' ? cells(body.formdata, 'formdata') : null;
+      ed.gql = ed.mode == 'graphql' ? { query: text(gql.query), variables: typeof gql.variables == 'string' ? gql.variables : gql.variables ? JSON.stringify(gql.variables, null, 2) : '' } : null;
+      ed.fileSrc = ed.mode == 'file' || ed.mode == 'binary' ? (body.file && body.file.src ? String(body.file.src) : '') : null;
+    }
+    var auth = item.auth || {};
+    var own = auth.own || null;
+    var resolved = auth.resolved || {};
+    var AUTH = { bearer: 'Bearer token', basic: 'Username and password', apikey: 'API key', oauth2: 'OAuth 2', noauth: 'No sign-in', none: 'No sign-in' };
+    ed.authType = own && own.type ? String(own.type) : 'inherit';
+    ed.authWhy = why(auth);
+    ed.authNow = (AUTH[resolved.type] || String(resolved.type || 'none'))
+      + (resolved.from == 'this item' ? ', set here' : resolved.from == 'collection' ? ', from the collection'
+        : resolved.from == 'environment' ? ', from this environment’s sign-in' : resolved.from ? ', from ' + resolved.from : '')
+      + (resolved.notsupported ? ' — the runner can’t send this type' : '');
+    function authField(key) {
+      if (!own || !own.type) return '';
+      var blk = own[own.type];
+      if (isList(blk)) { for (var i = 0; i < blk.length; i++) { if (blk[i].key == key) return text(blk[i].value); } return ''; }
+      return blk && blk[key] != null ? text(blk[key]) : '';
+    }
+    ed.authFields = { token: authField('token'), username: authField('username'), password: authField('password'), key: authField('key'),
+      value: authField('value'), in: authField('in') || 'header', accessTokenUrl: authField('accessTokenUrl'), clientId: authField('clientId'),
+      clientSecret: authField('clientSecret'), scope: authField('scope') };
+    ed.authTypes = [{ id: 'inherit', label: 'Use the folder’s or collection’s sign-in' }, { id: 'noauth', label: 'No sign-in' },
+      { id: 'bearer', label: 'Bearer token' }, { id: 'basic', label: 'Username and password' }, { id: 'apikey', label: 'API key' },
+      { id: 'oauth2', label: 'OAuth 2 client credentials' }];
+    if (ed.request === null && ed.authType == 'inherit') ed.authType = own ? String(own.type) : 'inherit';
+    ed.variables = item.variables ? cells(item.variables.rows, 'collection') : null;
+    ed.variablesWhy = item.variables ? why(item.variables) : null;
+    function scripts(list, listen) {
+      var out = [];
+      for (var i = 0; isList(list) && i < list.length; i++) {
+        var e = list[i];
+        out.push({ listen: listen, n: String(e.n), text: isList(e.exec) ? e.exec.join('\n') : text(e.exec), why: why(e),
+          lines: Math.max(3, Math.min(18, (isList(e.exec) ? e.exec.length : String(text(e.exec)).split('\n').length) + 1)) });
+      }
+      return out;
+    }
+    var events = item.events || {};
+    ed.pre = scripts(events.prerequest, 'prerequest');
+    ed.tests = scripts(events.test, 'test');
+    ed.notes = [];
+    if (item.protocolProfileBehavior) ed.notes.push(why(item.protocolProfileBehavior));
+    if (item.responses) ed.notes.push(why(item.responses));
+    ed.title = kind == 'collection' ? 'The whole collection' : ed.name || 'Untitled';
+    ed.eyebrow = kind == 'collection' ? 'Collection' : kind == 'folder' ? 'Folder' : 'Request';
+    ed.around = kind == 'collection' ? 'the collection' : 'this folder';
+    _.ed = ed;
+
+    // what Run runs: the selected request or folder, and always the whole collection
+    if (kind != 'collection') _.targets.push({ item: selected, label: kind == 'folder' ? 'Run this folder' : 'Run this request', main: true });
+    _.targets.push({ item: '', label: 'Run the whole collection', main: kind == 'collection' ? true : null });
+    // the data files a run can take, and a new one's columns and path (postman SPEC §4)
+    var data = safe(function () { return postman.data(wanted, { item: selected }); });
+    var picked = request.param('data') ? String(request.param('data')) : _.run && _.run.data ? _.run.data : null;
+    var files = data && !data.error && isList(data.files) ? data.files : [];
+    for (var df = 0; df < files.length; df++) _.dataFiles.push({ path: String(files[df]), selected: String(files[df]) == picked ? 'selected' : null });
+    var dataDir = '';
+    if (data && !data.error) {
+      var to = String(data.to), cut = to.lastIndexOf('/');
+      dataDir = to.substring(0, cut + 1);
+      _.newData = { dir: cut < 0 ? 'the project folder' : dataDir, name: to.substring(cut + 1),
+        seed: isList(data.columns) && data.columns.length ? data.columns.join(',') + '\n' : '' };
+    }
+
+    // the run's exchanges for the selection, one card per data row and request
+    var results = runId && shown && !shown.stale ? safe(function () {
+      var o = { item: selected, full: true };
+      if (_.rowFilter != null) o.row = _.rowFilter;
+      return postman.results(runId, o);
+    }) : null;
+    if (results && results.error) results = null;
+    function headerRows(h) {
+      var out = [];
+      for (var k in (h || {})) out.push({ name: k, value: isList(h[k]) ? h[k].join(', ') : String(h[k]) });
+      return out;
+    }
+    function pretty(t) {
+      if (t == null || t === '') return null;
+      var s = String(t);
+      try { var v = JSON.parse(s); if (v !== null && typeof v == 'object') return JSON.stringify(v, null, 2); } catch (e) {}
+      return s;
+    }
+    var groups = {}, order = [];
+    var unsent = {}, unreached = null;   // per row: how many requests ran, and how many no server answered
+    var cap = 120;
+    for (var x = 0; isList(results) && x < results.length && x < cap; x++) {
+      var res = results[x];
+      var g = groups[res.row];
+      if (!g) {
+        var rowState = _.rows[res.row] || null;
+        g = groups[res.row] = { row: res.row, label: _.rows.length > 1 ? 'Row ' + (res.row + 1) : null,
+          dot: rowState ? rowState.dot : null, state: rowState ? rowState.state : null, items: [] };
+        order.push(g);
+      }
+      var sent = res.sent || null, got = res.response || null;
+      var u = unsent[res.row] || (unsent[res.row] = { ran: 0, unreached: 0 });
+      u.ran++;
+      if (res.transport) { u.unreached++; if (!unreached) unreached = res.transport; }
+      var tests = [];
+      var ts = isList(res.tests) ? res.tests : [];
+      for (var t = 0; t < ts.length; t++) {
+        tests.push({ name: String(ts[t].name), dot: ts[t].status == 'passed' ? 'm-dot--passed' : ts[t].status == 'failed' ? 'm-dot--failed' : 'm-dot--stopped',
+          state: WORD[ts[t].status] || String(ts[t].status), message: ts[t].message && ts[t].status != 'passed' ? kaWords.failure(String(ts[t].message), 220) : null });
+      }
+      g.items.push({ key: res.row + '|' + res.item, name: String(res.name), item: String(res.item), dot: DOT[res.status] || 'm-dot--notrun',
+        state: WORD[res.status] || String(res.status), open: res.status == 'passed' ? null : 'open',
+        reason: res.reason ? (/0 of 0|no tests/.test(String(res.reason)) ? 'It has no tests, so nothing was checked.' : 'Not checked: ' + String(res.reason) + '.') : null,
+        error: res.error && res.status == 'error' ? kaWords.pmUnsent(res.error, res.transport) : res.error ? 'A script stopped: ' + kaWords.failure(String(res.error), 200) : null,
+        detail: res.error ? String(res.error) : null, tests: tests,
+        sent: sent ? { method: String(sent.method || ''), url: String(sent.url || ''), headers: headerRows(sent.headers), body: pretty(sent.body) } : null,
+        got: got ? { status: kaWords.httpStatus(got.status), ms: got.timeMs != null ? got.timeMs + ' ms' : null,
+          headers: headerRows(got.headers), body: pretty(got.body), size: got.size } : null });
+    }
+    _.results = order;
+    if (isList(results) && results.length > cap) _.resultsNote = 'Showing the first ' + cap + ' of ' + results.length + '. Pick a request or a row to see the rest.';
+    if (runId && shown && !shown.stale && isList(results) && !results.length) _.resultsNote = 'This did not run in the last run.';
+
+    // the variables the collection uses, and where each one gets its value
+    var envParam = request.param('env') ? String(request.param('env')) : null;
+    var envRows = safe(function () { return postman.env(wanted, envParam ? { env: envParam } : {}); });
+    var FROM = { config: 'Project settings', collection: 'The collection', data: 'The data file', unset: 'Not set anywhere' };
+    for (var v = 0; isList(envRows) && v < envRows.length; v++) {
+      var er = envRows[v];
+      _.envRows.push({ name: String(er.name), from: FROM[er.from] || String(er.from), unset: er.from == 'unset' ? true : null,
+        value: er.secret ? (er.value == null || er.value === '' ? '(empty)' : 'hidden — a secret') : er.value == null || er.value === '' ? '(empty)' : String(er.value) });
+    }
+    // a row no request of which reached a server is said once, for the run, with where the address comes from
+    var deadRows = [], ranRows = 0;
+    for (var ur in unsent) { ranRows++; if (unsent[ur].unreached && unsent[ur].unreached == unsent[ur].ran) deadRows.push(Number(ur) + 1); }
+    if (deadRows.length) {
+      var via = null;
+      for (var vr = 0; unreached.variable && vr < _.envRows.length; vr++) {
+        if (_.envRows[vr].name == unreached.variable) via = envRows[vr].from;
+      }
+      var who = deadRows.length == ranRows ? '' : (deadRows.length == 1 ? 'Row ' + deadRows[0] : 'Rows ' + deadRows.slice(0, -1).join(', ') + ' and ' + deadRows[deadRows.length - 1]) + ': ';
+      _.unreached = { text: who + kaWords.pmUnsent(null, unreached), next: kaWords.pmReach(unreached, via) };
+    }
+    var envFiles = safe(function () { return file.list('**/*.postman_environment.json'); });
+    for (var ef = 0; isList(envFiles) && ef < envFiles.length; ef++) _.envFiles.push(String(envFiles[ef]));
+    var config = safe(function () { return apiTest.config(); });
+
+    var envs = safe(function () { return runner.envs(); });
+    _.envs = isList(envs) ? envs : [];
+    for (var en = 0; en < _.envs.length; en++) { if (_.envs[en].current) _.env = _.envs[en].name ? String(_.envs[en].name) : 'default'; }
+    _.switchable = _.envs.some(function (e) { return !e.current; }) ? true : null;
+    _.envListed = _.envs.some(function (e) { return e.current; }) ? true : null;
+    _.envShown = envParam || _.env;
+    var signIn = safe(function () { return runner.auth(); });
+    _.authPreset = kaWords.authPreset(config, safe(function () { return secret.list(); }), signIn && signIn.env ? String(signIn.env) : null,
+      safe(function () { return file.list('**/*.feature'); }), signIn && !signIn.error ? kaWords.signIn(signIn) : null);
+
+    // the assistant's migration (postman SPEC §7): a folder or the whole collection, run and saved by the API test page's chat
+    var chatState = safe(function () { return harness.chat({}); });
+    _.model = chatState && chatState.model === true ? true : null;
+    _.migrate = kind == 'request' ? null : {
+      label: kind == 'folder' ? 'Migrate this folder to Karate' : 'Migrate the collection to Karate',
+      what: (kind == 'folder' ? 'the Postman folder “' + ed.name + '”' : 'the Postman collection') + ' (' + wanted + (selected ? ', ' + selected : '') + ')' };
+    _.postman = { file: wanted, version: String(read.version), item: selected, kind: kind, runId: runId, running: _.running,
+      model: _.model, migrate: _.migrate, dataDir: dataDir,
+      row: _.rowFilter, editable: plain.editable === false ? false : true, configVersion: config && config.version ? String(config.version) : null,
+      read: read, edit: item, results: results, env: envRows };
+  })();
+</script>
+<div ka:island="postman"/>
+<div ka:island="authPreset"/>
+<style>
+  .m-page.m-pm { max-width: 1400px; }
+  .m-pm-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; margin-top: 18px; font-size: 13.5px; color: var(--m-text-2); }
+  .m-pm-meta-item { display: inline-flex; align-items: center; gap: 8px; }
+  .m-pm-env select.m-input { width: auto; padding: 4px 30px 4px 10px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+  .m-pm-path { font-size: 13px; color: var(--m-text-3); overflow-wrap: anywhere; }
+  .m-pm-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; margin-top: 24px; align-items: start; }
+  @media (min-width: 1000px) { .m-pm-grid { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); } }
+  .m-pm-tree { padding: 10px 0; position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
+  @media (max-width: 999px) { .m-pm-tree { position: static; max-height: none; } }
+  .m-pm-node { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 14px; font-size: 13.5px;
+    color: var(--m-ink); text-decoration: none; border-left: 2px solid transparent; }
+  .m-body a.m-pm-node, .m-body a.m-pm-node:hover { color: var(--m-ink); }
+  .m-pm-node:hover { background: var(--m-hover); }
+  .m-pm-desc { resize: vertical; line-height: 1.5; }
+  .m-pm-plain { color: var(--m-ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .m-pm-node[aria-current="true"] { background: var(--m-purple-soft); border-left-color: var(--m-purple); }
+  .m-pm-node:focus-visible { outline: 2px solid var(--m-purple); outline-offset: -2px; }
+  .m-pm-node-name { display: flex; gap: 8px; align-items: baseline; min-width: 0; overflow-wrap: anywhere; }
+  .m-pm-folder .m-pm-node-name { font-weight: 600; }
+  .m-pm-node .m-dot--blank { border-color: transparent; }
+  .m-pm-method { font-family: var(--m-mono); font-size: 10.5px; font-weight: 600; color: var(--m-purple); min-width: 34px; }
+  .m-pm-rowdots { display: inline-flex; gap: 3px; }
+  .m-pm-more { font-size: 12px; color: var(--m-text-3); }
+  .m-pm-main { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+  .m-pm-card { display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 20px 22px; }
+  .m-pm-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .m-pm-card-title { font-size: 16px; font-weight: 600; color: var(--m-ink); overflow-wrap: anywhere; }
+  .m-pm-part { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .m-pm-part-title { font-size: 12.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--m-text-3); }
+  .m-pm-line { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .m-pm-line select.m-input { width: auto; }
+  .m-pm-url { flex: 1; min-width: 220px; }
+  .m-pm-note { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--m-text-2); }
+  .m-pm-why { margin: 0; font-size: 12.5px; color: var(--m-text-3); }
+  .m-pm-ro { font-family: var(--m-mono); font-size: 12.5px; color: var(--m-text-2); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+  .m-pm-table { border-collapse: collapse; font-size: 13px; width: 100%; }
+  .m-pm-table th, .m-pm-table td { text-align: left; padding: 4px 8px 4px 0; vertical-align: middle; }
+  .m-pm-table th { font-weight: 600; font-size: 12px; color: var(--m-text-3); }
+  .m-pm-table td.m-pm-on { width: 28px; }
+  .m-pm-table td.m-pm-x { width: 70px; text-align: right; }
+  .m-pm-table .m-input { padding: 5px 8px; font-size: 13px; }
+  .m-pm-table tr.m-pm-gone td { opacity: 0.45; text-decoration: line-through; }
+  .m-pm-code { font-family: var(--m-mono); font-size: 12.5px; line-height: 1.55; width: 100%; resize: vertical; tab-size: 2; }
+  .m-pm-script { display: flex; flex-direction: column; gap: 6px; }
+  .m-pm-script.m-pm-gone textarea { opacity: 0.45; text-decoration: line-through; }
+  .m-pm-script-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; color: var(--m-text-2); }
+  .m-pm-add { align-self: flex-start; font-size: 13px; }
+  .m-pm-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--m-surface); color: var(--m-ink); font-size: 13px; }
+  .m-pm-save { position: sticky; top: 8px; z-index: 2; background: linear-gradient(var(--m-card), var(--m-card)), var(--m-bg); display: flex; flex-direction: column; gap: 8px; padding: 12px 18px; }
+  .m-pm-save-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13.5px; }
+  .m-pm-save-words { flex: 1; min-width: 180px; color: var(--m-text-2); }
+  .m-pm-said { margin: 0; font-size: 13.5px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; overflow-wrap: anywhere; }
+  .m-pm-said .m-dot { align-self: center; }
+  .m-pm-err { color: var(--m-ink); }
+  .m-pm-rows { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13.5px; }
+  .m-pm-rowlink { display: inline-flex; align-items: center; gap: 6px; color: var(--m-ink); text-decoration: none; padding: 3px 8px; border-radius: 8px; }
+  .m-pm-rowlink[aria-current="true"] { background: var(--m-purple-soft); }
+  .m-pm-rowlink:hover { background: var(--m-hover); }
+  .m-pm-group { display: flex; flex-direction: column; gap: 10px; }
+  .m-pm-group-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--m-text-2); }
+  .m-pm-ex { border: 1px solid var(--m-line); border-radius: 12px; padding: 0; }
+  .m-pm-ex > summary { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 14px; cursor: pointer; list-style: none; font-size: 14px; }
+  .m-pm-ex > summary::-webkit-details-marker { display: none; }
+  .m-pm-ex > summary:focus-visible { outline: 2px solid var(--m-purple); outline-offset: 2px; border-radius: 12px; }
+  .m-pm-ex-name { font-weight: 600; overflow-wrap: anywhere; }
+  .m-pm-ex-state { font-size: 12.5px; color: var(--m-text-2); white-space: nowrap; }
+  .m-pm-ex-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 14px 14px; min-width: 0; }
+  .m-pm-tests { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 13.5px; }
+  .m-pm-tests li { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 8px; align-items: baseline; overflow-wrap: anywhere; }
+  .m-pm-tests .m-dot { align-self: center; }
+  .m-pm-msg { display: block; font-size: 12.5px; color: var(--m-text-2); white-space: pre-wrap; }
+  .m-pm-switch { display: inline-flex; gap: 4px; padding: 3px; border-radius: 10px; background: var(--m-surface); align-self: flex-start; }
+  .m-pm-switch button { font: inherit; font-size: 13px; padding: 5px 12px; border: 0; border-radius: 8px; background: none; color: var(--m-text-2); cursor: pointer; }
+  .m-pm-switch button[aria-pressed="true"] { background: var(--m-field); color: var(--m-ink); box-shadow: var(--m-card-shadow); }
+  .m-pm-wire { font-family: var(--m-mono); font-size: 12.5px; color: var(--m-text-2); overflow-wrap: anywhere; }
+  .m-pm-body { max-height: 420px; overflow: auto; margin: 0; font-family: var(--m-mono); font-size: 12px; line-height: 1.55; color: var(--m-ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .m-pm-kv { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+  .m-pm-kv th, .m-pm-kv td { text-align: left; padding: 4px 10px 4px 0; border-top: 1px solid var(--m-line); vertical-align: top; overflow-wrap: anywhere; }
+  .m-pm-kv th { font-weight: 600; color: var(--m-text-2); white-space: nowrap; }
+  .m-pm-kv tr.m-pm-unset td { color: var(--m-text-3); }
+  .m-pm-fold > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--m-text-3); }
+  .m-pm-runline { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .m-pm-runline label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--m-text-2); }
+  .m-pm-runline select.m-input { width: auto; min-width: 220px; }
+  .m-pm-chat { padding: 16px 20px; display: flex; flex-direction: column; gap: 6px; }
+  .m-pm-reach { margin-top: 12px; display: flex; flex-direction: column; gap: 4px; }
+</style>
+<section class="m-page m-pm" data-ka-section="manual.postman" x-data="kaPostman()">
+  <header class="m-head">
+    <div class="m-head-text">
+      <span class="m-eyebrow">Postman collection</span>
+      <h1 class="m-title" th:text="title">Acme Orders</h1>
+      <p th:if="file" class="m-pm-path" th:text="file">postman/orders.postman_collection.json</p>
+    </div>
+    <div class="m-head-end">
+      <a class="m-link" href="/manual/tests">All tests</a>
+      <a class="m-link" href="/manual/runs">Runs</a>
+    </div>
+  </header>
+
+  <div th:if="found" class="m-pm-meta">
+    <span class="m-pm-meta-item" data-m-live-run>
+      <th:block th:if="run"><span th:class="'m-dot ' + run.dot" x-show="!running"></span><span x-show="!running" th:text="run.text">Passed</span></th:block>
+      <th:block th:unless="run"><span class="m-dot m-dot--notrun" x-show="!running"></span><span x-show="!running" th:text="runNote ? runNote : 'Not run yet. Run a request, a folder or the whole collection to see each result.'">Not run yet.</span></th:block>
+      <span class="m-dot m-dot--inflight" x-show="running" x-cloak></span><span x-show="running" x-cloak x-text="progress">Running…</span>
+      <a th:if="run" class="m-link" th:href="run.report">Open run report</a>
+    </span>
+    <label th:if="switchable" class="m-pm-meta-item m-pm-env">Environment
+      <select class="m-input" aria-label="Environment" disabled="disabled" :disabled="running || switching" @change="switchEnv($el.value)">
+        <option th:unless="envListed" value="" disabled="disabled" selected="selected" th:text="env">default</option>
+        <option th:each="x: envs" th:value="x.name ? x.name : ''" th:text="x.name ? x.name : 'default'" th:attr="'selected': x.current ? 'selected' : null">qa</option>
+      </select>
+    </label>
+    <span th:unless="switchable" class="m-pm-meta-item">Environment <b th:text="env">default</b></span>
+  </div>
+  <p th:if="found" class="m-pm-said m-pm-err" role="alert" x-show="err" x-cloak style="margin-top: 10px"><span class="m-dot m-dot--xs m-dot--failed"></span><span x-text="err"></span></p>
+  <div th:if="unreached" class="m-pm-reach" data-m-unreached x-show="!running">
+    <p class="m-pm-said m-pm-err"><span class="m-dot m-dot--xs m-dot--failed"></span><span th:text="unreached.text">Couldn’t reach localhost:8080 — nothing answered.</span></p>
+    <p class="m-pm-note" th:text="unreached.next">baseUrl comes from the collection.</p>
+  </div>
+
+  <div th:if="missing" class="m-section">
+    <div class="m-empty">
+      <div class="m-empty-title">No Postman collection at this path</div>
+      <div class="m-empty-sub">It may have been renamed or deleted. <a href="/manual/tests">See every test</a></div>
+    </div>
+  </div>
+  <div th:if="notCollection" class="m-section">
+    <div class="m-empty">
+      <div class="m-empty-title">This file is not a Postman collection</div>
+      <div class="m-empty-sub">A collection is the JSON file Postman exports, with the requests inside. <a href="/manual/tests">See every test</a></div>
+    </div>
+  </div>
+
+  <div th:if="found" class="m-pm-grid">
+    <nav class="m-card m-pm-tree" data-ka-section="manual.postman.tree" aria-label="Requests in this collection">
+      <a class="m-pm-node m-pm-folder" th:href="root.href" th:attr="'aria-current': root.current, 'data-m-node': ''" style="padding-left: 14px">
+        <span th:class="root.dot ? 'm-dot m-dot--sm ' + root.dot : 'm-dot m-dot--sm m-dot--blank'" th:attr="'title': root.state"></span>
+        <span class="m-pm-node-name">Whole collection</span><span></span>
+      </a>
+      <a th:each="n: tree" th:class="n.folder ? 'm-pm-node m-pm-folder' : 'm-pm-node'" th:href="n.href" th:attr="'aria-current': n.current, 'data-m-node': n.item, 'style': n.pad">
+        <span th:class="n.dot ? 'm-dot m-dot--sm ' + n.dot : 'm-dot m-dot--sm m-dot--blank'" th:attr="'title': n.state"></span>
+        <span class="m-pm-node-name"><span th:if="n.method" class="m-pm-method" th:text="n.method">GET</span><span th:text="n.name">Login</span></span>
+        <span class="m-pm-rowdots"><span th:each="d: n.rows" th:class="'m-dot m-dot--xs ' + d.dot" th:attr="'title': d.title"></span><span th:if="n.more" class="m-pm-more" th:text="n.more">4 inside</span></span>
+      </a>
+    </nav>
+
+    <div class="m-pm-main">
+      <p th:if="unreadable" class="m-pm-note" th:text="unreadable">This file can only be read here.</p>
+      <p th:if="itemGone" class="m-pm-note" th:text="itemGone">That request is no longer in the collection.</p>
+
+      <div class="m-card m-pm-save" data-m-savebar x-show="count() || said || saved()" x-cloak aria-live="polite">
+        <div class="m-pm-save-line" x-show="count()">
+          <span class="m-pm-save-words" x-text="count() == 1 ? '1 unsaved change' : count() + ' unsaved changes'"></span>
+          <button type="button" class="m-btn m-btn--ghost" disabled="disabled" :disabled="!!busy" @click="check()">Check changes</button>
+          <button type="button" class="m-quiet" disabled="disabled" :disabled="!!busy" @click="discard()">Discard</button>
+          <button type="button" class="m-btn" data-m-save disabled="disabled" :disabled="!!busy" @click="save()"><span x-text="busy == 'save' ? 'Saving…' : 'Save'">Save</span></button>
+        </div>
+        <p class="m-pm-said" x-show="said" :class="{ 'm-pm-err': saidBad }">
+          <span class="m-dot m-dot--xs" :class="saidBad ? 'm-dot--failed' : 'm-dot--notrun'"></span><span x-text="said"></span>
+          <button type="button" class="m-link" x-show="reloadable" @click="location.reload()">Reload</button>
+        </p>
+        <template x-if="preview">
+          <p class="m-pm-said" data-m-preview><span>This save changes:</span><template x-for="p in preview.paths"><span hidden :data-m-path="p"></span></template><template x-for="w in preview.words"><span class="m-pm-chip" x-text="w"></span></template></p>
+        </template>
+        <template x-if="saved() &amp;&amp; !count()">
+          <p class="m-pm-said" data-m-saved>
+            <span class="m-dot m-dot--xs m-dot--passed"></span><span x-text="saved().did == 'undone' ? 'Your last save' + (saved().item == s.item ? '' : ' to ' + saved().name) + ' was undone.' : 'Saved' + (saved().item == s.item ? '' : ' ' + saved().name) + '. Changed:'"></span>
+            <template x-for="p in (saved().did == 'undone' ? [] : saved().paths)"><span hidden :data-m-path="p"></span></template>
+            <template x-for="w in (saved().did == 'undone' ? [] : saved().changes || said_(saved().paths))"><span class="m-pm-chip" x-text="w"></span></template>
+            <button type="button" class="m-link" data-m-undo disabled="disabled" :disabled="!!busy" @click="undo()" x-text="saved().did == 'undone' ? 'Redo' : 'Undo'">Undo</button>
+          </p>
+        </template>
+      </div>
+
+      <form data-m-pm-form @submit.prevent="" autocomplete="off">
+      <div class="m-card m-pm-card" data-ka-section="manual.postman.request">
+        <div class="m-pm-card-head">
+          <div>
+            <span class="m-eyebrow" th:text="ed.eyebrow">Request</span>
+            <div class="m-pm-card-title" th:text="ed.title">Create order</div>
+          </div>
+          <span class="m-pm-chip" title="How this request signs in" th:text="ed.authNow">Bearer token, from the collection</span>
+        </div>
+
+        <div class="m-pm-part">
+          <span class="m-pm-part-title">Name</span>
+          <input th:unless="ed.nameWhy" class="m-input" aria-label="Name" data-m-f="name" th:value="ed.name" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+          <th:block th:if="ed.nameWhy"><p class="m-pm-note m-pm-plain" th:text="ed.name">Orders</p></th:block>
+          <span class="m-pm-part-title">Description</span>
+          <textarea th:unless="ed.descriptionWhy" class="m-input m-pm-desc" rows="2" aria-label="Description" data-m-f="description" th:text="ed.description" disabled="disabled" :disabled="!!busy" @input="edit($el)"></textarea>
+          <th:block th:if="ed.descriptionWhy"><p class="m-pm-note m-pm-plain" th:text="ed.description ? ed.description : 'No description.'">Login → create → pay → get.</p><p class="m-pm-why" th:text="ed.descriptionWhy">Folder settings are read-only.</p></th:block>
+        </div>
+
+        <th:block th:if="ed.request">
+          <div class="m-pm-part">
+            <span class="m-pm-part-title">Address</span>
+            <div class="m-pm-line" th:unless="ed.urlWhy">
+              <select th:unless="ed.methodWhy" class="m-input m-input--mono" aria-label="Method" data-m-f="method" disabled="disabled" :disabled="!!busy" @change="edit($el)">
+                <option th:each="m: ed.methods" th:value="m" th:text="m" th:attr="'selected': m == ed.method ? 'selected' : null">GET</option>
+              </select>
+              <input class="m-input m-input--mono m-pm-url" aria-label="Address" data-m-f="url" th:value="ed.url" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+            </div>
+            <th:block th:if="ed.urlWhy"><p class="m-pm-ro" th:text="ed.method + ' ' + ed.url">GET {{baseUrl}}/x</p><p class="m-pm-why" th:text="ed.urlWhy">Read-only.</p></th:block>
+          </div>
+
+          <div class="m-pm-part" data-m-rows-of="query">
+            <span class="m-pm-part-title">Query parameters</span>
+            <p th:if="!ed.query.length" class="m-pm-note" x-show="!added.query.length">None.</p>
+            <th:block th:if="ed.urlWhy"><table class="m-pm-kv"><tbody><tr th:each="r: ed.query"><th th:text="r.key">page</th><td th:text="r.value">1</td></tr></tbody></table></th:block>
+            <table th:unless="ed.urlWhy" class="m-pm-table">
+              <tbody>
+                <tr th:each="r: ed.query" th:attr="'data-m-rowkey': 'query:' + r.row" :class="{ 'm-pm-gone': gone($el) }">
+                  <td class="m-pm-on"><input type="checkbox" class="m-checkbox" aria-label="Send this parameter" data-m-rows="query" th:attr="'data-m-row': r.row, 'data-m-cell': 'disabled', 'checked': r.on ? 'checked' : null" disabled="disabled" :disabled="!!busy" @change="edit($el)"/></td>
+                  <td><input class="m-input m-input--mono" aria-label="Parameter name" data-m-rows="query" th:attr="'data-m-row': r.row, 'data-m-cell': 'key'" th:value="r.key" disabled="disabled" :disabled="!!busy" @input="edit($el)"/></td>
+                  <td><input class="m-input m-input--mono" aria-label="Parameter value" data-m-rows="query" th:attr="'data-m-row': r.row, 'data-m-cell': 'value'" th:value="r.value" disabled="disabled" :disabled="!!busy" @input="edit($el)"/></td>
+                  <td class="m-pm-x"><button type="button" class="m-quiet" disabled="disabled" :disabled="!!busy" @click="drop($el)" x-text="gone($el) ? 'Keep' : 'Remove'">Remove</button></td>
+                </tr>
+                <template x-for="(r, i) in added.query"><tr>
+                  <td class="m-pm-on"></td>
+                  <td><input class="m-input m-input--mono" aria-label="New parameter name" x-model="r.key"/></td>
+                  <td><input class="m-input m-input--mono" aria-label="New parameter value" x-model="r.value"/></td>
+                  <td class="m-pm-x"><button type="button" class="m-quiet" @click="added.query.splice(i, 1)">Remove</button></td>
+                </tr></template>
+              </tbody>
+            </table>
+            <button th:unless="ed.urlWhy" type="button" class="m-link m-pm-add" disabled="disabled" :disabled="!!busy" @click="added.query.push({ key: '', value: '' })">Add a parameter</button>
+          </div>
+
+          <div th:if="ed.vars.length" class="m-pm-part" data-m-rows-of="variable">
+            <span class="m-pm-part-title">Path values</span>
+            <p class="m-pm-why">Taken from the <span class="m-mono">:name</span> parts of the address.</p>
+            <table class="m-pm-table">
+              <tbody>
+                <tr th:each="r: ed.vars">
+                  <td style="width: 30%"><span class="m-mono" th:text="':' + r.key">:id</span></td>
+                  <td th:if="ed.urlWhy" class="m-mono" th:text="r.value">42</td>
+                  <td th:unless="ed.urlWhy"><input class="m-input m-input--mono" th:attr="'aria-label': 'Value of ' + r.key, 'data-m-row': r.row, 'data-m-key': r.key" data-m-rows="variable" data-m-cell="value" th:value="r.value" disabled="disabled" :disabled="!!busy" @input="edit($el)"/></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="m-pm-part" data-m-rows-of="header">
+            <span class="m-pm-part-title">Headers</span>
+            <p th:if="!ed.headers.length" class="m-pm-note" x-show="!added.header.length">None.</p>
+            <th:block th:unless="ed.headerWhy">
+              <table class="m-pm-table">
+                <tbody>
+                  <tr th:each="r: ed.headers" th:attr="'data-m-rowkey': 'header:' + r.row" :class="{ 'm-pm-gone': gone($el) }">
+                    <td class="m-pm-on"><input type="checkbox" class="m-checkbox" aria-label="Send this header" data-m-rows="header" th:attr="'data-m-row': r.row, 'data-m-cell': 'disabled', 'checked': r.on ? 'checked' : null" disabled="disabled" :disabled="!!busy" @change="edit($el)"/></td>
+                    <td><input class="m-input m-input--mono" aria-label="Header name" data-m-rows="header" th:attr="'data-m-row': r.row, 'data-m-cell': 'key'" th:value="r.key" disabled="disabled" :disabled="!!busy" @input="edit($el)"/></td>
+                    <td><input class="m-input m-input--mono" aria-label="Header value" data-m-rows="header" th:attr="'data-m-row': r.row, 'data-m-cell': 'value'" th:value="r.value" disabled="disabled" :disabled="!!busy" @input="edit($el)"/></td>
+                    <td class="m-pm-x"><button type="button" class="m-quiet" disabled="disabled" :disabled="!!busy" @click="drop($el)" x-text="gone($el) ? 'Keep' : 'Remove'">Remove</button></td>
+                  </tr>
+                  <template x-for="(r, i) in added.header"><tr>
+                    <td class="m-pm-on"></td>
+                    <td><input class="m-input m-input--mono" aria-label="New header name" x-model="r.key"/></td>
+                    <td><input class="m-input m-input--mono" aria-label="New header value" x-model="r.value"/></td>
+                    <td class="m-pm-x"><button type="button" class="m-quiet" @click="added.header.splice(i, 1)">Remove</button></td>
+                  </tr></template>
+                </tbody>
+              </table>
+              <button type="button" class="m-link m-pm-add" disabled="disabled" :disabled="!!busy" @click="added.header.push({ key: '', value: '' })">Add a header</button>
+            </th:block>
+            <th:block th:if="ed.headerWhy">
+              <table class="m-pm-kv"><tbody><tr th:each="r: ed.headers"><th th:text="r.key">Content-Type</th><td th:text="r.value">application/json</td></tr></tbody></table>
+              <p class="m-pm-why" th:text="ed.headerWhy">It holds a stored secret.</p>
+            </th:block>
+          </div>
+
+          <div class="m-pm-part" data-m-body>
+            <span class="m-pm-part-title">Body</span>
+            <p class="m-pm-why" th:text="ed.modeWords">Text (json)</p>
+            <th:block th:unless="ed.bodyWhy">
+              <textarea th:if="ed.raw != null" class="m-input m-pm-code" rows="8" aria-label="Body" data-m-body-part="raw" th:text="ed.raw" disabled="disabled" :disabled="!!busy" @input="edit($el)"></textarea>
+              <table th:if="ed.form" class="m-pm-table">
+                <tbody>
+                  <tr th:each="r: ed.form" th:attr="'data-m-rowkey': r.kind + ':' + r.row" :class="{ 'm-pm-gone': gone($el) }">
+                    <td class="m-pm-on"><input type="checkbox" class="m-checkbox" aria-label="Send this field" th:attr="'data-m-rows': r.kind, 'data-m-row': r.row, 'data-m-cell': 'disabled', 'checked': r.on ? 'checked' : null" disabled="disabled" :disabled="!!busy" @change="edit($el)"/></td>
+                    <td><input class="m-input m-input--mono" aria-label="Field name" th:attr="'data-m-rows': r.kind, 'data-m-row': r.row, 'data-m-cell': 'key'" th:value="r.key" disabled="disabled" :disabled="!!busy" @input="edit($el)"/></td>
+                    <td th:if="r.file == null"><input class="m-input m-input--mono" aria-label="Field value" th:attr="'data-m-rows': r.kind, 'data-m-row': r.row, 'data-m-cell': 'value'" th:value="r.value" disabled="disabled" :disabled="!!busy" @input="edit($el)"/></td>
+                    <td th:if="r.file != null"><span class="m-pm-ro" th:text="'Sends the file ' + r.file">Sends the file a.png</span></td>
+                    <td class="m-pm-x"><button type="button" class="m-quiet" disabled="disabled" :disabled="!!busy" @click="drop($el)" x-text="gone($el) ? 'Keep' : 'Remove'">Remove</button></td>
+                  </tr>
+                </tbody>
+              </table>
+              <th:block th:if="ed.gql">
+                <textarea class="m-input m-pm-code" rows="8" aria-label="GraphQL query" data-m-body-part="graphql.query" th:text="ed.gql.query" disabled="disabled" :disabled="!!busy" @input="edit($el)"></textarea>
+                <span class="m-pm-part-title">Variables</span>
+                <textarea class="m-input m-pm-code" rows="4" aria-label="GraphQL variables" data-m-body-part="graphql.variables" th:text="ed.gql.variables" disabled="disabled" :disabled="!!busy" @input="edit($el)"></textarea>
+              </th:block>
+              <input th:if="ed.fileSrc != null" class="m-input m-input--mono" aria-label="File to send" data-m-body-part="file" th:value="ed.fileSrc" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+              <p th:unless="ed.mode" class="m-pm-note">This request sends no body.</p>
+            </th:block>
+            <th:block th:if="ed.bodyWhy"><p th:if="ed.raw != null" class="m-pm-ro" th:text="ed.raw">{}</p><p class="m-pm-why" th:text="ed.bodyWhy">Read-only.</p></th:block>
+          </div>
+        </th:block>
+
+        <div class="m-pm-part" data-m-auth th:attr="'data-m-auth-was': ed.authType">
+          <span class="m-pm-part-title">Sign-in</span>
+          <th:block th:unless="ed.authWhy">
+            <select class="m-input" aria-label="Sign-in type" data-m-auth-part="type" disabled="disabled" :disabled="!!busy" x-model="authType" @change="edit($el)">
+              <option th:each="a: ed.authTypes" th:value="a.id" th:text="a.label" th:attr="'selected': a.id == ed.authType ? 'selected' : null">Bearer token</option>
+            </select>
+            <div class="m-pm-line" x-show="authType == 'bearer'" th:attr="'style': ed.authType == 'bearer' ? null : 'display: none'">
+              <input class="m-input m-input--mono m-pm-url" aria-label="Token" placeholder="Token" data-m-auth-part="token" th:value="ed.authFields.token" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+            </div>
+            <div class="m-pm-line" x-show="authType == 'basic'" th:attr="'style': ed.authType == 'basic' ? null : 'display: none'">
+              <input class="m-input m-input--mono" aria-label="Username" placeholder="Username" data-m-auth-part="username" th:value="ed.authFields.username" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+              <input class="m-input m-input--mono" aria-label="Password" placeholder="Password" data-m-auth-part="password" th:value="ed.authFields.password" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+            </div>
+            <div class="m-pm-line" x-show="authType == 'apikey'" th:attr="'style': ed.authType == 'apikey' ? null : 'display: none'">
+              <input class="m-input m-input--mono" aria-label="Key name" placeholder="Key name" data-m-auth-part="key" th:value="ed.authFields.key" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+              <input class="m-input m-input--mono" aria-label="Key value" placeholder="Key value" data-m-auth-part="value" th:value="ed.authFields.value" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+              <select class="m-input" aria-label="Where the key goes" data-m-auth-part="in" disabled="disabled" :disabled="!!busy" @change="edit($el)">
+                <option value="header" th:attr="'selected': ed.authFields.in == 'header' ? 'selected' : null">In a header</option>
+                <option value="query" th:attr="'selected': ed.authFields.in == 'query' ? 'selected' : null">In the address</option>
+              </select>
+            </div>
+            <div class="m-pm-line" x-show="authType == 'oauth2'" th:attr="'style': ed.authType == 'oauth2' ? null : 'display: none'">
+              <input class="m-input m-input--mono m-pm-url" aria-label="Token address" placeholder="Token address" data-m-auth-part="accessTokenUrl" th:value="ed.authFields.accessTokenUrl" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+              <input class="m-input m-input--mono" aria-label="Client ID" placeholder="Client ID" data-m-auth-part="clientId" th:value="ed.authFields.clientId" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+              <input class="m-input m-input--mono" aria-label="Client secret" placeholder="Client secret" data-m-auth-part="clientSecret" th:value="ed.authFields.clientSecret" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+              <input class="m-input m-input--mono" aria-label="Scope" placeholder="Scope" data-m-auth-part="scope" th:value="ed.authFields.scope" disabled="disabled" :disabled="!!busy" @input="edit($el)"/>
+            </div>
+          </th:block>
+          <th:block th:if="ed.authWhy"><p class="m-pm-note m-pm-plain" th:text="ed.authNow">Bearer token, from the collection</p>
+            <p th:if="ed.authWhy != ed.descriptionWhy" class="m-pm-why" th:text="ed.authWhy">Read-only.</p></th:block>
+        </div>
+
+        <div th:if="ed.variables" class="m-pm-part">
+          <span class="m-pm-part-title">Collection variables</span>
+          <table class="m-pm-kv"><tbody><tr th:each="r: ed.variables"><th th:text="r.key">baseUrl</th><td th:text="r.value">http://localhost:8080</td></tr></tbody></table>
+          <p th:if="ed.variablesWhy &amp;&amp; ed.variablesWhy != ed.descriptionWhy" class="m-pm-why" th:text="ed.variablesWhy">Read-only.</p>
+        </div>
+        <p th:each="w: ed.notes" class="m-pm-why" th:text="w">Saved example responses are kept as they are.</p>
+      </div>
+
+      <div class="m-card m-pm-card" data-ka-section="manual.postman.scripts" style="margin-top: 18px">
+        <div class="m-pm-card-head"><div class="m-pm-card-title">Scripts</div></div>
+        <div class="m-pm-part" data-m-listen-of="prerequest">
+          <span class="m-pm-part-title">Before the request</span>
+          <p th:if="!ed.pre.length" class="m-pm-note" x-show="!added.prerequest.length"><span th:text="ed.request ? 'No script runs before this request.' : 'No script runs before each request in ' + ed.around + '.'">No script runs before this request.</span></p>
+          <div th:each="e: ed.pre" class="m-pm-script" th:attr="'data-m-rowkey': 'script:prerequest:' + e.n" :class="{ 'm-pm-gone': gone($el) }">
+            <div class="m-pm-script-head"><span th:text="ed.pre.length > 1 ? 'Script ' + (e.n * 1 + 1) : 'Script'">Script</span>
+              <button th:unless="e.why" type="button" class="m-quiet" disabled="disabled" :disabled="!!busy" @click="drop($el)" x-text="gone($el) ? 'Keep' : 'Delete'">Delete</button></div>
+            <textarea th:unless="e.why" class="m-input m-pm-code" aria-label="Script before the request" data-m-listen="prerequest" th:attr="'data-m-n': e.n, 'rows': e.lines" th:text="e.text" disabled="disabled" :disabled="!!busy" @input="edit($el)"></textarea>
+            <th:block th:if="e.why"><pre class="m-pm-ro" th:text="e.text">script</pre><p class="m-pm-why" th:text="e.why">Read-only.</p></th:block>
+          </div>
+          <template x-for="(a, i) in added.prerequest"><div class="m-pm-script">
+            <div class="m-pm-script-head"><span>New script</span><button type="button" class="m-quiet" @click="added.prerequest.splice(i, 1)">Delete</button></div>
+            <textarea class="m-input m-pm-code" rows="5" aria-label="New script before the request" x-model="a.text"></textarea>
+          </div></template>
+          <button th:unless="unreadable" type="button" class="m-link m-pm-add" disabled="disabled" :disabled="!!busy" @click="added.prerequest.push({ text: '' })">Add a script before the request</button>
+        </div>
+        <div class="m-pm-part" data-m-listen-of="test">
+          <span class="m-pm-part-title">Tests</span>
+          <p th:if="!ed.tests.length" class="m-pm-note" x-show="!added.test.length"><span th:text="ed.request ? 'No tests: a run of this request checks nothing.' : 'No tests run after each request in ' + ed.around + '.'">No tests.</span></p>
+          <div th:each="e: ed.tests" class="m-pm-script" th:attr="'data-m-rowkey': 'script:test:' + e.n" :class="{ 'm-pm-gone': gone($el) }">
+            <div class="m-pm-script-head"><span th:text="ed.tests.length > 1 ? 'Script ' + (e.n * 1 + 1) : 'Script'">Script</span>
+              <button th:unless="e.why" type="button" class="m-quiet" disabled="disabled" :disabled="!!busy" @click="drop($el)" x-text="gone($el) ? 'Keep' : 'Delete'">Delete</button></div>
+            <textarea th:unless="e.why" class="m-input m-pm-code" aria-label="Tests script" data-m-listen="test" th:attr="'data-m-n': e.n, 'rows': e.lines" th:text="e.text" disabled="disabled" :disabled="!!busy" @input="edit($el)"></textarea>
+            <th:block th:if="e.why"><pre class="m-pm-ro" th:text="e.text">script</pre><p class="m-pm-why" th:text="e.why">Read-only.</p></th:block>
+          </div>
+          <template x-for="(a, i) in added.test"><div class="m-pm-script">
+            <div class="m-pm-script-head"><span>New script</span><button type="button" class="m-quiet" @click="added.test.splice(i, 1)">Delete</button></div>
+            <textarea class="m-input m-pm-code" rows="5" aria-label="New tests script" x-model="a.text"></textarea>
+          </div></template>
+          <button th:unless="unreadable" type="button" class="m-link m-pm-add" disabled="disabled" :disabled="!!busy" @click="added.test.push({ text: '' })">Add a tests script</button>
+        </div>
+      </div>
+      </form>
+
+      <div class="m-card m-pm-card" data-ka-section="manual.postman.runner">
+        <div class="m-pm-card-head"><div class="m-pm-card-title">Run</div></div>
+        <div class="m-pm-runline">
+          <label>Data file (each row is one pass)
+            <select class="m-input" aria-label="Data file" x-ref="data" disabled="disabled" :disabled="running">
+              <option value="">No data file — one pass</option>
+              <option th:each="d: dataFiles" th:value="d.path" th:text="d.path" th:attr="'selected': d.selected">postman/orders.csv</option>
+            </select>
+          </label>
+          <button th:each="t: targets" type="button" th:class="t.main ? 'm-btn' : 'm-btn m-btn--ghost'" th:attr="'data-m-pm-run': t.item == '' ? '/' : t.item" th:text="t.label" disabled="disabled" :disabled="running" @click="run($el)">Run this folder</button>
+        </div>
+        <div th:if="newData" class="m-pm-part" data-m-data-new>
+          <p class="m-pm-line">
+            <button type="button" class="m-link" data-m-data-write disabled="disabled" :disabled="running || !!busy" @click="dataOpen = !dataOpen">New data file</button>
+            <button type="button" class="m-link" data-m-data-upload disabled="disabled" :disabled="running || !!busy" @click="$refs.dataUpload.click()">Upload a data file</button>
+            <input type="file" accept=".csv,.json,text/csv,application/json" hidden x-ref="dataUpload" @change="uploadData($el)"/>
+          </p>
+          <div class="m-pm-part" x-show="dataOpen" x-cloak>
+            <label class="m-pm-line"><span th:text="'Saved next to the collection, in ' + newData.dir + ', as'">Saved in postman/ as</span>
+              <input class="m-input m-input--mono" aria-label="Data file name" x-ref="dataName" th:value="newData.name"/></label>
+            <textarea class="m-input m-pm-code" rows="6" aria-label="Data file rows" x-ref="dataText" th:text="newData.seed"></textarea>
+            <p class="m-pm-why">The first line names the columns; each column fills the {{variable}} of the same name. Add one line per pass, with the values separated by commas.</p>
+            <button type="button" class="m-btn" data-m-data-save style="align-self: flex-start" :disabled="!!busy" @click="saveData()"><span x-text="busy == 'data' ? 'Saving…' : 'Save the data file'">Save the data file</span></button>
+          </div>
+          <p class="m-pm-said" data-m-data-said x-show="dataSaid" x-cloak aria-live="polite"><span class="m-dot m-dot--xs" :class="dataBad ? 'm-dot--failed' : 'm-dot--passed'"></span><span x-text="dataSaid"></span></p>
+        </div>
+        <p class="m-pm-said" data-m-progress x-show="running" x-cloak aria-live="polite"><span class="m-dot m-dot--xs m-dot--inflight"></span><span x-text="progress">Running…</span></p>
+        <p class="m-pm-why" th:text="'Runs against the ' + env + ' environment. Each request runs its tests; a request with no tests reads as not checked.'">Runs against the default environment.</p>
+        <th:block th:if="rows.length">
+          <p class="m-pm-note" th:text="run.data ? 'The last run used ' + run.data + ', one pass per row:' : 'The last run:'">The last run:</p>
+          <div class="m-pm-rows">
+            <a th:each="r: rows" class="m-pm-rowlink" th:href="r.href" th:attr="'aria-current': r.current, 'data-m-run-row': r.row">
+              <span th:class="'m-dot m-dot--sm ' + r.dot"></span><span th:text="r.label">Row 1</span><span class="m-pm-more" th:text="r.state">passed</span>
+            </a>
+            <a th:if="allRowsHref" class="m-link" th:href="allRowsHref">Show every row</a>
+          </div>
+        </th:block>
+      </div>
+
+      <div class="m-card m-pm-card" data-ka-section="manual.postman.results">
+        <div class="m-pm-card-head"><div class="m-pm-card-title">Results</div></div>
+        <p th:unless="run" class="m-pm-note">Run it to see what each request sent, what came back, and which tests passed.</p>
+        <p th:if="run &amp;&amp; run.stale" class="m-pm-note" th:text="run.text">The collection changed since the last run.</p>
+        <p th:if="resultsNote" class="m-pm-note" th:text="resultsNote">Showing the first 120.</p>
+        <div th:each="g: results" class="m-pm-group" th:attr="'data-m-result-row': g.row">
+          <div th:if="g.label" class="m-pm-group-head"><span th:class="'m-dot m-dot--xs ' + g.dot"></span><span th:text="g.label + ' · ' + g.state">Row 1 · passed</span></div>
+          <details th:each="x: g.items" class="m-pm-ex" th:attr="'open': x.open, 'data-m-result': x.key" x-data="{ side: 'got' }">
+            <summary><span th:class="'m-dot ' + x.dot"></span><span class="m-pm-ex-name" th:text="x.name">Login</span><span class="m-pm-ex-state" th:text="x.got ? x.state + ' · ' + x.got.status : x.state">passed · 200 OK</span></summary>
+            <div class="m-pm-ex-body">
+              <p th:if="x.error" class="m-pm-note" th:text="x.error">Could not connect.</p>
+              <p th:if="x.reason" class="m-pm-note" th:text="x.reason">It has no tests.</p>
+              <ul th:if="x.tests.length" class="m-pm-tests">
+                <li th:each="t: x.tests"><span th:class="'m-dot m-dot--xs ' + t.dot"></span><span><span th:text="t.name">login succeeds</span> <span class="m-pm-more" th:text="t.state">passed</span><span th:if="t.message" class="m-pm-msg" th:text="t.message">expected 200</span></span></li>
+              </ul>
+              <div class="m-pm-switch" role="group" aria-label="Show">
+                <button type="button" :aria-pressed="side == 'got' ? 'true' : 'false'" @click="side = 'got'" aria-pressed="true">What came back</button>
+                <button type="button" :aria-pressed="side == 'sent' ? 'true' : 'false'" @click="side = 'sent'" aria-pressed="false">What was sent</button>
+              </div>
+              <div class="m-pm-part" x-show="side == 'got'" data-m-side="got">
+                <th:block th:if="x.got">
+                  <div class="m-pm-wire" th:text="x.got.status + (x.got.ms ? ' · ' + x.got.ms : '')">200 OK · 12 ms</div>
+                  <pre th:if="x.got.body" class="m-pm-body" th:text="x.got.body">{}</pre>
+                  <p th:unless="x.got.body" class="m-pm-note">No body.</p>
+                  <details th:if="x.got.headers.length" class="m-pm-fold"><summary th:text="'Headers (' + x.got.headers.length + ')'">Headers</summary>
+                    <table class="m-pm-kv"><tbody><tr th:each="h: x.got.headers"><th th:text="h.name">Content-Type</th><td th:text="h.value">application/json</td></tr></tbody></table>
+                  </details>
+                </th:block>
+                <p th:unless="x.got" class="m-pm-note">Nothing came back.</p>
+              </div>
+              <div class="m-pm-part" x-show="side == 'sent'" data-m-side="sent" style="display: none">
+                <th:block th:if="x.sent">
+                  <div class="m-pm-wire" th:text="x.sent.method + ' ' + x.sent.url">POST http://…</div>
+                  <pre th:if="x.sent.body" class="m-pm-body" th:text="x.sent.body">{}</pre>
+                  <p th:unless="x.sent.body" class="m-pm-note">No body.</p>
+                  <details th:if="x.sent.headers.length" class="m-pm-fold"><summary th:text="'Headers (' + x.sent.headers.length + ')'">Headers</summary>
+                    <table class="m-pm-kv"><tbody><tr th:each="h: x.sent.headers"><th th:text="h.name">Authorization</th><td th:text="h.value">‹masked›</td></tr></tbody></table>
+                  </details>
+                </th:block>
+                <p th:unless="x.sent" class="m-pm-note">Nothing was sent.</p>
+                <details th:if="x.detail" class="m-pm-fold" data-m-detail><summary>Details for a developer</summary><pre class="m-pm-body" th:text="x.detail">java.net.ConnectException</pre></details>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <div class="m-card m-pm-card" data-ka-section="manual.postman.env">
+        <div class="m-pm-card-head"><div class="m-pm-card-title">Variables</div><span class="m-pm-more" th:text="'Values for the ' + envShown + ' environment'">Values for the default environment</span></div>
+        <p th:if="!envRows.length" class="m-pm-note">This collection uses no variables.</p>
+        <table th:if="envRows.length" class="m-pm-kv">
+          <thead><tr><th>Variable</th><th>Comes from</th><th>Value</th></tr></thead>
+          <tbody><tr th:each="v: envRows" th:class="v.unset ? 'm-pm-unset' : null"><td class="m-mono" th:text="v.name">baseUrl</td><td th:text="v.from">Project settings</td><td class="m-mono" th:text="v.value">http://localhost:4444</td></tr></tbody>
+        </table>
+        <p class="m-pm-why">Project settings win over the collection’s own values, and a data file’s row wins over both.</p>
+        <div class="m-pm-part" data-m-env-import>
+          <span class="m-pm-part-title">Bring in a Postman environment</span>
+          <p th:if="!envFiles.length" class="m-pm-note">No Postman environment file is in this project. Export one from Postman and add it to the project to bring its values in.</p>
+          <div th:if="envFiles.length" class="m-pm-runline">
+            <label>Environment file
+              <select class="m-input" aria-label="Environment file" x-ref="envFrom" disabled="disabled" :disabled="!!busy">
+                <option th:each="f: envFiles" th:value="f" th:text="f">postman/dev.postman_environment.json</option>
+              </select>
+            </label>
+            <label>Save it as the environment
+              <input class="m-input" aria-label="Environment name" x-ref="envName" placeholder="default" disabled="disabled" :disabled="!!busy"/>
+            </label>
+            <button type="button" class="m-btn m-btn--ghost" disabled="disabled" :disabled="!!busy" @click="importEnv()">Bring it in</button>
+          </div>
+          <p th:if="envFiles.length" class="m-pm-why">Its values go into the project settings. Passwords, tokens and keys are stored as secrets, never in the file.</p>
+          <p class="m-pm-said" x-show="envSaid" x-cloak :class="{ 'm-pm-err': envBad }"><span class="m-dot m-dot--xs" :class="envBad ? 'm-dot--failed' : 'm-dot--passed'"></span><span x-text="envSaid"></span></p>
+        </div>
+        <th:block th:if="authPreset" th:insert="~{components/auth-preset :: authPreset}" th:with="open: true"></th:block>
+        <p class="m-pm-why">A request that takes its sign-in from the collection uses this one when the collection sets none.</p>
+      </div>
+
+      <aside class="m-card m-pm-chat" data-ka-section="manual.postman.chat">
+        <span class="m-pm-part-title">Assistant</span>
+        <th:block th:if="migrate">
+          <p class="m-pm-note">The assistant can turn these requests into a Karate API test: it runs the test, fixes it until it passes, saves it and suggests the requirements it proves. This collection stays as it is.</p>
+          <button type="button" class="m-btn" data-m-pm-migrate="" th:text="migrate.label" disabled="disabled" :disabled="!!busy || !s.model" @click="migrate()">Migrate this folder to Karate</button>
+          <p th:unless="model" class="m-pm-note">Connect an AI model in Settings to migrate.</p>
+          <p class="m-pm-said" x-show="busy == 'migrate' || migrateSaid" x-cloak :class="{ 'm-pm-err': migrateBad }"><span class="m-dot m-dot--xs" :class="migrateBad ? 'm-dot--failed' : 'm-dot--inflight'"></span><span x-text="migrateSaid || 'Migrating…'"></span></p>
+        </th:block>
+        <p th:unless="migrate" class="m-pm-note">Choose a folder in the list to migrate it to a Karate API test.</p>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<script src="/pub/run-modal.js" ka:nocache="true"></script>
+<script src="/pub/postman.js" ka:nocache="true"></script>
+<script src="/pub/auth-preset.js" ka:nocache="true"></script>

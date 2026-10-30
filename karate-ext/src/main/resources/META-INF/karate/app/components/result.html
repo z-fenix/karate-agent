@@ -1,0 +1,71 @@
+<!--/* An action's result read from its schema (D315(e)): the view as a card of labelled fields, a
+     refusal as the reason's wording with its code, and the exact exchange folded beneath. Params: r
+     (app.act's answer), full (the whole view as a card; otherwise only what the step changed, the
+     page's summary card holding the rest). The value fragment renders one value c by its kind: an object a nested card,
+     a table, a list, or text with its format — recursively. */-->
+<div th:fragment="result" data-result th:attr="'data-outcome': r.outcome"
+     class="rounded-xl border p-5 bg-white dark:bg-ink-900"
+     th:classappend="r.outcome == 'applied' ? 'border-emerald-200 dark:border-emerald-800' : 'border-amber-200 dark:border-amber-800'">
+  <div class="flex items-center gap-2 flex-wrap">
+    <span data-outcome-text th:attr="'title': r.outcome" class="px-2 py-0.5 rounded-full text-[11px] font-semibold"
+          th:classappend="r.outcome == 'applied' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-300'"
+          th:text="r.outcomeText">Done</span>
+    <span class="text-sm font-semibold" th:text="r.title">Action</span>
+    <span th:if="r.key" class="text-xs text-ink-500 font-mono" th:text="r.key"></span>
+  </div>
+  <p th:if="r.outcome == 'refused'" data-refusal class="mt-2 text-sm text-amber-800 dark:text-amber-200">
+    <span th:text="r.reasonText">reason</span>
+    <code class="ml-2 px-1.5 py-0.5 rounded bg-ink-100 dark:bg-ink-800 text-[11px] text-ink-600 dark:text-ink-300" th:text="r.code" data-code>code</code>
+  </p>
+  <p th:if="r.message" class="mt-2 text-sm text-ink-600 dark:text-ink-300" th:text="r.message"></p>
+  <dl th:if="r.changes &amp;&amp; !full" data-changes class="mt-3 space-y-1.5">
+    <p th:if="r.changes.length == 0" class="text-sm text-ink-500">Nothing changed.</p>
+    <div th:each="ch : r.changes" th:attr="'data-change': ch.field" class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+      <dt class="w-36 text-[11px] font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400" th:text="ch.label">Field</dt>
+      <dd class="flex items-baseline gap-2">
+        <span class="text-ink-400 line-through" th:insert="~{components/result :: value}" th:with="c: ch.before"></span>
+        <span class="text-ink-400">→</span>
+        <span class="px-1.5 rounded bg-amber-50 dark:bg-amber-400/10 font-semibold" th:insert="~{components/result :: value}" th:with="c: ch.after"></span>
+      </dd>
+    </div>
+  </dl>
+  <dl th:if="r.card &amp;&amp; full" class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3">
+    <div th:each="c : r.card">
+      <dt class="text-[11px] font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400" th:text="c.label">Field</dt>
+      <dd class="text-sm" th:insert="~{components/result :: value}" th:with="c: c"></dd>
+    </div>
+  </dl>
+  <div th:if="r.value" class="mt-3 overflow-x-auto" th:insert="~{components/result :: value}" th:with="c: r.value"></div>
+  <th:block th:if="r.exchange" th:insert="~{components/exchange :: exchange}" th:with="x: r.exchange"></th:block>
+</div>
+
+<th:block th:fragment="value">
+  <dl th:if="c.kind == 'object'" data-nested class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 pl-3 border-l border-ink-200 dark:border-ink-700">
+    <div th:each="e : c.entries" th:attr="'data-field': e.field">
+      <dt class="text-[10px] font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400" th:text="e.label">Field</dt>
+      <dd class="text-sm" th:insert="~{components/result :: value}" th:with="c: e"></dd>
+    </div>
+  </dl>
+  <table th:if="c.kind == 'table'" data-table class="text-xs">
+    <thead>
+      <tr><th th:each="col : c.columns" class="pr-4 py-1 text-left font-semibold text-ink-500 dark:text-ink-400" th:text="col.label">Column</th></tr>
+    </thead>
+    <tbody class="divide-y divide-ink-100 dark:divide-ink-800">
+      <tr th:each="row : c.rows">
+        <td th:each="cell : row" class="pr-4 py-1 align-top" th:insert="~{components/result :: value}" th:with="c: cell"></td>
+      </tr>
+    </tbody>
+  </table>
+  <ul th:if="c.kind == 'list'" data-list class="list-disc pl-4">
+    <li th:each="item : c.items" th:insert="~{components/result :: value}" th:with="c: item"></li>
+  </ul>
+  <th:block th:if="c.kind == 'text'">
+    <span th:if="c.format == 'badge'" data-format="badge" th:attr="'data-value': c.member"
+          class="px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300"
+          th:text="c.text">value</span>
+    <span th:if="c.format == 'money' || c.format == 'percent'" th:attr="'data-format': c.format"
+          class="font-mono tabular-nums" th:text="c.text">value</span>
+    <time th:if="c.format == 'date'" data-format="date" th:attr="'datetime': c.text" th:text="c.text">value</time>
+    <span th:unless="c.format" th:attr="'data-value': c.member" th:text="c.text">value</span>
+  </th:block>
+</th:block>

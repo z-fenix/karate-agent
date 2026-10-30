@@ -1,0 +1,91 @@
+<!--/* The auth preset form (api-workspace §6, §8): how calls sign in for an environment, kept in karate-config's generated
+     block through ApiTest.config (POST /ui/apitest/config). A credential typed here goes to the secret store; the project
+     keeps only secret('<NAME>'). Takes `authPreset` (kaWords.authPreset's model, also the authPreset island) and `open`;
+     kaAuthPreset (pub/auth-preset.js) binds it. Mounted in the API test page's header and the Postman page's Variables. */-->
+<th:block th:fragment="authPreset">
+  <style>
+    .m-auth { margin-top: 12px; font-size: 13.5px; }
+    .m-auth > summary { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; color: var(--m-purple); font-weight: 500; border-radius: 6px; }
+    .m-auth > summary::-webkit-details-marker { display: none; }
+    .m-auth > summary:focus-visible { outline: 2px solid var(--m-purple); outline-offset: 2px; }
+    .m-auth-now { color: var(--m-text-2); font-weight: 400; }
+    .m-auth-body { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; padding: 16px 18px; border-radius: var(--m-radius-sm); background: var(--m-surface); max-width: 640px; }
+    .m-auth-row { display: flex; flex-wrap: wrap; gap: 10px 16px; }
+    .m-auth-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--m-text-2); flex: 1 1 200px; min-width: 0; }
+    .m-auth-row .m-input { font-size: 13.5px; padding: 6px 10px; }
+    .m-auth-hint { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--m-text-2); }
+    .m-auth-act { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .m-auth-said { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 13.5px; overflow-wrap: anywhere; }
+    .m-auth-said .m-dot { align-self: center; }
+  </style>
+  <details class="m-auth" data-ka-section="manual.tests.api.auth" x-data="kaAuthPreset()" th:attr="'open': open ? 'open' : null">
+    <summary><span>Sign-in for this environment</span><span class="m-auth-now" th:text="'— ' + authPreset.summary">— Bearer token</span></summary>
+    <div class="m-auth-body">
+      <p th:if="authPreset.why" class="m-auth-hint" th:text="authPreset.why">The sign-in can’t be changed here.</p>
+      <th:block th:unless="authPreset.why">
+        <div class="m-auth-row">
+          <label>How calls sign in
+            <select class="m-input" aria-label="How calls sign in" disabled="disabled" :disabled="busy" x-model="kind">
+              <option th:each="k: authPreset.kinds" th:value="k.id" th:text="k.label" th:attr="'selected': k.id == authPreset.kind ? 'selected' : null">Bearer token</option>
+            </select>
+          </label>
+          <label th:if="authPreset.env">Applies to
+            <select class="m-input" aria-label="Applies to" disabled="disabled" :disabled="busy || kind === 'none'" x-model="scope">
+              <option value="env" th:text="'The ' + authPreset.env + ' environment'" th:attr="'selected': authPreset.from != 'all' ? 'selected' : null">The qa environment</option>
+              <option value="all" th:attr="'selected': authPreset.from == 'all' ? 'selected' : null">Every environment</option>
+            </select>
+          </label>
+        </div>
+        <div class="m-auth-row" x-show="kind === 'bearer'" th:attr="'style': authPreset.kind == 'bearer' ? null : 'display: none'">
+          <label>Token
+            <input type="password" autocomplete="new-password" class="m-input m-input--mono" aria-label="Environment token" disabled="disabled" :disabled="busy" x-model="typed.token" :placeholder="held('token') ? '••••••••' : 'Paste the token'"/>
+            <span class="m-auth-hint" x-text="held('token')"></span>
+          </label>
+        </div>
+        <div class="m-auth-row" x-show="kind === 'login'" th:attr="'style': authPreset.kind == 'login' ? null : 'display: none'">
+          <label>Sign-in test
+            <input class="m-input m-input--mono" aria-label="Sign-in test" list="m-auth-logins" placeholder="auth/sign-in.feature" disabled="disabled" :disabled="busy" x-model="login"/>
+            <span class="m-auth-hint">A test that signs in and remembers the token as <code>token</code>. It runs once per run; every call then sends that token.</span>
+          </label>
+          <datalist id="m-auth-logins"><option th:each="f: authPreset.logins" th:value="f">auth/sign-in.feature</option></datalist>
+        </div>
+        <div class="m-auth-row" x-show="kind === 'basic'" th:attr="'style': authPreset.kind == 'basic' ? null : 'display: none'">
+          <label>Username <input class="m-input m-input--mono" aria-label="Environment username" disabled="disabled" :disabled="busy" x-model="username"/></label>
+          <label>Password
+            <input type="password" autocomplete="new-password" class="m-input m-input--mono" aria-label="Environment password" disabled="disabled" :disabled="busy" x-model="typed.password" :placeholder="held('password') ? '••••••••' : ''"/>
+            <span class="m-auth-hint" x-text="held('password')"></span>
+          </label>
+        </div>
+        <div class="m-auth-row" x-show="kind === 'apikey'" th:attr="'style': authPreset.kind == 'apikey' ? null : 'display: none'">
+          <label>Key name <input class="m-input m-input--mono" aria-label="Environment key name" placeholder="X-Api-Key" disabled="disabled" :disabled="busy" x-model="name"/></label>
+          <label>Sent
+            <select class="m-input" aria-label="Where the environment key goes" disabled="disabled" :disabled="busy" x-model="where">
+              <option value="header" th:attr="'selected': authPreset.where == 'header' ? 'selected' : null">In a header</option>
+              <option value="query" th:attr="'selected': authPreset.where == 'query' ? 'selected' : null">In the address</option>
+            </select>
+          </label>
+          <label>Key
+            <input type="password" autocomplete="new-password" class="m-input m-input--mono" aria-label="Environment key" disabled="disabled" :disabled="busy" x-model="typed.key" :placeholder="held('key') ? '••••••••' : ''"/>
+            <span class="m-auth-hint" x-text="held('key')"></span>
+          </label>
+        </div>
+        <p class="m-auth-hint" x-show="kind === 'apikey'" th:attr="'style': authPreset.kind == 'apikey' ? null : 'display: none'">Postman runs send the key. An API test sends it where its steps add <code>auth.key</code>.</p>
+        <div class="m-auth-row" x-show="kind === 'oauth2'" th:attr="'style': authPreset.kind == 'oauth2' ? null : 'display: none'">
+          <label>Token address <input class="m-input m-input--mono" aria-label="Environment token address" placeholder="https://…/oauth/token" disabled="disabled" :disabled="busy" x-model="tokenUrl"/></label>
+          <label>Client ID <input class="m-input m-input--mono" aria-label="Environment client ID" disabled="disabled" :disabled="busy" x-model="clientId"/></label>
+          <label>Client secret
+            <input type="password" autocomplete="new-password" class="m-input m-input--mono" aria-label="Environment client secret" disabled="disabled" :disabled="busy" x-model="typed.clientSecret" :placeholder="held('clientSecret') ? '••••••••' : ''"/>
+            <span class="m-auth-hint" x-text="held('clientSecret')"></span>
+          </label>
+          <label>Scope, if any <input class="m-input m-input--mono" aria-label="Environment scope" disabled="disabled" :disabled="busy" x-model="oscope"/></label>
+        </div>
+        <p th:if="authPreset.missing" class="m-auth-hint" th:text="authPreset.missing">No value is stored for QA_API_TOKEN.</p>
+        <p class="m-auth-hint">Tokens, passwords, keys and client secrets stay on this server; the project keeps only their names, so they are never shared.</p>
+        <div class="m-auth-act">
+          <button type="button" class="m-btn" disabled="disabled" :disabled="busy" @click="save()"><span x-show="!busy">Save sign-in</span><span x-show="busy" style="display: none">Saving…</span></button>
+          <p class="m-auth-said" role="alert" x-show="said" style="display: none"><span class="m-dot m-dot--xs" :class="bad ? 'm-dot--failed' : 'm-dot--passed'"></span><span x-text="said"></span></p>
+        </div>
+      </th:block>
+    </div>
+  </details>
+</th:block>

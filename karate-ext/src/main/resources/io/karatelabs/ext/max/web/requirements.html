@@ -1,0 +1,437 @@
+<!--/* The Requirements tab (D96, V1-a) — file-level markdown authoring + preview over requirements/,
+     a Flows-editor clone (D88, SSR shell + rich client island). The preview parses the selected file
+     server-side-equivalently via Requirement.load (the same verb an LLM uses, P3) and renders the
+     requirement TREE (epic → requirement → criteria, rebuilt from each row's `parent`) with an
+     "Explore ▶" kickoff per node: the gist + criteria checklist becomes the loop goal (on a
+     parent/epic the goal includes every descendant's criteria) and the @req anchor rides the
+     kickoff to the run meta — the run's
+     evidence then attributes to the requirement as @ai attested hits (MODEL §2b). The kickoff hands
+     off to the /runs create form (ONE kickoff surface, D89) with goal + req prefilled. */-->
+<script ka:scope="global">
+  // SSR the file list (D88): an engine-free scan of the CONFIGURED requirements home(s) (D214d) —
+  // page load never queues behind a long bot op on the /api/eval lock. Same shape as /ui/requirements.
+  var reqFiles = [];
+  var reqHomes = requirementsHomes && requirementsHomes.length ? requirementsHomes : ['requirements'];
+  for (var h = 0; h < reqHomes.length; h++) {
+    var reqHome = reqHomes[h];
+    var mds = file.list(reqHome + '/**/*.md');
+    for (var i = 0; mds && i < mds.length; i++) {
+      reqFiles.push({ name: mds[i].substring(reqHome.length + 1), home: reqHome });
+    }
+  }
+  reqFiles.sort(function (a, b) { return a.name < b.name ? -1 : 1 });
+  _.reqfiles = reqFiles;
+</script>
+<div ka:island="reqfiles"/>
+
+  <!-- Alpine factory — classic script so it exists when Alpine scans x-data (the editor.html ordering note). -->
+  <script>
+    function reqEditor() {
+      return {
+        // `selected` is the home-relative name; `selectedHome` the home it came from (D214d) — every
+        // read/parse/write carries both, so one spelling lands on one file
+        files: [], selected: null, selectedHome: null, loading: false, dirty: false, pendingDoc: null,
+        stale: false, err: '',
+        creating: false, newName: '',
+        viewMode: 'preview', previewHtml: '', parsed: [],
+        exploring: null,
+        expandedFolders: {},
+
+        // --- sidebar folder tree (one level, the veriquant flows/list.html harvest) ---
+        get tree() {
+          const folders = {}, root = [];
+          this.files.forEach((f) => {
+            const idx = f.name.indexOf('/');
+            if (idx > 0) {
+              const folder = f.name.substring(0, idx);
+              (folders[folder] = folders[folder] || []).push(f);
+            } else root.push(f);
+          });
+          return { folders, root };   // members keep the list's sort order
+        },
+        get folderNames() { return Object.keys(this.tree.folders).sort(); },
+        // the configured home the tab is authoring against (D214d), not a literal
+        get homeLabel() { return ((this.files[0] || {}).home || 'requirements') + '/'; },
+        displayName(f) { const i = f.name.indexOf('/'); return i > 0 ? f.name.substring(i + 1) : f.name; },
+        toggleFolder(name) { this.expandedFolders[name] = !this.isFolderExpanded(name); },
+        isFolderExpanded(name) {
+          if (this.expandedFolders[name] !== undefined) return this.expandedFolders[name];
+          // a folder holding the selected file starts expanded
+          return this.selected != null && this.selected.indexOf(name + '/') === 0;
+        },
+
+        init() {
+          window.addEventListener('cm-dirty', () => { this.dirty = true; });
+          window.addEventListener('cm-ready', () => {
+            if (this.pendingDoc != null) { window.cmEditor.setDoc(this.pendingDoc); this.pendingDoc = null; }
+          });
+          // the list is SSR-embedded (ka:island, D88) — no /api/eval on page load
+          this.files = JSON.parse(document.getElementById('reqfiles-data').textContent) || [];
+          // deep-link: /requirements?file=<name> opens that requirement — lets the View.* control plane
+          // (or a copied URL) navigate the human's view straight to a SPECIFIC requirement file.
+          var dl = new URLSearchParams(location.search).get('file');
+          if (dl) { this.select(dl); }
+        },
+        async refresh() {
+          // the /ui/ page-data channel (D98) — never /api/eval for pure data verbs
+          this.loading = true; this.err = '';
+          try {
+            const list = await (await fetch('/ui/requirements')).json();
+            this.files = Array.isArray(list) ? list : [];
+          } catch (e) { this.err = String(e); }
+          this.loading = false;
+        },
+        // the home defaults server-side (the first configured one) when a deep-link supplies only a name
+        query(name, home) {
+          return 'name=' + encodeURIComponent(name) + (home ? '&home=' + encodeURIComponent(home) : '');
+        },
+        async select(name, home) {
+          if (this.dirty && !confirm('Discard unsaved changes to ' + this.selected + '?')) return;
+          this.err = ''; this.stale = false;
+          const out = await (await fetch('/ui/requirements/read?' + this.query(name, home))).json();
+          if (out && out.error) { this.err = out.error; return; }
+          this.selected = name;
+          this.selectedHome = home || null;
+          if (window.cmEditor) { window.cmEditor.setDoc(out.content); }
+          else { this.pendingDoc = out.content; }
+          this.dirty = false;
+          this.viewMode = 'preview';
+          await this.renderPreview(out.content);
+        },
+        async showPreview() {
+          if (this.dirty) await this.save();
+          this.viewMode = 'preview';
+          await this.renderPreview();
+        },
+        // lazy-load the vendored marked once (shared by the card bodies + the plain-md fallback)
+        async ensureMarked() {
+          if (window.marked) return true;
+          try {
+            await new Promise((res, rej) => {
+              const sc = document.createElement('script');
+              sc.src = '/pub/vendor/marked.min.js';
+              sc.onload = res; sc.onerror = rej;
+              document.head.appendChild(sc);
+            });
+            return true;
+          } catch (e) { return false; }
+        },
+        // the preview = the PARSED requirement cards (Requirement.load — the same verb an LLM uses)
+        // rendered as a TREE (epic → requirement → criteria): hierarchy rides each row's `parent`
+        // (heading nesting or @parent=), rebuilt here and flattened DFS with a depth per card;
+        // criterion ids and their @req= stamps come from the server (Requirement.list), never derived here.
+        async renderPreview(src) {
+          this.parsed = [];
+          const md = await this.ensureMarked();
+          // the requirement body is markdown (the SoT convention — **shall** etc renders, not literal)
+          const bodyHtml = (text) => md ? window.marked.parse(text)
+            : '<p>' + text.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</p>';
+          try {
+            const env = await (await fetch('/ui/requirements/parse?' + this.query(this.selected, this.selectedHome))).json();
+            if (env && env.error) throw new Error(env.error);
+            const reqs = (env && env.requirements) || [];
+            const nodes = reqs.map((r) => ({
+              id: r.id, title: r.title || '', type: r.type || '', criticality: r.criticality || '',
+              body: r.body || '', bodyHtml: r.body ? bodyHtml(r.body) : '',
+              parent: r.parent || null, children: [], depth: 0,
+              criteria: (r.criteria || []).map((c) => ({ id: c.id, text: c.text, stamp: c.stamp }))
+            }));
+            const byId = {};
+            nodes.forEach((n) => { byId[n.id] = n; });
+            const roots = [];
+            // a parent outside this file (a cross-file @parent=) renders as a root here
+            nodes.forEach((n) => {
+              const p = n.parent && byId[n.parent];
+              if (p && p !== n) p.children.push(n); else roots.push(n);
+            });
+            const flat = [];
+            const walk = (n, d) => { n.depth = d; flat.push(n); n.children.forEach((c) => walk(c, d + 1)); };
+            roots.forEach((n) => walk(n, 0));
+            this.parsed = flat;
+          } catch (e) { this.err = String(e); }
+          // fall back to a plain markdown render when the file parses to no requirements
+          if (!this.parsed.length) {
+            const text = src != null ? src : (window.cmEditor ? window.cmEditor.getDoc() : (this.pendingDoc || ''));
+            this.previewHtml = md ? window.marked.parse(text)
+              : '<pre>' + text.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</pre>';
+          }
+        },
+        // Explore ▶ — the gist + criteria checklist becomes the loop goal; the @req anchor rides the
+        // kickoff. Hands off to the /runs create form (ONE kickoff surface, D89) prefilled, so the
+        // user still picks LLM / record / a launchpad flow (the macro-then-explore shape, D91).
+        // On a parent/epic the goal includes every descendant's criteria (tree walk), each line
+        // carrying its OWN exact @req=<id>/<criterion> token for the model to copy verbatim.
+        explore(r) {
+          // runtime context the requirement file cannot know — an editable placeholder, not magic:
+          // FIRST line of the goal so the user sees + edits it right at the top of the kickoff
+          // form's textarea (or deletes it)
+          let goal = 'Target app: <replace with the application URL, plus login credentials if needed>\n\n';
+          goal += 'Verify requirement ' + r.id + (r.title ? ': ' + r.title : '') + '\n';
+          if (r.body) goal += '\n' + r.body + '\n';
+          const units = [];
+          const collect = (n) => { if (n.criteria.length) units.push(n); n.children.forEach(collect); };
+          collect(r);
+          if (units.length) {
+            goal += '\nVerify each acceptance criterion below; record the verdict with'
+              + " Robot.step('<finding> @req=<id>/<criterion>', 'pass' or 'fail')"
+              + " and capture bot.screenshot('<evidence> @req=<id>/<criterion>') as proof"
+              + ' — use the exact @req token shown beside each criterion:\n';
+            units.forEach((n) => {
+              if (n !== r) goal += '\n' + n.id + (n.title ? ': ' + n.title : '') + '\n';
+              n.criteria.forEach((c) => { goal += '\n- ' + c.stamp + ' — ' + c.text; });
+              if (n !== r) goal += '\n';
+            });
+          }
+          const token = Date.now().toString(36) + Math.random().toString(36).slice(2);
+          try {
+            sessionStorage.setItem('karate.explore.' + token, goal);
+          } catch (e) {
+            this.err = 'Unable to retain the exploration goal in this tab: ' + e;
+            return;
+          }
+          location.href = '/runs?req=' + encodeURIComponent(r.id) + '&goalRef=' + encodeURIComponent(token);
+        },
+        async save() {
+          if (!this.selected) return;
+          const body = window.cmEditor ? window.cmEditor.getDoc() : '';
+          const out = await (await fetch('/ui/requirements/write', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: this.selected, home: this.selectedHome, content: body, overwrite: true })
+          })).json();
+          if (out && out.error) {
+            if (out.code === 'STALE_MTIME') { this.stale = true; return; }
+            this.err = String(out.error); return;
+          }
+          this.dirty = false; this.stale = false;
+          await this.refresh();
+        },
+        async reloadFromDisk() {
+          this.stale = false; this.dirty = false;
+          await this.select(this.selected);
+        },
+        startNew() { this.creating = true; this.newName = ''; this.$nextTick(() => this.$refs.newInput && this.$refs.newInput.focus()); },
+        cancelNew() { this.creating = false; },
+        async createFile() {
+          // a path creates the folder(s) too (Requirement.write makes parent dirs); a trailing '/' means
+          // "just a folder" → drop a starter file in it so the (otherwise invisible) folder appears.
+          let name = (this.newName || '').trim().replace(/^\/+/, '');
+          if (!name) return;
+          if (name.endsWith('/')) name += 'new-requirement';
+          if (!name.endsWith('.md')) name += '.md';
+          const tmpl = "# Requirements\n\n### REQ-001: Title of the requirement\n@criticality=medium\nThe system **shall** do the thing.\n\n**Acceptance:**\n- 1.1: WHEN <trigger> THE SYSTEM SHALL <response>\n";
+          const out = await (await fetch('/ui/requirements/write', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, content: tmpl })
+          })).json();
+          if (out && out.error) { this.err = String(out.error); return; }
+          this.creating = false;
+          await this.refresh();
+          // out.file names what the verb wrote as requirement.list() does: project-relative, so it says its home
+          const made = this.files.find((f) => f.home + '/' + f.name === out.file) || { name: name };
+          await this.select(made.name, made.home);
+        }
+      };
+    }
+  </script>
+  <!-- the editor fills the viewport below the shell header (≈3.3rem) -->
+  <div x-data="reqEditor()" x-cloak class="flex flex-col" style="height:calc(100vh - 3.3rem)" data-ka-section="requirements">
+
+    <div class="flex-1 flex min-h-0">
+
+      <!-- sidebar: requirements file list -->
+      <aside class="w-72 shrink-0 border-r border-slate-200 dark:border-slate-700 flex flex-col" data-ka-section="requirements.sidebar">
+        <div class="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-slate-800">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"><span x-text="homeLabel"></span><!--
+            D124 context-sensitive "?" — a same-origin deep-link into the Help deep-dive. -->
+            <a href="/help#requirement" target="ka-help" rel="noopener" title="What are requirements & traceability? Open the Help deep-dive"
+               class="inline-flex items-center justify-center w-4 h-4 ml-1 align-middle rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold no-underline hover:ring-1 hover:ring-indigo-400">?</a></span>
+          <button @click="startNew()" class="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline">＋ New</button>
+        </div>
+        <div x-show="creating" class="px-3 py-2 border-b border-slate-100 dark:border-slate-800">
+          <form @submit.prevent="createFile()" class="flex gap-1">
+            <input x-ref="newInput" x-model="newName" @keydown.escape="cancelNew()" placeholder="orders.md  or  billing/orders.md"
+                   class="flex-1 text-xs font-mono rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+            <button type="submit" class="text-xs rounded bg-indigo-600 px-2 text-white">add</button>
+          </form>
+          <p class="mt-1 text-[11px] leading-snug text-slate-400 dark:text-slate-500">Include <code>/</code> to make a folder — e.g. <code>billing/orders.md</code>, or <code>billing/</code> for a folder with a starter file.</p>
+        </div>
+        <ul class="flex-1 overflow-y-auto py-1">
+          <li x-show="loading" class="px-3 py-2 text-xs text-slate-400">loading…</li>
+          <li x-show="!loading && !files.length" class="px-3 py-2 text-xs text-slate-400" x-text="'no requirements yet — ＋ New, or drop *.md under ' + homeLabel"></li>
+          <!-- folders first (one-level expand/collapse tree — the veriquant flows/list.html harvest) -->
+          <template x-for="folder in folderNames" :key="folder">
+            <li>
+              <button type="button" @click="toggleFolder(folder)"
+                      class="w-full flex items-center gap-1 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer">
+                <svg class="w-3 h-3 text-slate-400 transition-transform" :class="isFolderExpanded(folder) ? 'rotate-90' : ''"
+                     viewBox="0 0 12 12" fill="currentColor"><path d="M4 2l4 4-4 4z"/></svg>
+                <span class="text-sm font-mono text-slate-600 dark:text-slate-300" x-text="folder + '/'"></span>
+                <span class="text-[10px] text-slate-400 ml-auto" x-text="tree.folders[folder].length"></span>
+              </button>
+              <ul x-show="isFolderExpanded(folder)">
+                <template x-for="f in tree.folders[folder]" :key="f.name">
+                  <li @click="select(f.name, f.home)"
+                      :class="selected===f.name ? 'bg-indigo-50 dark:bg-indigo-950/40' : 'hover:bg-slate-50 dark:hover:bg-slate-800'"
+                      class="pl-7 pr-3 py-2 cursor-pointer border-l-2"
+                      :style="selected===f.name ? 'border-color:#6366f1' : 'border-color:transparent'">
+                    <div class="text-sm font-mono text-slate-800 dark:text-slate-200" x-text="displayName(f)" :title="f.name"></div>
+                  </li>
+                </template>
+              </ul>
+            </li>
+          </template>
+          <!-- root-level files -->
+          <template x-for="f in tree.root" :key="f.name">
+            <li @click="select(f.name, f.home)"
+                :class="selected===f.name ? 'bg-indigo-50 dark:bg-indigo-950/40' : 'hover:bg-slate-50 dark:hover:bg-slate-800'"
+                class="px-3 py-2 cursor-pointer border-l-2"
+                :style="selected===f.name ? 'border-color:#6366f1' : 'border-color:transparent'">
+              <div class="text-sm font-mono text-slate-800 dark:text-slate-200" x-text="f.name"></div>
+            </li>
+          </template>
+        </ul>
+      </aside>
+
+      <!-- preview / editor -->
+      <main class="flex-1 flex flex-col min-w-0">
+
+        <!-- toolbar -->
+        <div class="flex items-center gap-2 px-4 py-2 border-b border-slate-200 dark:border-slate-700">
+          <span class="text-sm font-mono text-slate-700 dark:text-slate-300" x-text="selected || 'select a requirements file'"></span>
+          <span x-show="dirty" class="text-[11px] text-amber-600 dark:text-amber-400">● modified</span>
+          <div x-show="selected" class="ml-2 flex rounded-md border border-slate-300 dark:border-slate-600 overflow-hidden text-xs">
+            <button @click="showPreview()" :class="viewMode==='preview' ? 'bg-indigo-600 text-white' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'" class="px-2.5 py-1">View</button>
+            <button @click="viewMode='source'" :class="viewMode==='source' ? 'bg-indigo-600 text-white' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'" class="px-2.5 py-1 border-l border-slate-300 dark:border-slate-600">Source</button>
+          </div>
+          <span class="ml-auto"></span>
+          <button @click="save()" :disabled="!selected || !dirty"
+                  class="rounded-md border border-slate-300 dark:border-slate-600 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40">Save</button>
+        </div>
+
+        <!-- stale-conflict panel (File write-after-read guard) -->
+        <div x-show="stale" class="mx-4 mt-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-800 dark:text-amber-200 flex items-center justify-between">
+          <span>This file changed on disk since you opened it.</span>
+          <span class="flex gap-2">
+            <button @click="reloadFromDisk()" class="font-medium underline">Reload from disk</button>
+          </span>
+        </div>
+        <div x-show="err" class="mx-4 mt-3 rounded-lg border border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 px-3 py-2 text-xs text-rose-700 dark:text-rose-300" x-text="err"></div>
+
+        <!-- parsed-requirement preview (the default view): the requirement TREE (epic → requirement
+             → criteria) — depth-indented cards with an elbow connector to the parent + Explore ▶ -->
+        <div x-show="viewMode==='preview'" class="flex-1 min-h-0 overflow-auto bg-white dark:bg-slate-900 px-6 py-4" data-ka-section="requirements.preview">
+          <template x-for="r in parsed" :key="r.id">
+            <div class="mb-4 relative" :style="r.depth ? 'margin-left:' + (r.depth * 1.75) + 'rem' : ''">
+              <div x-show="r.depth" class="absolute border-l border-b border-slate-300 dark:border-slate-600 rounded-bl-md"
+                   style="left:-1.05rem; top:-0.7rem; width:0.85rem; height:2.1rem"></div>
+              <div class="group rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-sm font-semibold text-slate-900 dark:text-slate-100" x-text="r.id"></span>
+                <span class="text-sm text-slate-700 dark:text-slate-300" x-text="r.title"></span>
+                <span x-show="r.type" class="text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400" x-text="r.type"></span>
+                <span x-show="r.criticality" class="text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5"
+                      :class="r.criticality==='high' ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'"
+                      x-text="r.criticality"></span>
+                <span x-show="r.children.length" class="text-[10px] rounded px-1.5 py-0.5 bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400"
+                      x-text="r.children.length + (r.children.length === 1 ? ' child' : ' children')"></span>
+                <!-- Explore ▶ — kicks the autonomous loop at this requirement: gist + criteria checklist
+                     as the goal, the @req anchor on the run meta (its evidence attributes here);
+                     on a parent/epic the goal includes every descendant's criteria. Deliberately
+                     LOW-WEIGHT: a muted control at rest that brightens on card hover (group-hover),
+                     filling in only on direct hover — so it doesn't dominate the requirement cards. -->
+                <button @click="explore(r)"
+                        :title="r.children.length
+                          ? 'explore this requirement and its children with the autonomous loop — the goal includes every descendant criterion'
+                          : 'explore this requirement with the autonomous loop — its evidence attributes here'"
+                        class="ml-auto inline-flex items-center rounded-md px-2 py-1 text-xs font-medium text-slate-400 dark:text-slate-500 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 hover:!text-white hover:bg-indigo-600 transition-colors">Explore ▶</button>
+              </div>
+              <div x-show="r.body" class="md-body mt-2 text-sm text-slate-600 dark:text-slate-400" x-html="r.bodyHtml"></div>
+              <ul x-show="r.criteria.length" class="mt-2 space-y-1">
+                <template x-for="c in r.criteria" :key="c.id">
+                  <li class="text-xs text-slate-600 dark:text-slate-400">
+                    <span class="font-mono text-slate-400" x-text="c.stamp"></span>
+                    <span class="ml-1" x-text="c.text"></span>
+                  </li>
+                </template>
+              </ul>
+              </div>
+            </div>
+          </template>
+          <!-- plain markdown fallback when the file parses to no requirements -->
+          <div x-show="!parsed.length" x-html="previewHtml" class="md-body text-sm text-slate-700 dark:text-slate-300"></div>
+          <p x-show="!selected" class="text-sm text-slate-400 py-8 text-center">select a file on the left — each requirement gets an Explore ▶ kickoff</p>
+        </div>
+
+        <!-- CodeMirror mount (the Source tab) -->
+        <div id="cm-host" x-show="viewMode==='source'" class="flex-1 min-h-0 overflow-auto bg-white dark:bg-slate-900" data-ka-section="requirements.editor">
+          <div id="cm-loading" class="p-4 text-xs text-slate-400 italic">Loading editor…</div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- CodeMirror 6 mount (module) — exposes window.cmEditor; emits 'cm-dirty' on edit (the checks.html recipe). -->
+  <script type="module">
+    import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, dropCursor,
+             highlightActiveLineGutter,
+             EditorState, Compartment,
+             javascript,
+             autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap,
+             defaultKeymap, history, historyKeymap, indentWithTab,
+             foldGutter, foldKeymap, indentOnInput, bracketMatching, defaultHighlightStyle,
+             syntaxHighlighting,
+             oneDark } from "/pub/vendor/cm.js";
+
+    const basicSetup = [
+      lineNumbers(), highlightActiveLineGutter(), foldGutter(), drawSelection(), dropCursor(),
+      EditorState.allowMultipleSelections.of(true), indentOnInput(),
+      bracketMatching(), closeBrackets(), highlightActiveLine(),
+      keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap]),
+      history(),
+    ];
+
+    const themeConf = new Compartment();
+    const isDark = () => document.documentElement.getAttribute('data-theme') === 'dark';
+    const themeExt = () => isDark() ? oneDark : syntaxHighlighting(defaultHighlightStyle, { fallback: true });
+
+    const loading = document.getElementById('cm-loading');
+    if (loading) loading.remove();
+
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: '',
+        extensions: [
+          basicSetup,
+          themeConf.of(themeExt()),
+          keymap.of([indentWithTab]),
+          autocompletion(),
+          EditorView.updateListener.of(v => {
+            if (!v.docChanged) return;
+            if (window.cmEditor && window.cmEditor.loading) { window.cmEditor.loading = false; return; }
+            window.dispatchEvent(new CustomEvent('cm-dirty'));
+          }),
+          EditorView.theme({
+            '&': { height: '100%', fontSize: '13px' },
+            '.cm-scroller': { fontFamily: '"JetBrains Mono", ui-monospace, monospace' },
+          }),
+        ],
+      }),
+      parent: document.getElementById('cm-host'),
+    });
+
+    new MutationObserver(() => view.dispatch({ effects: themeConf.reconfigure(themeExt()) }))
+      .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+    window.cmEditor = {
+      loading: false,
+      getDoc: () => view.state.doc.toString(),
+      setDoc: (text) => {
+        if ((text || '') === view.state.doc.toString()) return;
+        window.cmEditor.loading = true;
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text || '' } });
+      },
+    };
+    window.dispatchEvent(new CustomEvent('cm-ready'));
+  </script>
+
+  <!-- .md-body styling is in the compiled /pub/tailwind.css (etc/web-assets/input.css) -->

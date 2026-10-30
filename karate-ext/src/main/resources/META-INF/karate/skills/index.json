@@ -1,0 +1,168 @@
+{
+  "skills": [
+    {
+      "name": "getting-started",
+      "title": "Karate — getting started",
+      "hint": "First feature file → first green run → CI. The on-ramp.",
+      "flow": "Start a new Karate project — first test → green run → CI",
+      "topics": []
+    },
+    {
+      "name": "cli",
+      "title": "Karate — CLI (standalone, non-Java teams)",
+      "hint": "Run Karate as a tool, not a library — the karate-cli launcher + karate-pom.json, no Maven/JDK. The on-ramp for Python/Node/Go/QA teams.",
+      "flow": "Run Karate without Java build tooling — CLI-first",
+      "topics": []
+    },
+    {
+      "name": "launch",
+      "title": "Karate — launch a whole suite in one command (CI/DevOps)",
+      "hint": "karate launch suite.karate.js — a *.karate.js orchestrator serves the app (Http.serve) + runs UI + API + rules as ONE suite into ONE target/karate-reports (HTML + JUnit + RTM + screenshots). The 'Jenkinsfile for a karate suite'; same file local and in CI. Dual-mode output; opt-in video.",
+      "flow": "Run a whole demo/suite in one command — serve the app + UI + API + rules → one report (CI/DevOps)",
+      "topics": []
+    },
+    {
+      "name": "api",
+      "title": "Karate — API (REST)",
+      "hint": "REST authoring; match semantics; asserting against the rulebook oracle; auth + hooks/config topics.",
+      "flow": "Author & improve API tests — explore a live API, lock the contract shape, oracle the business values against the rules",
+      "topics": ["auth", "hooks-config", "data-driven", "error-paths", "reuse-call"]
+    },
+    {
+      "name": "assertions",
+      "title": "Karate — assertions",
+      "hint": "match equals/contains/each + the matcher cheat-sheet; fuzzy markers.",
+      "topics": ["match", "fuzzy", "schema-tools"]
+    },
+    {
+      "name": "grpc",
+      "title": "Karate — gRPC",
+      "hint": "karate.channel('grpc') + the live Grpc.* namespace; reuses REST scenario ergonomics.",
+      "requiresExt": "grpc",
+      "topics": []
+    },
+    {
+      "name": "kafka",
+      "title": "Karate — Kafka",
+      "hint": "karate.channel('kafka') + the live Kafka.* namespace; produce/consume; JSON/Avro/Protobuf serialization. (karate-kafka addon.)",
+      "requiresExt": "kafka",
+      "topics": []
+    },
+    {
+      "name": "websocket",
+      "title": "Karate — WebSocket",
+      "hint": "karate.channel('websocket') over core's WsClient — send/collect frames, the WireCodec serde seam (raw/JSON/custom, e.g. STOMP) + the WebsocketLifecycle handshake mix-in, subprotocol + TLS.",
+      "topics": []
+    },
+    {
+      "name": "mock",
+      "title": "Karate — mock server",
+      "hint": "Stand up a karate-core mock HTTP server from a .feature file — per-Scenario request matching, dynamic + stateful responses; embedded or standalone.",
+      "flow": "Stand up a mock server from a feature file — author one, and serve one you already have",
+      "topics": []
+    },
+    {
+      "name": "migration",
+      "title": "Karate — migration",
+      "hint": "Idiomatize tests from REST-assured/Postman/SoapUI/Insomnia/curl/HAR into Karate .feature files — Postman through Postman.migrate, every other source LLM-driven.",
+      "flow": "Migrate existing tests into idiomatic Karate",
+      "topics": []
+    },
+    {
+      "name": "coverage",
+      "title": "Karate — coverage",
+      "hint": "Per-scenario atoms + suite-structure conventions; reading gaps.",
+      "flow": "Measure coverage and find the gaps",
+      "topics": ["suite-structure", "dimensions"]
+    },
+    {
+      "name": "rule-authoring",
+      "title": "Karate — rule authoring (rulebooks)",
+      "hint": "Forward-engineer a rulebook (schema.js + calc.js + generator.js) from a business requirement; drive ranges→check→table→report; the rebuilt graph is the oracle. calc.req lands requirement coverage.",
+      "flow": "Forward-engineer a rulebook from a business requirement",
+      "topics": ["requirements-linking", "properties", "negative-scenarios", "check-findings"]
+    },
+    {
+      "name": "rating-setup",
+      "title": "Karate — rating set-up (rate books → a rating rulebook)",
+      "hint": "Build a rating rulebook from a carrier's sources: import mappings and Rule.import into tables/, a circular or deviation as a change set with edition records and rule.json, a draft calc.js from the rules-manual page, then the cell-suite sheet for the carrier's premium match. Every draft is ai-marked beside assumptions.md.",
+      "flow": "Set up a rating book from rate books, a circular, a deviation filing and a rules-manual page — then export the sheet the carrier rates",
+      "topics": ["setup", "revision", "algorithm"]
+    },
+    {
+      "name": "twin-authoring",
+      "title": "Karate — twin authoring (behaviour models)",
+      "hint": "Author twin.js — the state machine behind a rulebook — and drive explore→check→promote→bless. The engine walks it under frozen ceilings; a walk is evidence about the declaration, never proof of the system. Concepts are Twin.help().",
+      "topics": ["plan", "required-rows", "sequences", "findings", "live", "binding", "play"]
+    },
+    {
+      "name": "app-authoring",
+      "title": "Karate — app authoring (the playground app)",
+      "hint": "Make Http.app read right for a business user: app/ui.js labels, help, order, formats and refusal wording keyed by the model's names, or a shadow page — checked by Twin.check's findings.ui, reviewed on the running app. What it sends stays the binding's.",
+      "topics": ["overlay", "formats", "shadow-pages", "reviewing"]
+    },
+    {
+      "name": "requirements",
+      "title": "Karate — requirements",
+      "hint": "Author requirements in git markdown; matrix/gaps/lint/readiness; the tier-3 semantic review.",
+      "flow": "Author & govern requirements — traceability, readiness, review",
+      "topics": ["authoring", "semantic-review"]
+    },
+    {
+      "name": "link",
+      "title": "Karate — link an existing suite to its requirements",
+      "hint": "You have tests that run, requirements in some form, and nothing joining them. Propose which scenario claims which acceptance criterion, File.tag writes the claim onto the feature file, Requirement.delta grades whether the join improved. No new tests.",
+      "flow": "Link an existing suite to its requirements — the RTM with no new tests",
+      "topics": []
+    },
+    {
+      "name": "review",
+      "title": "Karate — review",
+      "hint": "Feature-file review heuristics + checklist.",
+      "flow": "Review a feature file against the quality checklist",
+      "topics": ["feature-file-review", "assertion-strength"]
+    },
+    {
+      "name": "record-to-check",
+      "title": "Karate — record a UI flow → author a check",
+      "hint": "Turn a recorded human UI flow (Recording.get) into a proper maintainable check — add waits, parameterize, Scenario-Outline loops, karate-config.js env switching, karate-boot.js requirement/rule/coverage ties. The LLM authors + verifies; no auto-generated JS.",
+      "flow": "Turn a recorded UI flow into a maintainable check",
+      "topics": []
+    },
+    {
+      "name": "record-to-api",
+      "title": "Karate — a recording's calls → a verified API test",
+      "hint": "Traffic.read → sift → migrate → ApiTest.config → ApiTest.land: chained, secret references only, written only on a green run.",
+      "flow": "Turn the API calls a recording made into a verified API test",
+      "topics": []
+    },
+    {
+      "name": "markup",
+      "title": "Karate — markup (UI)",
+      "hint": "The design-language-of-record for Karate HTML apps: the karate-core template engine + Tailwind/Alpine/HTMX. Server returns HTML, no build step.",
+      "topics": ["app-setup", "tailwind", "catalog", "alpine", "components", "forms", "sse"]
+    },
+    {
+      "name": "api-governance",
+      "title": "Karate — API governance (lint & grade an OpenAPI spec)",
+      "hint": "Is the spec up to standard? Openapi.lint runs a style-guide rulepack over the document; Openapi.grade scores it into five dimensions, a maturity level and a ship verdict, with `not measured` where there is no evidence. Contract.pair runs ONE functional suite against the real provider AND against the mock in one session, and reports the measured divergence set — the only evidence there is for the `contract` dimension, which a grade reads from the committed pair file. Write your own rules in JS — including the ones that reach past the document into the coverage graph (claimed by a requirement? ever exercised? did anything but our own mock answer?). Deterministic: no LLM, no network.",
+      "flow": "Govern an API spec — lint it against a style guide, grade it, enforce your own rules, and prove the mock can stand in for the provider (contract testing — the paired run)",
+      "topics": ["lint-rule-authoring"]
+    },
+    {
+      "name": "scaffold-from-openapi",
+      "title": "Karate — scaffold from OpenAPI",
+      "hint": "An OpenAPI spec alone → a runnable project: a stateful Http.mock backend, tests, hollow derived requirement stubs (Openapi.deriveRequirements), and a 3-source coverage report. Review-gated authoring.",
+      "flow": "Scaffold a whole tested project from an OpenAPI spec",
+      "topics": ["reverse-engineer-requirements"]
+    },
+    {
+      "name": "scaffold-from-asyncapi",
+      "title": "Karate — scaffold from AsyncAPI",
+      "hint": "An AsyncAPI doc alone → a runnable Kafka project: boot glue + a produce/consume round-trip feature (Asyncapi.scaffold), run against a real broker for cov.asyncapi channel + JSON-Schema field grading. The event-side twin of scaffold-from-openapi. (karate-kafka addon.)",
+      "flow": "Scaffold a runnable Kafka project from an AsyncAPI doc",
+      "requiresExt": "kafka",
+      "topics": []
+    }
+  ]
+}

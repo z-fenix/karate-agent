@@ -1,0 +1,306 @@
+<!--/* Runs — list + create (D88, SSR). A content fragment; layout.html provides the shell + header.
+     The LIST renders SERVER-SIDE (th:each over harness.runs()) — no client round-trip, so it never
+     queues behind a long bot op on the evalLock (the D88 friction fix). Create stays a small client island
+     (it kicks Harness.explore over /api/eval + redirects). Relative times are humanized client-side (needs
+     "now"); everything else is server-rendered. */-->
+<script ka:scope="global">
+  var data = harness.runs();
+  _.runs = data.runs;
+  // the in-flight run id (loop or live), or '' — single-user (D48): one run at a time, so the
+  // kickoff form blocks (+ explains) a second start instead of letting it fail on the server gate.
+  _.activeRun = data.active || '';
+  // the kickoff form's LLM selector — providers with env keys + the default (pure env check, D88)
+  _.llm = harness.providers();
+  // the file picker: checks/*.js + *.feature are both SET members (Runner.run, D281 — named
+  // project-root relative, the form the run manifest records); checks/*.md = goal/knowledge prompts.
+  // A *.karate.js is an orchestrator, not a leaf — it keeps its own single-leaf launch lane, and it is
+  // named project-root relative too: Runner.launch resolves its argument against the project root, so a
+  // checks-relative name would miss the file (Check.list names are relative to checks/).
+  var pickables = [];
+  var jsChecks = check.list();
+  for (var i = 0; i < jsChecks.length; i++) {
+    var cn = 'checks/' + jsChecks[i].name;
+    pickables.push({ name: cn, type: cn.substring(cn.length - 10) == '.karate.js' ? 'launch' : 'js' });
+  }
+  // ANY project .md is a usable goal prompt (Harness.explore resolves checks/ first, then the project
+  // root); file.list already prunes target/ + runs/. Only a checks/ file is named checks-relative.
+  var mdFiles = file.list('**/*.md');
+  for (var j = 0; j < mdFiles.length; j++) {
+    pickables.push({ name: mdFiles[j].indexOf('checks/') === 0 ? mdFiles[j].substring(7) : mdFiles[j], type: 'md' });
+  }
+  var features = file.list('**/*.feature');
+  for (var k = 0; k < features.length; k++) {
+    pickables.push({ name: features[k], type: 'feature' });
+  }
+  _.pickables = pickables;
+</script>
+<div ka:island="llm"/>
+<div ka:island="activeRun"/>
+<div ka:island="pickables"/>
+
+<div class="max-w-4xl mx-auto px-6 py-8" data-ka-section="runs">
+
+  <!-- the kickoff lives in the shared modal — opened by the "New run" button below, or
+       auto-opened when a hand-off (Requirements Explore, a Checks Run) lands here with query params. -->
+  <th:block th:insert="~{components/run-modal :: runModal}"></th:block>
+
+  <!-- Live / Record kickoff (D150): open a live browser at a URL (recent URLs remembered
+       in localStorage like the run goal), then land on the run page where ● Record captures the flow. -->
+  <div x-data="liveRecordModal()" x-cloak
+       @ka-live-modal-open.window="open=true; $nextTick(() => $refs.url && $refs.url.focus())">
+    <div x-show="open" class="fixed inset-0 z-40 bg-black/40" @click="open=false"></div>
+    <div x-show="open" class="fixed inset-0 z-50 flex items-start justify-center p-4 pt-24" @keydown.escape.window="open=false">
+      <div class="w-full max-w-lg rounded-xl bg-white dark:bg-slate-800 shadow-xl border border-slate-200 dark:border-slate-700 p-5" @click.stop>
+        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">Live / Record a UI session</h3>
+        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Opens a live browser at this URL for you to click through yourself. Hit <span class="font-medium text-rose-600 dark:text-rose-400">● Record</span> on the next page to capture what you do — then AI can turn it into a reusable test.</p>
+        <form @submit.prevent="start()" class="mt-3 space-y-2">
+          <input x-ref="url" x-model="url" list="ka-url-history" placeholder="https://… (optional — blank opens about:blank)"
+                 class="w-full text-sm rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <datalist id="ka-url-history"><template x-for="u in history" :key="u"><option :value="u"></option></template></datalist>
+          <div x-show="history.length" class="flex flex-wrap gap-1.5">
+            <template x-for="u in history" :key="u">
+              <span class="inline-flex items-center rounded border border-slate-200 dark:border-slate-600 overflow-hidden max-w-[18rem]">
+                <button type="button" @click="url=u" :title="u"
+                        class="text-[11px] px-1.5 py-0.5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 truncate" x-text="u"></button>
+                <button type="button" @click="removeUrl(u)" title="remove from history"
+                        class="shrink-0 px-1 py-0.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40">✕</button>
+              </span>
+            </template>
+          </div>
+          <label class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 select-none cursor-pointer pt-0.5">
+            <input type="checkbox" x-model="record" class="h-3.5 w-3.5 rounded border-slate-300 dark:border-slate-600 text-rose-600 focus:ring-rose-500">
+            <span>Start recording immediately <span class="text-slate-400">(else just drive live; ● Record any time)</span></span>
+          </label>
+          <p x-show="hint" class="text-xs text-slate-500 dark:text-slate-400" x-text="hint"></p>
+          <p x-show="err" class="text-xs text-rose-600 dark:text-rose-400" x-text="err"></p>
+          <div class="flex justify-end gap-2 pt-1">
+            <button type="button" @click="open=false" class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700">Cancel</button>
+            <button type="submit" :disabled="busy" class="rounded-lg bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50" x-text="busy ? 'Starting…' : 'Start ▶'"></button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- list (SSR) -->
+  <section data-ka-section="runs.list">
+    <div class="flex items-center justify-between">
+      <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Runs<!--
+        D124 context-sensitive "?" — what a run is + the autonomous loop. -->
+        <a href="/help#run" target="ka-help" rel="noopener" title="What is a run? Open the Help deep-dive"
+           class="inline-flex items-center justify-center w-4 h-4 ml-1 align-middle rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold no-underline hover:ring-1 hover:ring-indigo-400">?</a></h2>
+      <div class="flex items-center gap-3 text-xs font-medium">
+        <button onclick="kaRunModalOpen()" class="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500">New run ▶</button>
+        <!-- a human-driven live session at a URL — drive it in noVNC, hit ● Record on the run page to capture (D150) -->
+        <button onclick="kaLiveModalOpen()" title="Open a live browser at a URL to drive yourself / record a manual flow"
+                class="rounded-lg border border-rose-300 dark:border-rose-700 px-3 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40">Live / Record ●</button>
+        <button th:if="runs.length > 0" onclick="kaClearDone()" class="text-rose-600 dark:text-rose-400 hover:underline">clear done</button>
+        <a href="/runs" class="text-indigo-600 dark:text-indigo-400 hover:underline">refresh</a>
+      </div>
+    </div>
+
+    <div class="mt-3 space-y-2">
+      <p th:if="runs.length == 0" class="text-sm text-slate-400 px-1 py-8 text-center">no runs yet — start one above</p>
+
+      <!-- a run id is its FOLDER name (D128) — it can carry spaces / non-ASCII, so encode the segment -->
+      <a th:each="s, iter: runs" th:href="'/runs/' + encodeURIComponent(s.runId)"
+         class="flex items-center gap-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-3 hover:border-indigo-300 hover:shadow-sm">
+        <script ka:scope="local">
+          var st = s.status;
+          _.dot = ({running:'bg-emerald-500 animate-pulse', completed:'bg-emerald-500', failed:'bg-rose-500', interrupted:'bg-amber-500', stopped:'bg-amber-500', terminated:'bg-amber-500'})[st] || 'bg-slate-300 dark:bg-slate-600';
+          _.badge = ({running:'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400', completed:'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400', failed:'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400', interrupted:'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400', stopped:'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400', terminated:'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400'})[st] || 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400';
+          _.label = st == 'running' ? 'in flight' : (st || 'unknown');
+          // Run again (D281 c): a settled SUITE run re-opens the kickoff modal filled from its RECORDED
+          // selector + options. A run without a selector (a legacy suite, a loop/live/check run) simply
+          // has no button — null, not '' (th:if #4).
+          _.replay = (!s.live && s.mode == 'suite' && s.selector && s.selector.length)
+            ? JSON.stringify({ selector: s.selector, options: s.options || {} }) : null;
+        </script>
+        <span class="inline-block h-2.5 w-2.5 rounded-full shrink-0" th:classappend="dot"></span>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-sm text-slate-800 dark:text-slate-200" th:text="s.runId">id</span>
+            <span class="text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5" th:classappend="badge" th:text="label">status</span>
+            <span class="text-[10px] text-slate-400" th:text="s.mode">mode</span>
+            <!-- a parse-only run settles `completed` like any other, so it would wear the same green badge —
+                 mark it, or the list reads as a verified pass of a suite that never touched the SUT (D76) -->
+            <span th:if="s.dryRun" class="text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400"
+                  title="dry run — parsed only, no step executed; the declared graph, not evidence">dry run</span>
+            <span th:if="s.hasVideo" class="text-[10px] text-slate-400" title="has a video recording">🎬</span>
+          </div>
+          <div class="text-xs text-slate-500 dark:text-slate-400 truncate" th:text="s.task || '(no goal recorded)'">task</div>
+          <!-- a failed run carries its reason (D136 — never a bare "failed"): show it inline,
+               full text on hover, so the list explains a failure without opening the run. The status-led
+               one-liner reads where a raw provider body would truncate to noise; the body stays on hover -->
+          <div th:if="s.error" class="text-xs text-rose-600 dark:text-rose-400 truncate" th:attr="'title': s.error"
+               th:text="s.errorShort ? s.errorShort : s.error">error</div>
+        </div>
+        <div class="shrink-0 text-right">
+          <div class="text-[11px] text-slate-400 ka-when" th:attr="'data-ms': s.finishedMs || s.startedMs"></div>
+          <div class="text-xs font-medium" th:classappend="s.live ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'" th:text="s.live ? 'connect →' : 'view →'">view →</div>
+        </div>
+        <!--/* Run again (D281 c) — opens the kickoff modal filled from this run's recorded selection;
+             edit before submitting and it is the run-a-VARIED-set flow. A folder re-resolves at kickoff,
+             so drift lands in the new run's own member manifest. */-->
+        <button th:if="replay" th:attr="'data-replay': replay, 'data-run': s.runId" title="run this selection again"
+                class="ka-again shrink-0 px-1.5 py-0.5 rounded text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40">Run again ▶</button>
+        <!-- the run's native karate report (every settled run renders one — D136) -->
+        <button th:if="s.hasReport &amp;&amp; !s.live" th:attr="'data-report': s.reportUrl" title="open the run report"
+                class="ka-report shrink-0 px-1.5 py-0.5 rounded text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40">report</button>
+        <!-- run-scoped traceability — what did THIS run verify? (Reports tab deep link, auto-generates) -->
+        <button th:unless="s.live" th:attr="'data-rtm': s.runId" title="the requirements this run verified (traceability matrix)"
+                class="ka-rtm shrink-0 px-1.5 py-0.5 rounded text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40">rtm</button>
+        <!-- delete (settled runs only — an in-flight one must be stopped first) -->
+        <button th:unless="s.live" th:attr="'data-del': s.runId" title="delete this run"
+                class="ka-del shrink-0 -mr-1 px-1.5 py-0.5 rounded text-slate-400 dark:text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40">✕</button>
+      </a>
+    </div>
+  </section>
+</div>
+
+<script>
+  // Live / Record kickoff (D150): open a live browser at a URL, then land on the run page
+  // where ● Record captures the flow. `var bot =` binds the bot in the persistent serve engine so the
+  // run page's bot.reset()/Recording.* work; the URL history is a sanctioned localStorage exception
+  // (mirrors the run goal's ka-goal-history).
+  function kaLiveModalOpen() { window.dispatchEvent(new CustomEvent('ka-live-modal-open')); }
+  function liveRecordModal() {
+    return {
+      open: false, url: '', record: true, busy: false, err: '', hint: '',
+      history: JSON.parse(localStorage.getItem('ka-url-history') || '[]'),
+      removeUrl(u) {
+        this.history = this.history.filter((h) => h !== u);
+        localStorage.setItem('ka-url-history', JSON.stringify(this.history));
+      },
+      save(u) {
+        if (!u) return;
+        this.history = [u].concat(this.history.filter((h) => h !== u)).slice(0, 8);
+        localStorage.setItem('ka-url-history', JSON.stringify(this.history));
+      },
+      // normalize/validate the URL: reject whitespace/multi-line paste (e.g. a copied prompt — bot.go
+      // would silently no-op on it), default the scheme to https:// so "example.com" just works, and
+      // rewrite localhost → host.docker.internal so the CONTAINER's Chrome can reach a SUT running on
+      // the host (the agent ships as a container; from inside it 'localhost' is the container itself).
+      normalizeUrl(raw) {
+        let u = (raw || '').trim();
+        if (!u) return '';
+        if (/\s/.test(u)) { throw new Error('enter a single URL (no spaces or line breaks)'); }
+        if (!/^[a-zA-Z][\w+.-]*:/.test(u)) u = 'https://' + u;   // bare host → https
+        try {
+          const p = new URL(u);
+          if (p.hostname === 'localhost' || p.hostname === '127.0.0.1') {
+            p.hostname = 'host.docker.internal';   // the Docker host (Desktop) — reach the host's SUT
+            u = p.toString();
+            this.hint = 'opening ' + p.host + ' (rewrote localhost → the docker host so the container can reach it)';
+          }
+        } catch (e) { /* not a parseable URL — let bot.go surface it */ }
+        return u;
+      },
+      async start() {
+        this.busy = true; this.err = ''; this.hint = '';
+        let u;
+        try { u = this.normalizeUrl(this.url); }
+        catch (e) { this.err = String(e.message || e); this.busy = false; return; }
+        try {
+          // acquire-or-create: reuses the active live bot if one exists, else launches one. Optionally
+          // arm recording right away (the common "Record" intent) — else land live, ● Record any time.
+          // stampLiveGoal puts the URL on the run so the GOAL tile shows it (not the generic "live run").
+          const js = 'var bot = Robot.create(); ' + (u ? 'bot.go(' + JSON.stringify(u) + '); ' : '')
+            + (this.record ? 'Recording.start(); ' : '')
+            + (u ? 'Harness.stampLiveGoal(' + JSON.stringify(u) + '); ' : '') + 'Harness.runs().active';
+          const runId = await karate.value(js);
+          this.save(u);
+          if (runId) { location.href = '/runs/' + encodeURIComponent(runId); }
+          else { this.err = 'could not start a live run'; this.busy = false; }
+        } catch (e) { this.err = String(e); this.busy = false; }
+      }
+    };
+  }
+
+  // The kickoff form is the shared modal (components/run-modal.html + pub/run-modal.js), opened by the
+  // "New run ▶" button. A hand-off lands here with query params (Requirements Explore: ?req=&goal=; a
+  // Checks Run: ?path= / ?check=; a run page's Run again: ?again=<runId>, wired below) — auto-open the
+  // modal preselected so the existing hand-offs still work.
+  (function () {
+    var params = new URLSearchParams(location.search);
+    var detail = {};
+    if (params.get('goal')) detail.goal = params.get('goal');
+    var goalRef = params.get('goalRef');
+    if (goalRef) {
+      try {
+        var storedGoal = sessionStorage.getItem('karate.explore.' + goalRef);
+        if (storedGoal !== null) detail.goal = storedGoal;
+      } catch (e) { console.error('Unable to restore exploration goal', e); }
+    }
+    if (params.get('req')) detail.req = params.get('req');
+    if (params.get('path')) detail.path = params.get('path');     // a project-root .feature / folder
+    if (params.get('check')) detail.check = params.get('check');  // a checks-relative .js / .md
+    if (Object.keys(detail).length) {
+      function openWhenReady() {
+        kaRunModalOpen(detail);
+        if (goalRef && detail.goal != null) {
+          try { sessionStorage.removeItem('karate.explore.' + goalRef); } catch (e) {}
+        }
+      }
+      var modal = document.querySelector('[data-ka-run-modal]');
+      if (modal && modal.dataset.kaReady === 'true') openWhenReady();
+      else window.addEventListener('ka-run-modal-ready', openWhenReady, { once: true });
+    }
+  })();
+  // delete verbs — same JSAPI the LLM uses (P3), then re-render the SSR list
+  async function kaClearDone() {
+    if (!confirm('Delete ALL settled runs (transcripts, recordings, screenshots)?')) return;
+    try { await karate.value('Harness.clear()'); } catch (e) { alert(e); }
+    location.reload();
+  }
+  // Run again (D281 c) — open the ONE kickoff surface pre-populated from the run's record; the user
+  // submits from there. Both entry points land on the same prepopulate call: a row's own button, and the
+  // run page's hand-off (it has no modal markup, so it navigates here as /runs?again=<runId>).
+  (function () {
+    var again = new URLSearchParams(location.search).get('again');
+    document.querySelectorAll('.ka-again[data-replay]').forEach(function (btn) {
+      var rec = JSON.parse(btn.getAttribute('data-replay'));
+      btn.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation();   // the row is a link — don't navigate to the old run
+        kaRunAgainOpen(rec.selector, rec.options);
+      });
+      // defer one tick so Alpine has registered the modal's @ka-run-modal-open listener
+      if (again && btn.getAttribute('data-run') === again) {
+        setTimeout(function () { kaRunAgainOpen(rec.selector, rec.options); }, 0);
+      }
+    });
+  })();
+  // the row itself is a link to the run console — the report button opens the report in a NEW tab
+  // (keeps the runs list in place so you can open several reports and compare)
+  document.querySelectorAll('.ka-report[data-report]').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      window.open(btn.getAttribute('data-report'), '_blank', 'noopener');   // the native report URL (Harness.reconcile)
+    });
+  });
+  // …and the rtm button to the run-scoped traceability matrix (the Reports tab auto-generates it)
+  document.querySelectorAll('.ka-rtm[data-rtm]').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      location.href = '/reports?run=' + encodeURIComponent(btn.getAttribute('data-rtm'));
+    });
+  });
+  document.querySelectorAll('.ka-del[data-del]').forEach(function (btn) {
+    btn.addEventListener('click', async function (e) {
+      e.preventDefault(); e.stopPropagation();   // the row is a link — don't navigate
+      var id = btn.getAttribute('data-del');
+      if (!confirm('Delete run ' + id + '?')) return;
+      try { await karate.value('Harness.delete(' + JSON.stringify(id) + ')'); } catch (err) { alert(err); }
+      location.reload();
+    });
+  });
+  // humanize the server-rendered timestamps (relative time needs "now", so it's the one client touch)
+  document.querySelectorAll('.ka-when[data-ms]').forEach(function (el) {
+    var ms = +el.getAttribute('data-ms'); if (!ms) return;
+    var d = Date.now() - ms, s = Math.floor(d / 1000), out;
+    if (s < 60) out = s + 's ago';
+    else { var m = Math.floor(s / 60); if (m < 60) out = m + 'm ago';
+      else { var h = Math.floor(m / 60); out = h < 24 ? h + 'h ago' : Math.floor(h / 24) + 'd ago'; } }
+    el.textContent = out;
+  });
+</script>

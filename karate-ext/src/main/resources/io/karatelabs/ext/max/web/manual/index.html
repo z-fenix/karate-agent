@@ -1,0 +1,548 @@
+<!--/* Manual mode — Home (/manual): where the release stands, what to do next, and the last run. Every
+     figure is a backend read: Requirement.readiness() (its state is the title, its criteria totals the line
+     under it — the rail keeps the compact verdict), Runner.tests() (every test the project can replay — the
+     same list the Tests screen shows and the rail counts), Requirement.matrix() (the worklist, over the leaves
+     readiness() grades, as Coverage reads them), Campaign.list() and Harness.runs() (each read once per request,
+     through request.cache). With no gap left, "Do this next" offers the next useful step: relaunch the last
+     campaign, or make one. "Run all tests" is the suite kickoff every page uses (run-modal.js, /api/eval). */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'Home · Karate Agent');
+
+  function cached(key, globalName, fn) {
+    var g = context.getGlobal(globalName);
+    if (!g) return null;
+    try { return request.cache(key, function () { return fn(g); }); } catch (e) { return null; }
+  }
+  var rd = cached('manual.readiness', 'requirement', function (g) { return g.readiness(); });
+  var tests = cached('manual.tests', 'runner', function (g) { return g.tests(); }) || [];
+  var runs = cached('manual.runs', 'harness', function (g) { return g.runs(); });
+  var camps = cached('manual.campaigns', 'campaign', function (g) { return g.list(); }) || [];
+  var hasGraph = !!(rd && rd.state);
+
+  // the title says where the release stands, the line under it the figure behind that
+  var STATE_TITLE = { READY: 'Ready to ship', CONDITIONAL: 'Almost ready to ship', NOT_READY: 'Not ready to ship' };
+  var tc = hasGraph && rd.totals ? rd.totals.criteria : null;
+  _.headline = hasGraph ? (STATE_TITLE[String(rd.state)] || 'Where the release stands') : 'No requirements yet';
+  _.lead = tc ? tc.covered + ' of ' + tc.total + (tc.total == 1 ? ' acceptance criterion has' : ' acceptance criteria have')
+      + ' a passing test' + (tc.failing ? ', and ' + tc.failing + ' failing.' : '.')
+      : 'Import what must be true on Coverage, then record a test for it.';
+
+  // the header line: the active project and the karate.env its runs execute under
+  var cur = work.current();
+  _.projectName = cur.name;
+  _.env = cur.env ? String(cur.env) : null;
+
+  // "Run the tests I have": every test the Tests page lists, already project-root relative and already
+  // free of the *.karate.js orchestrators (they compose runs, they are not tests)
+  var paths = [];
+  for (var i = 0; i < tests.length; i++) paths.push(String(tests[i].path));
+  _.runPaths = JSON.stringify(paths);
+  _.canRun = paths.length > 0;
+
+  // leaf requirements (the rows readiness() grades) → their normalized criticality and risk grade
+  var leafCrit = {}, leafRisk = {};
+  var leafRows = hasGraph ? (rd.requirements || []) : [];
+  for (var li = 0; li < leafRows.length; li++) {
+    leafCrit[String(leafRows[li].reqId)] = String(leafRows[li].criticality);
+    leafRisk[String(leafRows[li].reqId)] = String(leafRows[li].risk);
+  }
+
+  // stamp → the files its tests run from (matrix testFiles, only files still in the project): a gap with one
+  // opens that test instead of writing another. A criterion-less requirement is stamped as a whole.
+  var filesByStamp = {};
+  var matrix = hasGraph ? requirement.matrix() : null;
+  var mrows = (matrix && !matrix.error) ? (matrix.requirements || []) : [];
+  for (var mi = 0; mi < mrows.length; mi++) {
+    filesByStamp['@req=' + mrows[mi].id] = mrows[mi].testFiles || [];
+    var crits = mrows[mi].criteria || [];
+    for (var ci = 0; ci < crits.length; ci++) {
+      filesByStamp['@req=' + mrows[mi].id + '/' + crits[ci].id] = crits[ci].testFiles || [];
+    }
+  }
+
+  // the worklist: every criterion not covered, then every criterion-less leaf not covered — Coverage's rows,
+  // picked by the status the graph gives them and ordered by risk below, never re-graded (D358)
+  var critGaps = [], wholeGaps = [];
+  for (var wm = 0; wm < mrows.length; wm++) {
+    var mr = mrows[wm], rid = String(mr.id);
+    if (leafCrit[rid] === undefined) continue;
+    var mcs = mr.criteria || [];
+    for (var wc = 0; wc < mcs.length; wc++) {
+      if (String(mcs[wc].status) == 'COVERED') continue;
+      critGaps.push({ id: rid + '/' + mcs[wc].id, reqId: rid, text: String(mcs[wc].text), status: String(mcs[wc].status),
+        criticality: leafCrit[rid], priority: mr.priority, stamp: '@req=' + rid + '/' + mcs[wc].id });
+    }
+    if (!mcs.length && String(mr.status) != 'COVERED') {
+      wholeGaps.push({ id: rid, reqId: rid, text: String(mr.title), status: String(mr.status),
+        criticality: leafCrit[rid], priority: mr.priority, stamp: '@req=' + rid });
+    }
+  }
+  var worklist = critGaps.concat(wholeGaps);
+  // riskiest first: readiness()'s grade of the requirement (the "high risk" the row says), then its criticality
+  var RISK = ['HIGH', 'MEDIUM', 'LOW', 'NONE'], CRIT = ['high', 'medium', 'low'], STATUS = ['FAILING', 'NOTCOVERED', 'NOTRUN'];
+  function rank(list, v) { var r = list.indexOf(v); return r < 0 ? list.length : r; }
+  for (var wi = 0; wi < worklist.length; wi++) worklist[wi].order = wi;
+  worklist.sort(function (a, b) {
+    var d = rank(RISK, leafRisk[a.reqId]) - rank(RISK, leafRisk[b.reqId]) || rank(CRIT, a.criticality) - rank(CRIT, b.criticality);
+    if (d) return d;
+    d = rank(STATUS, a.status) - rank(STATUS, b.status);
+    if (d) return d;
+    var pa = a.priority == null ? null : String(a.priority).toLowerCase();
+    var pb = b.priority == null ? null : String(b.priority).toLowerCase();
+    if (pa != pb) return pa == null ? 1 : pb == null ? -1 : (pa < pb ? -1 : 1);
+    return a.order - b.order;
+  });
+
+  var STATE_WORD = { FAILING: 'failing', NOTCOVERED: 'never tested', NOTRUN: 'not run' };
+  // New test, handed the criterion (or criterion-less requirement) the gap's stamp names
+  function showHref(stamp) {
+    var id = String(stamp).replace(/^@req=/, '');
+    return '/manual/tests/new?req=' + encodeURIComponent(id);
+  }
+  var linked = kaWords.linkedTests(tests);
+  function action(row) {
+    var files = filesByStamp[row.stamp] || [];
+    if (!files.length) files = linked(String(row.stamp).replace(/^@req=/, ''));
+    if (!files.length) return { label: 'New test', href: showHref(row.stamp) };
+    return { label: 'Open test', href: '/manual/tests/edit?test=' + encodeURIComponent(String(files[0])) };
+  }
+  var next = [];
+  for (var xi = 0; xi < worklist.length && next.length < 3; xi++) {
+    var w = worklist[xi];
+    var act = action(w);
+    var word = w.status == 'NOTCOVERED' && act.label == 'Open test' ? 'linked, not run yet' : (STATE_WORD[w.status] || w.status.toLowerCase());
+    next.push({ text: w.text, mark: kaWords.coverageMark(w.status, w.criticality),
+      // "high risk" is readiness()'s grade, the one the rail's verdict counts
+      meta: w.id + ' · ' + (leafRisk[w.reqId] == 'HIGH' ? 'high risk, ' : '') + word,
+      label: act ? act.label : null, href: act ? act.href : null });
+  }
+  _.next = next;
+  _.hasGraph = hasGraph;
+
+  // no gap left (or no requirements yet): the next useful step instead of an empty block
+  var CAMP_DOT = { passed: 'm-dot--passed', failed: 'm-dot--failed', running: 'm-dot--inflight', notrun: 'm-dot--notrun' };
+  _.suggest = null;
+  if (!next.length) {
+    if (!hasGraph) {
+      _.suggest = { text: 'Import what must be true', mark: 'm-dot--notrun', href: '/manual/coverage', label: 'Go to Coverage',
+        meta: 'A requirements file lists the acceptance criteria your tests prove.' };
+    } else if (camps.length) {
+      var c0 = camps[0];
+      var st0 = String(c0.lastStatus || 'notrun');
+      _.suggest = { text: (c0.launches ? 'Launch again: ' : 'Launch ') + c0.name, mark: CAMP_DOT[st0] || 'm-dot--notrun',
+        launch: String(c0.name), label: 'Launch',
+        meta: 'Every criterion has a passing test. Relaunch the campaign to check that nothing broke.' };
+    } else {
+      _.suggest = { text: 'Group your tests into a campaign', mark: 'm-dot--notrun', href: '/manual/campaigns/new', label: 'New campaign',
+        meta: 'Launch them together before each release, and see what passed each time.' };
+    }
+  }
+
+  _.moreGaps = worklist.length > next.length ? worklist.length - next.length : 0;
+
+  // the first-case guide: three steps a project checks off by itself, read from what it already holds — a
+  // criterion to prove, a test, a criterion that test proves. A Home section, not a tour (console.md "Home").
+  var gTotal = tc ? tc.total : 0, gCovered = tc ? tc.covered : 0;
+  var gRecord = '/manual/tests/new';
+  for (var gn = 0; gn < next.length; gn++) {
+    if (next[gn].href && next[gn].href.indexOf('/manual/tests/new') == 0) { gRecord = next[gn].href; break; }
+  }
+  var gSteps = [
+    { title: 'Say what must be true', text: 'One sentence your app must make true. Your first test will prove it.',
+      done: gTotal > 0, result: gTotal + (gTotal == 1 ? ' acceptance criterion' : ' acceptance criteria') },
+    { title: 'Show it once', text: 'Do the flow in the live browser. The AI turns your recording into a test.',
+      done: tests.length > 0, result: tests.length + (tests.length == 1 ? ' test' : ' tests') + ' ready to replay' },
+    { title: 'Watch it pass', text: 'Replay it: a criterion with a passing test turns green, and the verdict moves.',
+      done: gCovered > 0, result: gCovered + ' of ' + gTotal + (gTotal == 1 ? ' criterion' : ' criteria') + ' covered' }
+  ];
+  var gAt = 0;
+  for (var gi = gSteps.length - 1; gi >= 0; gi--) { if (!gSteps[gi].done) gAt = gi + 1; }
+  for (var gj = 0; gj < gSteps.length; gj++) {
+    gSteps[gj].n = gj + 1;
+    gSteps[gj].cls = 'm-guide-step' + (gSteps[gj].done ? ' m-guide-step--done' : '') + (gAt == gj + 1 ? ' m-guide-step--now' : '');
+  }
+  // a project with no karate-boot.js and no test yet gets one with its first criterion, so its first recorded test
+  // can run: the server's dry run says whether Work.boot() would write it, and the step says so (a project holding
+  // a test a person owns is refused)
+  var gBoot = null;
+  if (gAt == 1) {
+    var plan = cached('manual.boot', 'work', function (g) { return g.boot({ dryRun: true }); });
+    gBoot = plan && !plan.error ? String(plan.path) : null;
+  }
+  _.guide = { steps: gSteps, at: gAt, fill: '--m-guide-to: ' + (gAt == 0 ? 100 : (gAt - 1) * 50) + '%', record: gRecord,
+    project: String(_.projectName || ''), boot: gBoot,
+    doneLine: gCovered + ' of ' + gTotal + ' acceptance ' + (gTotal == 1 ? 'criterion has' : 'criteria have')
+      + ' a passing test. Record the next one, or group your tests into a campaign.' };
+
+  // the last run, in plain words — its age, duration and mark as the Runs ledger writes them
+  var ago = kaWords.age, took = kaWords.duration, fileOf = kaWords.fileOf;
+  // the ledger's words for the same run (manual/runs.html), so one run reads the same on both screens
+  var KIND = { author: 'Wrote', codify: 'Wrote rules from what it saw', heal: 'Repaired', revise: 'Changed',
+    explore: 'Explored the app', troubleshoot: 'Looked into a failed run', live: 'Recorded a flow' };
+  var ENDED = { completed: 'done', failed: 'failed', stopped: 'stopped', terminated: 'ended early',
+    interrupted: 'interrupted', blocked: 'blocked', empty: 'nothing ran' };
+  // the ledger's newest row: an API test page's assistant turn is not one (manual/runs.html)
+  var last = null;
+  for (var lr = 0; !last && runs && runs.runs && lr < runs.runs.length; lr++) if (runs.runs[lr].kind != 'api') last = runs.runs[lr];
+  _.lastRun = null;
+  if (last) {
+    var status = String(last.status);
+    var members = last.memberVerdicts || [];
+    var failedN = last.failed == null ? 0 : last.failed;
+    var title;
+    var named = last.check ? ' ' + fileOf(last.check) : '';
+    if (status == 'running') {
+      title = (last.kind == 'suite' || last.kind == 'check') ? 'Replaying your tests'
+          : (KIND[last.kind] || 'Working') + named;
+    } else if (members.length) {
+      var passedN = 0;
+      for (var vi = 0; vi < members.length; vi++) if (members[vi].passed) passedN++;
+      // a campaign's launch is named by its campaign
+      var outcome = passedN == members.length ? (members.length == 1 ? 'the test passed' : 'all ' + members.length + ' tests passed')
+          : passedN + ' of ' + members.length + ' tests passed';
+      title = last.campaign ? last.campaign + ': ' + outcome
+          : members.length == 1 ? fileOf(members[0].path) + (passedN ? ' passed' : ' failed')
+          : passedN + ' of ' + members.length + ' tests passed';
+    } else if (last.kind == 'check') {
+      title = fileOf(last.task) + (status == 'completed' && !failedN ? ' passed' : ' ' + (ENDED[status] || status));
+    } else {
+      // an author or revise run that completed without touching its file says so on its record (changed:false)
+      title = (kaWords.unchanged(last) ? 'Nothing changed in' : kaWords.wroteNothing(last) ? 'Tried to write'
+          : (KIND[last.kind] || 'Run')) + named + (status == 'completed' ? '' : ' — ' + (ENDED[status] || status));
+    }
+    var meta = status == 'running'
+      ? ['started ' + ago(last.startedMs), last.ai ? 'uses AI' : 'no AI']
+      : [ago(last.finishedMs || last.startedMs), took(last.durationMs)];
+    var parts = [];
+    for (var mj = 0; mj < meta.length; mj++) if (meta[mj]) parts.push(meta[mj]);
+    _.lastRun = {
+      id: String(last.runId),
+      title: title,
+      meta: parts.join(' · '),
+      mark: kaWords.runMark(last, status == 'running').dot,
+      href: '/manual/runs/' + encodeURIComponent(String(last.runId)),
+      action: status == 'running' ? 'Watch' : 'Open'
+    };
+  }
+</script>
+<style>
+  .m-home-err { margin: 14px 0 0; font-size: 13.5px; color: var(--m-ink); }
+  .m-home-err::before { content: ''; display: inline-block; width: 9px; height: 9px; margin-right: 9px; border-radius: 50%; background: var(--m-red); }
+  .m-home-more { margin: 12px 0 0; font-size: 13.5px; color: var(--m-text-2); }
+  html:not(.m-guide-off) .m-home-next--guided { display: none; }
+
+  /* the first-case guide — the step you are on is the black card; a thread fills up to it, the step just
+     done pops its ✓ and the one you are on pings (manual.css "motion"); hidden per browser (m-guide-off) */
+  .m-guide { margin-top: 28px; padding: 24px 26px 26px; }
+  html.m-guide-off .m-guide { display: none; }
+  .m-guide-head { display: flex; align-items: flex-start; gap: 16px; }
+  .m-guide-head-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .m-guide-title { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.015em; }
+  .m-guide-sub { margin: 0; font-size: 14px; line-height: 1.5; color: var(--m-text-2); }
+  .m-guide-x {
+    margin-left: auto; flex: none; width: 30px; height: 30px; border: 0; border-radius: 50%; cursor: pointer;
+    background: transparent; color: var(--m-text-3); font-size: 18px; line-height: 1;
+  }
+  .m-guide-x:hover { background: var(--m-surface); color: var(--m-ink); }
+  .m-guide-path { position: relative; margin-top: 22px; }
+  .m-guide-track {
+    position: absolute; top: 35px; left: calc(100% / 6 - 4px); right: calc(100% / 6 - 4px); height: 2px;
+    background: var(--m-line); border-radius: 1px; overflow: hidden;
+  }
+  .m-guide-fill { display: block; height: 100%; width: var(--m-guide-to, 0%); background: var(--m-strong); }
+  .m-guide-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+  .m-guide-step {
+    position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 20px 18px 22px; border-radius: 16px; text-align: center;
+  }
+  .m-guide-bubble {
+    position: relative; z-index: 1; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+    background: var(--m-bg); border: 1.5px solid var(--m-ring-soft); color: var(--m-text-3);
+    font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+  }
+  .m-guide-step--done .m-guide-bubble { border-color: var(--m-green); color: transparent; }
+  .m-guide-step--done .m-guide-bubble::after {
+    content: '✓'; position: absolute; inset: 0; display: grid; place-items: center; color: var(--m-green); font-size: 14px;
+  }
+  .m-guide-step--now { background: var(--m-strong); color: var(--m-on-strong); box-shadow: var(--m-card-shadow); }
+  .m-guide-step--now .m-guide-bubble { background: var(--m-on-strong); border-color: var(--m-on-strong); color: var(--m-strong); }
+  .m-guide-step-title { font-size: 15.5px; font-weight: 600; }
+  .m-guide-step:not(.m-guide-step--now):not(.m-guide-step--done) .m-guide-step-title { color: var(--m-text-2); }
+  .m-guide-step-text { margin: 0; max-width: 32ch; font-size: 13.5px; line-height: 1.5; color: var(--m-text-2); }
+  .m-guide-step--now .m-guide-step-text { color: var(--m-on-strong-2); }
+  .m-guide-step-result { margin: 0; font-size: 13px; color: var(--m-text-2); }
+  .m-guide-act { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; margin-top: 8px; }
+  .m-guide-form { display: flex; gap: 8px; width: 100%; }
+  .m-guide-form .m-input { flex: 1; min-width: 0; padding: 10px 12px; font-size: 14px; }
+  .m-guide-step--now .m-input { background: #FFFFFF; color: #14161C; border-color: rgba(20, 22, 28, 0.12); }
+  .m-guide-step--now .m-input::placeholder { color: #767C8C; }
+  .m-guide-alt { margin: 0; font-size: 13px; color: var(--m-on-strong-2); }
+  .m-body .m-guide-step--now .m-link { color: var(--m-accent-on-strong); }
+  .m-guide-step--now .m-beacon { --m-beacon: color-mix(in srgb, var(--m-accent-on-strong) 65%, transparent); }
+  .m-guide-msg { margin: 0; font-size: 13px; color: var(--m-on-strong); }
+  .m-guide-done-actions { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; padding-top: 20px; }
+  @media (max-width: 900px) {
+    .m-guide-steps { grid-template-columns: 1fr; }
+    .m-guide-track { display: none; }
+  }
+
+  @keyframes m-guide-fill { from { width: 0; } }
+  @keyframes m-guide-leave { to { opacity: 0; transform: translate3d(0, -8px, 0) scale(0.98); } }
+  .m-guide-steps > :nth-child(2) { --m-g: 1; }
+  .m-guide-steps > :nth-child(3) { --m-g: 2; }
+  .m-guide-fill { animation: m-guide-fill 0.9s var(--m-ease) 0.4s both; }
+  .m-guide-bubble { animation: m-bubble 0.42s var(--m-ease) both; animation-delay: calc(0.2s + var(--m-g, 0) * 0.14s); }
+  .m-guide-step--now .m-guide-bubble {
+    --m-ping: color-mix(in srgb, var(--m-on-strong) 55%, transparent); --m-ping-to: 9px;
+    animation: m-bubble 0.42s var(--m-ease) both, m-ping 1.6s var(--m-ease) 3;
+    animation-delay: calc(0.2s + var(--m-g, 0) * 0.14s), 1.3s;
+  }
+  .m-guide-step--done:has(+ .m-guide-step--now) .m-guide-bubble::after { animation: m-pop 0.4s var(--m-ease) 0.8s both; }
+  .m-guide--done .m-guide-bubble::after { animation: m-pop 0.4s var(--m-ease) both; animation-delay: calc(0.45s + var(--m-g, 0) * 0.16s); }
+  .m-guide--leaving { animation: m-guide-leave 0.32s ease-in both; }
+</style>
+<script src="/pub/run-modal.js" ka:nocache="true"></script>
+<script>
+  // Run every saved test as one set, then follow it on its run page. A refusal (another set holds the
+  // browser) comes back as an error and stays on this page.
+  // Relaunch a campaign straight from "Do this next" (Campaign.run, async with the video, as its page does)
+  function kaHomeLaunch(btn) {
+    var err = document.getElementById('m-home-err');
+    btn.disabled = true;
+    if (err) err.hidden = true;
+    window.karate.value('Campaign.run(' + JSON.stringify(btn.getAttribute('data-m-campaign')) + ', { async: true, video: true })')
+      .then(function (out) {
+        if (!out || !out.runId) throw new Error((out && out.error) || 'the launch did not start');
+        location.assign('/manual/runs/' + encodeURIComponent(out.runId));
+      }).catch(function (e) {
+        btn.disabled = false;
+        if (err) { err.textContent = (e && e.message) ? e.message : String(e); err.hidden = false; }
+      });
+  }
+  function kaManualRunAll(btn) {
+    var paths = JSON.parse(btn.getAttribute('data-paths') || '[]');
+    var err = document.getElementById('m-home-err');
+    if (!paths.length) return;
+    btn.disabled = true;
+    if (err) err.hidden = true;
+    kaKickSuite(paths, { async: true, video: true }).then(function (out) {
+      location.assign('/manual/runs/' + encodeURIComponent(out.runId));
+    }).catch(function (e) {
+      btn.disabled = false;
+      if (err) { err.textContent = (e && e.message) ? e.message : String(e); err.hidden = false; }
+    });
+  }
+
+  // The first-case guide (manual.home.guide). Its first criterion is one sentence written as a requirements
+  // file through the Coverage import (/ui/requirements/import). Hiding it is per browser (localStorage, read
+  // before paint by pub/manual.js); the done card shows once, only where this browser followed the case.
+  window.kaGuide = (function () {
+    var HIDDEN = 'ka-manual-guide', FOLLOWED = 'ka-manual-guide:';
+    // where the step says it creates karate-boot.js (data-m-boot), the server writes it first (Work.boot); a 409
+    // means the project has its own by now, and the criterion is added all the same
+    function ensureBoot(el) {
+      if (!el.closest('[data-m-boot]')) return Promise.resolve();
+      return window.karate.value('Work.boot()').then(function (out) {
+        if (!out || (out.error && out.status != 409)) throw new Error((out && out.error) || 'karate-boot.js was not created.');
+      });
+    }
+    function read(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+    function write(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+    function say(text) {
+      var el = document.querySelector('[data-m-guide-msg]');
+      if (el) { el.textContent = text || ''; el.hidden = !text; }
+    }
+    function send(name, markdown) {
+      return fetch('/ui/requirements/import?name=' + encodeURIComponent(name), {
+        method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: markdown
+      }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j }; }); });
+    }
+    function addFirst(form) {
+      var what = String(form.what.value || '').replace(/\s+/g, ' ').trim().replace(/[.!]+$/, '');
+      if (!what) return false;
+      var markdown = '# First case\n\n#### REQ-001: ' + what + '\n@criticality=high\n\n**Acceptance:**\n- 1: ' + what + '\n';
+      var btn = form.querySelector('button');
+      btn.disabled = true;
+      say('');
+      function attempt(i) {
+        return send(i ? 'first-case-' + (i + 1) + '.md' : 'first-case.md', markdown).then(function (res) {
+          if (res.status == 409 && i < 5) return attempt(i + 1);
+          if (!res.body || !res.body.ok) throw new Error((res.body && res.body.error) || 'The criterion was not saved.');
+          location.reload();
+        });
+      }
+      ensureBoot(form).then(function () { return attempt(0); })
+        .catch(function (e) { btn.disabled = false; say(e && e.message ? e.message : String(e)); });
+      return false;
+    }
+    function importFile(input) {
+      var f = input.files && input.files[0];
+      if (!f) return;
+      say('');
+      ensureBoot(input).then(function () { return f.text(); }).then(function (text) { return send(f.name, text); }).then(function (res) {
+        if (res.status == 409) throw new Error(f.name + ' is already in this project. Replace it from Coverage.');
+        if (!res.body || !res.body.ok) throw new Error((res.body && res.body.error) || 'The file was not imported.');
+        location.reload();
+      }).catch(function (e) { say(e && e.message ? e.message : String(e)); }).then(function () { input.value = ''; });
+    }
+    function runAll() {
+      var b = document.querySelector('[data-m-run-all]');
+      if (b && !b.disabled) b.click();
+    }
+    function hide(btn) {
+      var card = btn.closest('[data-m-guide]');
+      write(HIDDEN, 'hidden');
+      if (card) card.classList.add('m-guide--leaving');
+      // Show the guide, clicked during the leave, wins
+      setTimeout(function () { if (read(HIDDEN) == 'hidden') document.documentElement.classList.add('m-guide-off'); }, 320);
+    }
+    function init() {
+      var card = document.querySelector('[data-m-guide]');
+      if (!card) return;
+      var key = FOLLOWED + card.getAttribute('data-m-project');
+      if (!card.classList.contains('m-guide--done')) { write(key, 'following'); return; }
+      if (read(key) == 'following') { card.hidden = false; write(key, 'done'); }
+    }
+    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('m-swap', init);   // a run that completes the case swaps the guide in place
+    return { addFirst: addFirst, importFile: importFile, runAll: runAll, hide: hide };
+  })();
+</script>
+<section class="m-page" data-ka-section="manual.home">
+  <header class="m-head">
+    <div class="m-head-text" data-ka-section="manual.home.state" data-m-live>
+      <span class="m-eyebrow"><span th:text="projectName">project</span><th:block th:if="env"> · <span th:text="env">env</span></th:block></span>
+      <h1 class="m-title" th:text="headline">Ready to ship</h1>
+      <p class="m-sub" th:text="lead">8 of 8 acceptance criteria have a passing test.</p>
+    </div>
+    <div class="m-head-end">
+      <button type="button" class="m-btn m-btn--ghost" onclick="kaManualRunAll(this)" data-m-run-all
+              th:attr="'data-paths': runPaths" th:disabled="!canRun"
+              th:title="canRun ? 'Replays every saved test. No AI is used.' : 'No saved tests yet.'">Run all tests</button>
+      <a class="m-btn m-btn--ghost" href="/manual/tests/api">New API test</a>
+      <a class="m-btn" href="/manual/tests/new">New test</a>
+    </div>
+  </header>
+  <p id="m-home-err" class="m-home-err" role="alert" hidden></p>
+
+  <!--/* the first-case guide sits in a wrapper that always renders, so a run that completes the case swaps the
+       done card in live (a live section that is absent from the fresh render is kept, never added) */-->
+  <div data-ka-section="manual.home.guide" data-m-live>
+    <section th:if="guide.at > 0" class="m-card m-guide" data-m-guide th:attr="'data-m-project': guide.project" aria-label="Your first case">
+      <div class="m-guide-head">
+        <div class="m-guide-head-text">
+          <span class="m-eyebrow">Your first case</span>
+          <h2 class="m-guide-title">From one sentence to a passing test</h2>
+          <p class="m-guide-sub">Three steps, about five minutes. Each one checks itself off.</p>
+        </div>
+        <button type="button" class="m-guide-x" onclick="kaGuide.hide(this)" aria-label="Hide the guide" title="Hide the guide">×</button>
+      </div>
+      <div class="m-guide-path">
+        <span class="m-guide-track" aria-hidden="true"><span class="m-guide-fill" th:attr="'style': guide.fill"></span></span>
+        <ol class="m-guide-steps">
+          <li th:each="s: guide.steps" th:class="s.cls" th:attr="'aria-current': guide.at == s.n ? 'step' : null">
+            <span class="m-guide-bubble" th:text="s.n">1</span>
+            <span class="m-guide-step-title" th:text="s.title">Say what must be true</span>
+            <p th:if="s.done" class="m-guide-step-result" th:text="s.result">1 acceptance criterion</p>
+            <p th:unless="s.done" class="m-guide-step-text" th:text="s.text">One sentence your app must make true.</p>
+            <div th:if="guide.at == s.n && s.n == 1" class="m-guide-act" th:attr="'data-m-boot': guide.boot">
+              <form class="m-guide-form" onsubmit="return kaGuide.addFirst(this)">
+                <input class="m-input" name="what" maxlength="200" required aria-label="What must be true"
+                       placeholder="A visitor can create an account">
+                <button type="submit" class="m-btn">Add</button>
+              </form>
+              <p class="m-guide-alt">or <button type="button" class="m-link" onclick="this.nextElementSibling.click()">import a requirements file</button><input type="file" accept=".md,text/markdown" hidden onchange="kaGuide.importFile(this)"></p>
+              <p th:if="guide.boot" class="m-guide-alt">It also creates <span th:text="guide.boot">karate-boot.js</span> in this project, the file its tests run with.</p>
+              <p class="m-guide-msg" data-m-guide-msg role="alert" hidden></p>
+            </div>
+            <div th:if="guide.at == s.n && s.n == 2" class="m-guide-act">
+              <a class="m-btn m-beacon" th:href="guide.record">Record a test</a>
+            </div>
+            <div th:if="guide.at == s.n && s.n == 3" class="m-guide-act">
+              <button type="button" class="m-btn m-beacon" onclick="kaGuide.runAll()">Run all tests</button>
+              <a class="m-link" href="/manual/coverage">Open Coverage</a>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </section>
+    <section th:if="guide.at == 0" class="m-card m-guide m-guide--done" data-m-guide th:attr="'data-m-project': guide.project" hidden aria-label="Your first case">
+      <div class="m-guide-head">
+        <div class="m-guide-head-text">
+          <span class="m-eyebrow">Getting started</span>
+          <h2 class="m-guide-title">Your first case is done</h2>
+          <p class="m-guide-sub" th:text="guide.doneLine">1 of 1 acceptance criterion has a passing test.</p>
+        </div>
+        <button type="button" class="m-guide-x" onclick="kaGuide.hide(this)" aria-label="Hide the guide" title="Hide the guide">×</button>
+      </div>
+      <div class="m-guide-path">
+        <span class="m-guide-track" aria-hidden="true"><span class="m-guide-fill" style="--m-guide-to: 100%"></span></span>
+        <ol class="m-guide-steps">
+          <li th:each="s: guide.steps" class="m-guide-step m-guide-step--done">
+            <span class="m-guide-bubble" th:text="s.n">1</span>
+            <span class="m-guide-step-title" th:text="s.title">Say what must be true</span>
+            <p class="m-guide-step-result" th:text="s.result">1 acceptance criterion</p>
+          </li>
+        </ol>
+      </div>
+      <div class="m-guide-done-actions">
+        <a class="m-btn" href="/manual/tests/new">Record the next test</a>
+        <a class="m-link" href="/manual/campaigns/new">New campaign</a>
+      </div>
+    </section>
+  </div>
+
+  <!--/* only the SSR figures follow the project live: the error line and the buttons keep their state; with no
+       criterion yet, the guide's first step says what this worklist would, so the list steps aside for it */-->
+  <div class="m-section" th:classappend="guide.at == 1 ? 'm-home-next--guided' : ''" data-ka-section="manual.home.next" data-m-live>
+    <div class="m-section-head"><h2 class="m-section-title">Do this next</h2></div>
+    <div class="m-rows" th:if="next.length > 0">
+      <a class="m-row" style="--m-row-meta: 190px" th:each="n: next" th:href="n.href" data-m-next>
+        <span class="m-dot" th:classappend="n.mark"></span>
+        <div class="m-row-main">
+          <span class="m-row-title" th:text="n.text">criterion</span>
+          <span class="m-row-sub" th:text="n.meta">meta</span>
+        </div>
+        <span class="m-row-act" th:text="n.label">New test</span>
+      </a>
+    </div>
+    <p th:if="moreGaps > 0" class="m-home-more"><span th:text="moreGaps + (moreGaps == 1 ? ' more gap' : ' more gaps')">2 more gaps</span> on <a href="/manual/coverage">Coverage</a>.</p>
+    <div class="m-rows" th:if="suggest">
+      <a th:if="suggest.href" class="m-row" style="--m-row-meta: 190px" th:href="suggest.href" data-m-suggest>
+        <span class="m-dot" th:classappend="suggest.mark"></span>
+        <div class="m-row-main">
+          <span class="m-row-title" th:text="suggest.text">Group your tests into a campaign</span>
+          <span class="m-row-sub" th:text="suggest.meta">meta</span>
+        </div>
+        <span class="m-row-act" th:text="suggest.label">New campaign</span>
+      </a>
+      <div th:if="suggest.launch" class="m-row" style="--m-row-meta: 190px" data-m-suggest>
+        <span class="m-dot" th:classappend="suggest.mark"></span>
+        <div class="m-row-main">
+          <span class="m-row-title" th:text="suggest.text">Launch again: Release 1.3</span>
+          <span class="m-row-sub" th:text="suggest.meta">meta</span>
+        </div>
+        <button type="button" class="m-row-act" th:attr="'data-m-campaign': suggest.launch" onclick="kaHomeLaunch(this)">Launch</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="m-section" data-ka-section="manual.home.lastrun" data-m-live>
+    <div class="m-section-head"><h2 class="m-section-title">Last run</h2></div>
+    <div class="m-rows" th:if="lastRun">
+      <a class="m-row" style="--m-row-meta: 190px" th:href="lastRun.href" th:attr="'data-run': lastRun.id">
+        <span class="m-dot" th:classappend="lastRun.mark"></span>
+        <div class="m-row-main">
+          <span class="m-row-title" th:text="lastRun.title">Last run</span>
+          <span class="m-row-sub" th:text="lastRun.meta">meta</span>
+        </div>
+        <span class="m-row-act" th:text="lastRun.action">Open</span>
+      </a>
+    </div>
+    <div class="m-empty" th:unless="lastRun">
+      <div class="m-empty-title">No run yet</div>
+      <div class="m-empty-sub">Run the tests you have, or record a new one.</div>
+    </div>
+  </div>
+</section>

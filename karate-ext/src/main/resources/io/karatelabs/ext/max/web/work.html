@@ -1,0 +1,187 @@
+<!--/* /work — the project picker (D126). A content fragment; layout.html provides the shell. Pure SSR
+     (D88): work.current()/work.list() are filesystem scans off the HTTP thread — zero data calls on
+     load. The active project is a tinted banner; every project under the /work ceiling is a card. The
+     Use button POSTs Work.use(path) over /api/eval (a deliberate state change — like a kickoff), and the
+     server's `reanchor` SSE event reloads every open tab onto the newly-anchored project. */-->
+<script ka:scope="global">
+  _.cur = work.current();
+  var list = work.list();
+  _.projects = (list && list.error) ? [] : list;
+  context.setGlobal('pageTitle', 'Projects · Karate Agent');
+</script>
+
+<div class="max-w-5xl mx-auto px-6 py-8" x-data="kaWorkPicker()" data-ka-section="work">
+  <div class="flex items-end justify-between gap-3">
+    <div>
+      <h1 class="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Projects</h1>
+      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+        One project is active at a time (the container is a single tenant). Pick a project under the
+        workspace ceiling <span class="font-mono" th:text="cur.ceiling">/work</span> to re-anchor the
+        whole server — every open tab reloads onto it.
+      </p>
+    </div>
+    <div class="flex items-center gap-2 shrink-0">
+      <!-- create a new EMPTY folder under the ceiling (Work.create) + re-anchor onto it (D126) -->
+      <form @submit.prevent="create()" class="flex items-center gap-1.5">
+        <input x-model="newName" :disabled="busy" placeholder="new-folder-name" spellcheck="false"
+               class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-xs font-mono text-slate-700 dark:text-slate-200 w-40 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+        <button type="submit" :disabled="busy || !newName.trim()"
+                class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 whitespace-nowrap">
+          <span x-text="busy ? '…' : '+ New folder'">+ New folder</span>
+        </button>
+      </form>
+      <!-- materialize the jar-baked flagship demo project (Work.seed) + re-anchor onto it (D127) -->
+      <button @click="seed()" :disabled="busy"
+              class="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50 whitespace-nowrap">
+        <span x-text="busy ? 'Creating…' : '✨ Create demo project'">✨ Create demo project</span>
+      </button>
+      <!-- point an LLM at this server to drive the switch / set up a scenario for you (D120) -->
+      <a href="/connect" class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 whitespace-nowrap no-underline">Connect an LLM</a>
+    </div>
+  </div>
+
+  <!-- the active anchor — a tinted banner (hidden when NO project is selected: the bare ceiling is not a project, D186) -->
+  <div th:unless="cur.noProject" class="mt-6 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/40 p-4" data-ka-section="work.active">
+    <div class="flex items-center gap-2 text-xs uppercase tracking-wide text-indigo-600 dark:text-indigo-400 font-semibold">Active project</div>
+    <div class="mt-1 font-mono text-lg text-slate-900 dark:text-slate-100" th:text="cur.name">name</div>
+    <div class="mt-0.5 font-mono text-xs text-slate-500 dark:text-slate-400" th:text="cur.root">/work/name</div>
+  </div>
+
+  <!-- NO PROJECT SELECTED (D186) — the ceiling is empty (fresh /work). Not a project; the way forward is
+       to create one. This is the first-run docker landing. -->
+  <div th:if="cur.noProject"
+       class="mt-8 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-10 text-center"
+       data-ka-section="work.no-project">
+    <p class="text-lg font-semibold text-slate-800 dark:text-slate-100">No project yet</p>
+    <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">
+      Projects live under the workspace ceiling <span class="font-mono" th:text="cur.ceiling">/work</span>.
+      Create one to get started — then it becomes the active project.</p>
+    <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
+      <button @click="seed()" :disabled="busy"
+              class="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+        <span x-text="busy ? 'Creating…' : '✨ Create demo project'">✨ Create demo project</span>
+      </button>
+      <form @submit.prevent="create()" class="flex items-center gap-1.5">
+        <input x-model="newName" :disabled="busy" placeholder="new-folder-name" spellcheck="false"
+               class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-2 text-xs font-mono text-slate-700 dark:text-slate-200 w-40 focus:outline-none focus:ring-1 focus:ring-indigo-400">
+        <button type="submit" :disabled="busy || !newName.trim()"
+                class="rounded-lg border border-slate-300 dark:border-slate-600 px-4 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 whitespace-nowrap">
+          <span x-text="busy ? '…' : '+ New empty folder'">+ New empty folder</span>
+        </button>
+      </form>
+      <a href="/connect" class="rounded-lg border border-slate-300 dark:border-slate-600 px-4 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 no-underline">Connect an LLM</a>
+    </div>
+    <p class="mt-4 text-xs text-slate-400 dark:text-slate-500">
+      the demo is a full worked example — requirements · rules · API + UI checks — pointed at the built-in <span class="font-mono">/demo</span> storefront</p>
+    <p class="mt-4 text-xs text-slate-400 dark:text-slate-500">
+      Pointing at your own work? Mount a folder of projects at <span class="font-mono" th:text="cur.ceiling">/work</span>,
+      or mount the parent and select it:
+      <span class="font-mono">docker run -v "$PWD/..":/work -e KARATE_SERVE_SELECT="$(basename "$PWD")" …</span></p>
+  </div>
+
+  <!-- the library — one card per direct child of the ceiling; Use re-anchors -->
+  <div class="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" data-ka-section="work.library">
+    <div th:each="p: projects"
+         class="rounded-xl border bg-white dark:bg-slate-800 p-5 shadow-sm"
+         th:classappend="p.current ? 'border-indigo-400 dark:border-indigo-500 ring-1 ring-indigo-300 dark:ring-indigo-700' : 'border-slate-200 dark:border-slate-700'">
+      <div class="flex items-start justify-between gap-2">
+        <div class="text-2xl" th:text="p.project ? '📁' : '📂'">📁</div>
+        <span th:if="p.current" class="text-[10px] uppercase tracking-wide font-semibold text-indigo-600 dark:text-indigo-400">current</span>
+      </div>
+      <h2 class="mt-2 font-semibold font-mono text-slate-900 dark:text-slate-100" th:text="p.name">name</h2>
+      <!-- marker badges (rulebooks/requirements/checks/.karate/karate-pom.json) -->
+      <div class="mt-2 flex flex-wrap gap-1">
+        <span th:each="m: p.markers"
+              class="text-[10px] font-mono rounded bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-1.5 py-0.5"
+              th:text="m">marker</span>
+        <span th:if="p.markers.length == 0" class="text-[10px] text-slate-400 dark:text-slate-500 italic">bare folder</span>
+      </div>
+      <div class="mt-4 flex items-center gap-2">
+        <button th:unless="p.current"
+                th:value="p.path"
+                @click="use($el.value)"
+                :disabled="busy"
+                class="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+          <span x-text="busy ? 'Switching…' : 'Use'">Use</span>
+        </button>
+        <span th:if="p.current" class="text-xs text-slate-400 dark:text-slate-500">active</span>
+        <!-- download the whole project folder as a zip (GET /api/work-zip/<name>) -->
+        <a th:href="'/api/work-zip/' + p.name" download
+           class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 no-underline">⬇ Zip</a>
+        <!-- recursively delete the project folder (Work.delete) — never the active one -->
+        <button th:unless="p.current"
+                th:value="p.name"
+                @click="del($el.value)"
+                :disabled="busy"
+                class="ml-auto rounded-lg border border-rose-300 dark:border-rose-700 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 disabled:opacity-50">Delete</button>
+      </div>
+    </div>
+    <div x-show="error" x-cloak class="col-span-full rounded-lg border border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 p-3 text-sm text-rose-700 dark:text-rose-300" x-text="error"></div>
+  </div>
+</div>
+
+<script>
+  // The Use action rides /api/eval (Work.use is a deliberate state change — like a kickoff — that
+  // re-seeds the run engine, so it does NOT go through /ui/). On success the server broadcasts a
+  // `reanchor` SSE event and layout.html reloads every tab; we also navigate home as a fallback.
+  function kaWorkPicker() {
+    return {
+      busy: false,
+      error: null,
+      newName: '',
+      // create a new empty folder under the ceiling, then re-anchor onto it (Work.create over /api/eval)
+      async create() {
+        var name = (this.newName || '').trim();
+        if (!name) { return; }
+        this.busy = true;
+        this.error = null;
+        try {
+          var res = await window.karate.value("Work.create(" + JSON.stringify(name) + ")");
+          if (res && res.error) { throw new Error(res.error); }
+          window.location.href = '/';   // land on the new project's home
+        } catch (e) {
+          this.error = String(e && e.message ? e.message : e);
+          this.busy = false;
+        }
+      },
+      async use(path) {
+        this.busy = true;
+        this.error = null;
+        try {
+          await window.karate.value("Work.use(" + JSON.stringify(path) + ")");
+          window.location.href = '/';   // land on the newly-anchored project's home
+        } catch (e) {
+          this.error = String(e && e.message ? e.message : e);
+          this.busy = false;
+        }
+      },
+      // recursively delete a project folder (Work.delete over /api/eval), then refresh the list
+      async del(name) {
+        if (!window.confirm('Delete project folder "' + name + '" and all its contents? This cannot be undone.')) { return; }
+        this.busy = true;
+        this.error = null;
+        try {
+          var res = await window.karate.value("Work.delete(" + JSON.stringify(name) + ")");
+          if (res && res.error) { throw new Error(res.error); }
+          window.location.reload();   // re-render the project list without the deleted folder
+        } catch (e) {
+          this.error = String(e && e.message ? e.message : e);
+          this.busy = false;
+        }
+      },
+      // materialize the jar-baked flagship demo project under the ceiling, then re-anchor onto it
+      async seed() {
+        this.busy = true;
+        this.error = null;
+        try {
+          var res = await window.karate.value("Work.seed('demo')");
+          if (res && res.error) { throw new Error(res.error); }
+          window.location.href = '/';   // land on the freshly-seeded demo project's home
+        } catch (e) {
+          this.error = String(e && e.message ? e.message : e);
+          this.busy = false;
+        }
+      }
+    };
+  }
+</script>

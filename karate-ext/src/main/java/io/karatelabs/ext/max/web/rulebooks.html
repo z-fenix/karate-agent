@@ -1,0 +1,60 @@
+<!--/* /rulebooks — the Rulebook list (E2-a, D86/D95). A content fragment: layout.html provides the
+     shell. Pure SSR (D88): rule.list() is a filesystem scan off the HTTP thread — zero data calls
+     on page load; each card links to the /rulebooks/<name> 3-pane editor. */-->
+<script ka:scope="global">
+  var books = rule.list();
+  _.rulebooks = (books && books.error) ? [] : books;
+  _.listError = (books && books.error) ? books.error : null;
+  context.setGlobal('pageTitle', 'Rules · Karate Agent');
+</script>
+
+<div class="max-w-5xl mx-auto px-6 py-8" data-ka-section="rules">
+  <div class="flex items-end justify-between gap-3">
+    <div>
+      <h1 class="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Rules<!--
+        D124 context-sensitive "?" — a same-origin deep-link straight into the Help deep-dive (the
+        offline-report counterpart copies the slug for pasting into the Help lookup). -->
+        <a href="/help#rule" target="ka-help" rel="noopener" title="What is a rulebook? Open the Help deep-dive"
+           class="inline-flex items-center justify-center w-4 h-4 ml-1 align-middle rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold no-underline hover:ring-1 hover:ring-indigo-400">?</a></h1>
+      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+        Executable business rules — a <span class="font-mono">calc.js</span> oracle + a typed
+        <span class="font-mono">schema.js</span> + stored <span class="font-mono">scenarios.json</span> rows.
+        Run a scenario, read the audit narration, diff it against the previous run the console recorded.
+      </p>
+    </div>
+    <!-- the reusable "point an LLM at this page" pattern (D120, kaPromptButton in pub/eval.js) — hand the
+         LLM the rule-authoring skill + this server; it forward-engineers / repairs rulebooks for a user
+         who never touches the console. -->
+    <div x-data="kaPromptButton('rule-authoring', {context: 'I want to create or improve business rules (rulebooks) on this server.'})"
+         x-cloak class="shrink-0">
+      <button @click="copy()" title="Copy a prompt that points any LLM at the rule-authoring skill on this server — paste it into your AI and describe the rules you want; it drives the engine for you."
+              class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 whitespace-nowrap"
+              x-text="label">Copy LLM prompt</button>
+    </div>
+  </div>
+
+  <div th:if="listError" class="mt-6 rounded-xl border border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 p-4 text-sm text-rose-700 dark:text-rose-300" th:text="listError">error</div>
+
+  <!-- empty state: where rulebooks live + the minimal folder shape -->
+  <div th:if="rulebooks.length == 0 &amp;&amp; !listError"
+       class="mt-8 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-8 text-center text-sm text-slate-500 dark:text-slate-400">
+    <p class="font-medium text-slate-700 dark:text-slate-300">No rulebooks yet</p>
+    <p class="mt-2">A rulebook is a folder under <span class="font-mono">rulebooks/</span> holding
+      <span class="font-mono">calc.js</span> · <span class="font-mono">schema.js</span> · <span class="font-mono">scenarios.json</span>.</p>
+    <p class="mt-1">Don't author it by hand — <strong>describe the rules to an LLM and it builds one for you</strong>
+      (<span class="font-mono">Rule.create</span> over the API). Copy the prompt above, paste it into your AI,
+      and tell it what the rules should do.</p>
+  </div>
+
+  <div class="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" data-ka-section="rules.list">
+    <a th:each="b: rulebooks" th:href="'/rulebooks/' + b.name"
+       class="group rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm hover:border-indigo-400 hover:shadow">
+      <div class="text-2xl">📋</div>
+      <h2 class="mt-2 font-semibold font-mono text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400"
+          th:text="b.name">name</h2>
+      <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+        <span th:text="b.scenarioCount">0</span> scenario<span th:unless="b.scenarioCount == 1">s</span>
+      </p>
+    </a>
+  </div>
+</div>

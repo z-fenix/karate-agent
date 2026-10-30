@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title th:text="app.ui.title">App</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%274%27 fill=%27%234338CA%27/%3E%3C/svg%3E"/>
+<script>
+  (function () {
+    var stored = localStorage.getItem('theme');
+    var dark = stored === 'dark' || (stored !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    if (dark) document.documentElement.classList.add('dark');
+  })();
+</script>
+<meta th:if="context.csrf" name="csrf-token" th:content="context.csrf.token"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: { extend: { colors: {
+      ink: { 50: '#F8FAFC', 100: '#F1F5F9', 200: '#E2E8F0', 300: '#CBD5E1', 400: '#94A3B8', 500: '#64748B',
+             600: '#475569', 700: '#334155', 800: '#1E293B', 900: '#0F172A', 950: '#020617' },
+      brand: { 50: '#EEF2FF', 100: '#E0E7FF', 300: '#A5B4FC', 500: '#6366F1', 600: '#4F46E5', 700: '#4338CA',
+               800: '#3730A3', 950: '#1E1B4B' },
+      coral: { 50: '#FEF3F2', 300: '#FDA29B', 400: '#F97066', 500: '#F04438' }
+    } } }
+  };
+</script>
+<style>[x-cloak] { display: none !important; }</style>
+<script src="/pub/schema-form.js" ka:nocache="true"></script>
+<script src="/pub/app.js" ka:nocache="true" defer></script>
+<script defer src="https://unpkg.com/alpinejs@3.14.3/dist/cdn.min.js"></script>
+</head>
+<body class="bg-ink-50 dark:bg-ink-950 text-ink-900 dark:text-ink-100 antialiased">
+<div class="flex min-h-screen">
+  <aside data-rail class="w-16 shrink-0 bg-ink-950 dark:bg-ink-900 border-r border-ink-800 hidden md:flex flex-col items-center py-4 gap-1 text-ink-400 sticky top-0 h-screen">
+    <a href="/" title="Home" class="w-10 h-10 rounded-lg hover:bg-ink-800 hover:text-white flex items-center justify-center">
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12 12 2.25 21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25"/></svg>
+    </a>
+    <a href="/docs" title="API docs" class="w-10 h-10 rounded-lg hover:bg-ink-800 hover:text-white flex items-center justify-center">
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"/></svg>
+    </a>
+  </aside>
+  <div class="flex-1 flex flex-col min-w-0">
+    <header class="h-14 bg-white dark:bg-ink-900 border-b border-ink-200 dark:border-ink-800 px-4 md:px-6 flex items-center gap-3 md:gap-4 sticky top-0 z-30">
+      <nav data-topnav class="md:hidden flex items-center gap-1 -ml-1 text-ink-500 dark:text-ink-400">
+        <a href="/" title="Home" class="w-9 h-9 rounded-lg hover:bg-ink-100 dark:hover:bg-ink-800 flex items-center justify-center"><svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12 12 2.25 21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25"/></svg></a>
+        <a href="/docs" title="API docs" class="w-9 h-9 rounded-lg hover:bg-ink-100 dark:hover:bg-ink-800 flex items-center justify-center"><svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"/></svg></a>
+      </nav>
+      <a href="/" class="font-semibold text-ink-900 dark:text-ink-100 truncate min-w-0" th:text="app.ui.title">App</a>
+      <span data-subtitle class="hidden lg:inline text-xs text-ink-400" th:text="app.ui.subtitle">subtitle</span>
+      <div class="flex-1"></div>
+      <button id="theme-toggle" type="button" onclick="cycleTheme()" title="Theme"
+              class="w-9 h-9 rounded-lg hover:bg-ink-100 dark:hover:bg-ink-800 text-ink-600 dark:text-ink-300 flex items-center justify-center">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"/></svg>
+      </button>
+    </header>
+    <main id="main-content" class="flex-1 px-4 py-6 md:px-8 md:py-8 max-w-[1200px] w-full mx-auto" th:utext="content">content</main>
+  </div>
+</div>
+</body>
+</html>

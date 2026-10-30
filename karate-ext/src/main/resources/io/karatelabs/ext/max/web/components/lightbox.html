@@ -1,0 +1,30 @@
+<!--/* The shared screenshot LIGHTBOX (the veriquant widget harvest) — one overlay any
+     console page reuses: the run console's screenshot strip, the outcome report's step
+     screenshots, and the future V4 review center. Include once per page:
+       <th:block th:insert="~{components/lightbox :: lightbox}"></th:block>
+     and open it from anywhere via kaLightboxOpen([{url, title}, ...], startIndex) (pub/lightbox.js).
+     Keyboard: arrows page, Home/End jump, Esc closes — preventDefault only fires while the overlay
+     is open, so page inputs keep their cursor keys. */-->
+<div th:fragment="lightbox" x-data="kaLightbox()" x-show="open" x-cloak
+     class="fixed inset-0 z-50 bg-slate-950/85 flex items-center justify-center p-6"
+     @ka-lightbox-open.window="show($event.detail)"
+     @click.self="close()"
+     @keydown.escape.window="if (open) close()"
+     @keydown.window.arrow-left="if (open) { $event.preventDefault(); nav(-1) }"
+     @keydown.window.arrow-right="if (open) { $event.preventDefault(); nav(1) }"
+     @keydown.window.home="if (open) { $event.preventDefault(); jump(0) }"
+     @keydown.window.end="if (open) { $event.preventDefault(); jump(shots.length - 1) }">
+  <button type="button" @click="close()" title="close (Esc)"
+          class="absolute top-4 right-4 h-10 w-10 rounded-full bg-white/10 hover:bg-white/20 text-white text-xl">×</button>
+  <button type="button" @click="nav(-1)" :disabled="index <= 0" title="previous (←)"
+          class="absolute left-4 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-white/10 hover:bg-white/20 text-white text-xl disabled:opacity-30">‹</button>
+  <button type="button" @click="nav(1)" :disabled="index >= shots.length - 1" title="next (→)"
+          class="absolute right-4 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-white/10 hover:bg-white/20 text-white text-xl disabled:opacity-30">›</button>
+  <figure class="max-w-full max-h-full min-w-0 flex flex-col items-center gap-2">
+    <img :src="current.url" :alt="current.title || ''" class="max-w-full max-h-[85vh] object-contain rounded-lg"/>
+    <figcaption class="flex items-center gap-3 text-xs text-slate-300">
+      <span x-text="(index + 1) + ' / ' + shots.length + (current.title ? ' — ' + current.title : '')"></span>
+      <a :href="current.url" target="_blank" class="text-indigo-300 hover:text-indigo-200 underline shrink-0">open ↗</a>
+    </figcaption>
+  </figure>
+</div>

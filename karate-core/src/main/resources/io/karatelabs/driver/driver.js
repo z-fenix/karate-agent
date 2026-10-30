@@ -1,0 +1,532 @@
+/**
+ * Karate JS Runtime - Browser-side utilities for element discovery and interaction
+ * Namespace: window.__kjs
+ */
+(function() {
+    // Check if resolve already exists (may be extended by agent-look.js)
+    if (window.__kjs && window.__kjs.resolve) return;
+
+    // Initialize or extend __kjs
+    var kjs = window.__kjs || (window.__kjs = {});
+
+    // ==================== Logging ====================
+    // LLMs can call __kjs.getLogs() to see what happened
+
+    if (!kjs._logs) kjs._logs = [];
+
+    kjs.log = function(msg, data) {
+        var entry = {msg: msg, time: Date.now()};
+        if (data) entry.data = data;
+        this._logs.push(entry);
+        if (this._logs.length > 100) this._logs.shift();
+    };
+
+    kjs.getLogs = function() {
+        return this._logs;
+    };
+
+    kjs.clearLogs = function() {
+        this._logs = [];
+    };
+
+    // ==================== Shadow DOM Utilities ====================
+
+    kjs._hasShadowCache = undefined;
+
+    /**
+     * Check if page uses shadow DOM (cached per look() cycle).
+     */
+    kjs.hasShadowDOM = function() {
+        if (this._hasShadowCache !== undefined) return this._hasShadowCache;
+        var allElements = document.querySelectorAll('*');
+        for (var i = 0; i < allElements.length; i++) {
+            if (allElements[i].shadowRoot) {
+                this._hasShadowCache = true;
+                return true;
+            }
+        }
+        this._hasShadowCache = false;
+        return false;
+    };
+
+    /**
+     * Recursively find ALL elements matching selector, including inside shadow roots.
+     * Returns actual shadow elements (not hosts).
+     */
+    kjs.querySelectorAllDeep = function(selector, root) {
+        root = root || document;
+        var seen = new Set();
+        var results = [];
+
+        function collect(node) {
+            var matches = node.querySelectorAll(selector);
+            for (var i = 0; i < matches.length; i++) {
+                if (!seen.has(matches[i])) {
+                    seen.add(matches[i]);
+                    results.push(matches[i]);
+                }
+            }
+            // Recurse into shadow roots
+            var allEls = node.querySelectorAll('*');
+            for (var j = 0; j < allEls.length; j++) {
+                if (allEls[j].shadowRoot) {
+                    collect(allEls[j].shadowRoot);
+                }
+            }
+        }
+
+        collect(root);
+        return results;
+    };
+
+    /**
+     * Recursively find first element matching selector, including shadow roots.
+     */
+    kjs.querySelectorDeep = function(selector, root) {
+        root = root || document;
+        var el = root.querySelector(selector);
+        if (el) return el;
+        var allEls = root.querySelectorAll('*');
+        for (var i = 0; i < allEls.length; i++) {
+            if (allEls[i].shadowRoot) {
+                el = kjs.querySelectorDeep(selector, allEls[i].shadowRoot);
+                if (el) return el;
+            }
+        }
+        return null;
+    };
+
+    /**
+     * Convenience: querySelector with shadow DOM fallback.
+     * Used by Locators.java for CSS selectors.
+     */
+    kjs.qsDeep = function(selector) {
+        var el = document.querySelector(selector);
+        if (el) return el;
+        if (!this.hasShadowDOM()) return null;
+        return this.querySelectorDeep(selector);
+    };
+
+    /**
+     * Convenience: querySelectorAll with shadow DOM fallback.
+     * Used by Locators.java for CSS selectors.
+     */
+    kjs.qsaDeep = function(selector) {
+        if (!this.hasShadowDOM()) {
+            return document.querySelectorAll(selector);
+        }
+        return this.querySelectorAllDeep(selector);
+    };
+
+    /**
+     * Escape a string for use as a CSS identifier (id / class), with a
+     * minimal fallback for engines lacking CSS.escape.
+     */
+    kjs.cssEscapeIdent = function(s) {
+        s = String(s);
+        if (window.CSS && CSS.escape) return CSS.escape(s);
+        return s.replace(/[^a-zA-Z0-9_-]/g, function(c) { return '\\' + c; });
+    };
+
+    /**
+     * Build a GLOBALLY-unique CSS selector that re-resolves to exactly this
+     * element via document.querySelector. Walks ancestors building a
+     * descendant path, scoping each step by :nth-of-type ONLY among same-tag
+     * siblings (which is what :nth-of-type actually means), and short-circuits
+     * at the nearest ancestor (or the element itself) carrying a unique id.
+     *
+     * This replaces the old "<selector>:nth-of-type(i+1)" enumeration form,
+     * which was wrong: an UNSCOPED :nth-of-type counts among an element's
+     * same-type siblings, not globally across the document, so any selector
+     * whose matches are not same-parent siblings produced locators that
+     * resolve to the wrong element or to null. Used by Locators.findAllJs.
+     *
+     * Light-DOM only: an element inside a shadow root yields a path relative
+     * to that root (a plain CSS selector cannot cross shadow boundaries) —
+     * the same limitation the previous form had.
+     */
+    kjs.uniqueCss = function(el) {
+        if (!el || el.nodeType !== 1) return null;
+        if (el.id) {
+            var idSel = '#' + this.cssEscapeIdent(el.id);
+            try { if (document.querySelectorAll(idSel).length === 1) return idSel; } catch (e) {}
+        }
+        var parts = [];
+        var node = el;
+        while (node && node.nodeType === 1 && node !== document.documentElement) {
+            if (node.id) {
+                var anchor = '#' + this.cssEscapeIdent(node.id);
+                try {
+                    if (document.querySelectorAll(anchor).length === 1) {
+                        parts.unshift(anchor);
+                        return parts.join(' > ');
+                    }
+                } catch (e) {}
+            }
+            var seg = node.tagName.toLowerCase();
+            var parent = node.parentNode;
+            if (parent && parent.nodeType === 1) {
+                var total = 0, index = 0;
+                for (var i = 0; i < parent.children.length; i++) {
+                    var c = parent.children[i];
+                    if (c.tagName === node.tagName) {
+                        total++;
+                        if (c === node) index = total;
+                    }
+                }
+                if (total > 1) seg += ':nth-of-type(' + index + ')';
+            }
+            parts.unshift(seg);
+            node = parent;
+        }
+        return parts.join(' > ');
+    };
+
+    /**
+     * Extract visible text from a shadow root's content.
+     */
+    kjs._getShadowText = function(shadowRoot) {
+        if (!shadowRoot) return '';
+        // Shadow-host visibility — descendants of a display:none / visibility:hidden /
+        // aria-hidden host don't render at all, so an invisible host should yield
+        // empty text. Same root-not-checked bug class as getVisibleText.
+        var host = shadowRoot.host;
+        if (host) {
+            if (host.getAttribute && host.getAttribute('aria-hidden') === 'true') return '';
+            var hostStyle = window.getComputedStyle(host);
+            if (hostStyle.display === 'none' || hostStyle.visibility === 'hidden') return '';
+        }
+        var text = '';
+        var walker = document.createTreeWalker(shadowRoot, NodeFilter.SHOW_TEXT, null, false);
+        var node;
+        while ((node = walker.nextNode())) {
+            // Walk the full ancestor chain inside the shadow tree, mirroring
+            // getVisibleText. parentElement returns null at the shadow-root
+            // boundary (shadowRoot is a DocumentFragment, not an Element), so
+            // the loop terminates naturally. Without this, a hidden ancestor
+            // above the immediate parent (e.g. <div hidden><span>X</span></div>)
+            // would leak its text.
+            var parent = node.parentElement;
+            var hidden = false;
+            while (parent) {
+                if (parent.getAttribute('aria-hidden') === 'true') { hidden = true; break; }
+                var style = window.getComputedStyle(parent);
+                if (style.display === 'none' || style.visibility === 'hidden') { hidden = true; break; }
+                parent = parent.parentElement;
+            }
+            if (!hidden) text += node.textContent;
+        }
+        return text.trim().replace(/\s+/g, ' ');
+    };
+
+    // ==================== Quiescent-scan memo ====================
+
+    /**
+     * A scan is a bracket during which the caller guarantees the DOM and its computed styles
+     * are holding still. While one is open, getVisibleText() / isVisible() / the hidden-ancestor
+     * walks answer from a per-element memo instead of recomputing.
+     *
+     * Why this exists: resolve()/resolveAll() evaluate the text predicate over EVERY candidate,
+     * and getVisibleText() walks each candidate's subtree asking getComputedStyle per ancestor
+     * per text node — so one document-wide resolve costs O(nodes x depth) style reads. A caller
+     * that resolves once per element pays that whole cost once PER ELEMENT, and it is the same
+     * few thousand answers every time. Measured on a live enterprise page (1152 nodes, 57
+     * elements derived, one derivation pass): 2,832,252 getComputedStyle calls and 1500 ms with
+     * no scan, against 8,886 calls and 27 ms inside one — the same answers, 55x faster.
+     *
+     * The memo is only sound while nothing moves, and only the CALLER knows that: a passive
+     * derivation pass does by construction, a click does not. So the window is caller-owned —
+     * and it is a single function taking a callback rather than a begin/end pair, so it cannot
+     * be left open, and (JS being single-threaded) it cannot outlive the synchronous call that
+     * opened it. Nesting re-uses the outer scan.
+     *
+     * A CLOSED scan must cost nothing: getVisibleText/isVisible consult the memo once per call
+     * and their inner loops are untouched, so a caller that never opens one runs the same code
+     * it always did.
+     */
+    var _scan = null;
+
+    kjs.withScan = function(fn) {
+        if (_scan) return fn();                     // nested — the outer bracket owns the memo
+        _scan = {text: new Map(), vis: new Map()};
+        try {
+            return fn();
+        } finally {
+            _scan = null;
+        }
+    };
+
+    /** Whether a scan is currently open — for a caller keeping its own derived memo alongside. */
+    kjs.inScan = function() {
+        return !!_scan;
+    };
+
+    // ==================== Shared Utilities ====================
+
+    kjs.isVisible = function(el) {
+        if (!el) return false;
+        if (_scan) {
+            var memo = _scan.vis.get(el);
+            if (memo === undefined) {
+                memo = _isVisible(el);
+                _scan.vis.set(el, memo);
+            }
+            return memo;
+        }
+        return _isVisible(el);
+    };
+
+    function _isVisible(el) {
+        if (el.getAttribute('aria-hidden') === 'true') return false;
+        var style = window.getComputedStyle(el);
+        if (style.display === 'none') return false;
+        if (style.visibility === 'hidden') return false;
+        if (style.pointerEvents === 'none') return false;
+        var rect = el.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) return false;
+        // Check if element is obscured by an overlay (modal backdrop, etc.)
+        // Skip for elements inside shadow DOM — elementFromPoint returns the shadow host
+        if (!el.getRootNode || el.getRootNode() === document) {
+            var cx = rect.left + rect.width / 2;
+            var cy = rect.top + rect.height / 2;
+            if (cx >= 0 && cy >= 0 && cx < window.innerWidth && cy < window.innerHeight) {
+                var topEl = document.elementFromPoint(cx, cy);
+                if (topEl && topEl !== el && !el.contains(topEl) && !topEl.contains(el)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+
+    kjs.getVisibleText = function(el) {
+        if (!el) return '';
+        // The memo is consulted ONCE per call, never inside the walk below: the ancestor loop
+        // is the hottest code in the whole driver (tens of millions of iterations on a dense
+        // page), and routing it through a lookup taxed callers who never open a scan by ~8%.
+        if (_scan) {
+            var memo = _scan.text.get(el);
+            if (memo !== undefined) return memo;
+        }
+        var result = '';
+        // Self-visibility — the walker below only inspects ancestors STRICTLY
+        // BETWEEN the text node and `el` (parent !== el is the loop guard), so
+        // `el` itself was never checked. A display:none `el` would leak all its
+        // text. Match the same triple of checks the walker performs on ancestors.
+        var selfHidden = !!(el.getAttribute && el.getAttribute('aria-hidden') === 'true');
+        if (!selfHidden && el.nodeType === 1) {
+            var selfStyle = window.getComputedStyle(el);
+            selfHidden = selfStyle.display === 'none' || selfStyle.visibility === 'hidden';
+        }
+        if (!selfHidden) {
+            var text = '';
+            var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
+            var node;
+            while ((node = walker.nextNode())) {
+                var parent = node.parentElement;
+                var hidden = false;
+                while (parent && parent !== el) {
+                    if (parent.getAttribute('aria-hidden') === 'true') { hidden = true; break; }
+                    var style = window.getComputedStyle(parent);
+                    if (style.display === 'none' || style.visibility === 'hidden') { hidden = true; break; }
+                    parent = parent.parentElement;
+                }
+                if (!hidden) text += node.textContent;
+            }
+            result = text.trim().replace(/\s+/g, ' ');
+            // Fallback: if no light DOM text and element has shadow root, try shadow content
+            if (!result && el.shadowRoot) {
+                result = this._getShadowText(el.shadowRoot);
+            }
+        }
+        if (_scan) _scan.text.set(el, result);
+        return result;
+    };
+
+    kjs.hasMatchingDescendant = function(el, text, contains, selector) {
+        var descendants = el.querySelectorAll(selector);
+        for (var i = 0; i < descendants.length; i++) {
+            var desc = descendants[i];
+            // Text BEFORE visibility, deliberately: isVisible() ends in getBoundingClientRect +
+            // elementFromPoint — a layout flush and a hit test — while getVisibleText() only reads
+            // styles. Same result set, but the expensive half now runs only for elements whose text
+            // actually matches, instead of for every node on the page. (See _matchList.)
+            var descText = this.getVisibleText(desc);
+            if (!descText) continue;
+            var matches = contains
+                ? descText.indexOf(text) !== -1
+                : descText === text;
+            if (matches && this.isVisible(desc)) return true;
+        }
+        return false;
+    };
+
+    kjs.getSelector = function(tag) {
+        if (!tag || tag === '*') return '*';
+        var map = {
+            'button': 'button, [role="button"], input[type="submit"], input[type="button"]',
+            'a': 'a, a[href], [role="link"]',
+            'select': 'select, [role="combobox"], [role="listbox"]',
+            'input': 'input:not([type="hidden"]), textarea, [role="textbox"]'
+        };
+        return map[tag] || tag;
+    };
+
+    // ==================== Wildcard Resolver ====================
+    // Public API: __kjs.resolve(tag, text, index, contains)
+
+    /**
+     * Extension seam: register a candidate ranker consulted by resolve().
+     *
+     * The ranker receives (matches, ctx) where matches is the full list of
+     * elements satisfying the resolve criteria in DOM order (visible,
+     * leaf-text match \u2014 the same predicate the default path applies) and
+     * ctx is {tag, text, index, contains, selector} with text normalized.
+     * It returns the ranked candidate list; index selection then applies to
+     * that list. The ranker may reorder matches or add candidates of its own
+     * (e.g. elements the default visibility filter excluded). A ranker that
+     * throws or returns a non-array is ignored for that resolution.
+     *
+     * With no ranker registered, resolution behavior is unchanged (first
+     * visible leaf match in DOM order, short-circuit preserved).
+     * Pass null to unregister.
+     */
+    kjs.setResolveRanker = function(fn) {
+        this._resolveRanker = (typeof fn === 'function') ? fn : null;
+    };
+
+    /**
+     * Match candidates against text criteria.
+     * Shared logic for light DOM and shadow DOM resolution.
+     */
+    kjs._resolveFromCandidates = function(candidates, tag, text, index, contains) {
+        var selector = this.getSelector(tag);
+        text = text.replace(/\s+/g, ' ').trim(); // normalize whitespace (including \u00a0)
+        if (this._resolveRanker) {
+            return this._resolveRanked(candidates, tag, text, index, contains, selector);
+        }
+        var count = 0;
+        for (var i = 0; i < candidates.length; i++) {
+            var el = candidates[i];
+            if (text === '') {
+                if (!this.isVisible(el)) continue;
+                count++;
+                if (count === index) return el;
+                continue;
+            }
+            // text first, then the layout-forcing visibility test — see _matchList
+            var elText = this.getVisibleText(el);
+            if (!elText) continue;
+            var matches = contains
+                ? elText.indexOf(text) !== -1
+                : elText === text;
+            if (matches && this.isVisible(el)) {
+                if (this.hasMatchingDescendant(el, text, contains, selector)) continue;
+                count++;
+                if (count === index) return el;
+            }
+        }
+        return null;
+    };
+
+    /**
+     * The predicate itself, as a list: every candidate satisfying (tag, text),
+     * in DOM order. The unranked path above keeps its own short-circuiting copy
+     * (it can stop at the index-th match); everything that needs the WHOLE list
+     * comes through here, so there is one implementation of "what matches".
+     */
+    kjs._matchList = function(candidates, tag, text, contains, selector) {
+        var matches = [];
+        for (var i = 0; i < candidates.length; i++) {
+            var el = candidates[i];
+            if (text === '') {
+                if (this.isVisible(el)) matches.push(el);
+                continue;
+            }
+            // Cheap test first. isVisible() forces layout (getBoundingClientRect) and hit-tests
+            // (elementFromPoint) — on a `*` resolve over an enterprise page that is thousands of
+            // layout flushes, and all but a handful are spent on elements whose text never matched.
+            // getVisibleText() reads styles only. The set is identical; the order is not.
+            var elText = this.getVisibleText(el);
+            if (!elText) continue;
+            var ok = contains
+                ? elText.indexOf(text) !== -1
+                : elText === text;
+            if (ok && this.isVisible(el) && !this.hasMatchingDescendant(el, text, contains, selector)) {
+                matches.push(el);
+            }
+        }
+        return matches;
+    };
+
+    /**
+     * Every candidate resolve() would consider for (tag, text), in resolve()'s
+     * own order — same visibility + leaf-text predicate, same ranker seam, same
+     * shadow-DOM fallback (the deep sweep runs when the light DOM matched none).
+     *
+     * This exists for the caller that needs an element's INDEX rather than the
+     * element at an index: without it, "which index am I?" is answered by calling
+     * resolve() for 1, 2, 3 … n, and every one of those re-scans the document.
+     * On a page whose text repeats — an enterprise screen with the same column
+     * header in six list views — that walk dominates the caller's whole run.
+     * `resolveAll(tag, text, contains)[i - 1] === resolve(tag, text, i, contains)`.
+     */
+    kjs.resolveAll = function(tag, text, contains) {
+        var selector = this.getSelector(tag);
+        text = ('' + (text || '')).replace(/\s+/g, ' ').trim();
+        var matches = this._matchList(document.querySelectorAll(selector), tag, text, contains, selector);
+        if (!matches.length && this.hasShadowDOM()) {
+            matches = this._matchList(this.querySelectorAllDeep(selector), tag, text, contains, selector);
+        }
+        if (!this._resolveRanker) return matches;
+        try {
+            var ranked = this._resolveRanker(matches.slice(), {
+                tag: tag, text: text, index: 1, contains: contains, selector: selector
+            });
+            if (Array.isArray(ranked)) return ranked;
+        } catch (e) {
+            this.log('resolve ranker failed, using default order', {error: '' + e});
+        }
+        return matches;
+    };
+
+    /**
+     * Ranked resolution path (active only when a ranker is registered).
+     * Collects ALL matches with the same predicate the default path applies,
+     * hands them to the ranker, then applies the same index selection to the
+     * ranked list \u2014 so an identity ranker reproduces default behavior exactly.
+     */
+    kjs._resolveRanked = function(candidates, tag, text, index, contains, selector) {
+        var matches = this._matchList(candidates, tag, text, contains, selector);
+        var ranked = matches;
+        try {
+            var result = this._resolveRanker(matches.slice(), {
+                tag: tag, text: text, index: index, contains: contains, selector: selector
+            });
+            if (Array.isArray(result)) ranked = result;
+        } catch (e) {
+            this.log('resolve ranker failed, using default order', {error: '' + e});
+        }
+        // same selection semantics as the default path: the index-th match, 1-based
+        for (var j = 0; j < ranked.length; j++) {
+            if (j + 1 === index) return ranked[j];
+        }
+        return null;
+    };
+
+    kjs.resolve = function(tag, text, index, contains) {
+        var selector = this.getSelector(tag);
+        // Try light DOM first
+        var candidates = document.querySelectorAll(selector);
+        var el = this._resolveFromCandidates(candidates, tag, text, index, contains);
+        if (el) return el;
+        // Shadow DOM fallback
+        if (this.hasShadowDOM()) {
+            var deepCandidates = this.querySelectorAllDeep(selector);
+            el = this._resolveFromCandidates(deepCandidates, tag, text, index, contains);
+            if (el) return el;
+        }
+        this.log('Wildcard not found', {tag: tag, text: text, index: index, contains: contains});
+        return null;
+    };
+})();

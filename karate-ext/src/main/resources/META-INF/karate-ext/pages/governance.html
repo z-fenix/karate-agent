@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Governance — the graded spec</title>
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('karate-theme');
+        if (!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', t);
+        window.addEventListener('storage', function (e) {
+          if (e.key === 'karate-theme' && e.newValue) {
+            document.documentElement.setAttribute('data-theme', e.newValue);
+          }
+        });
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    })();
+  </script>
+  <!-- THE one governance page shell (D191): always at ext/governance/pages/governance.html — written by
+       Openapi.report(). Every number is READ from window.KARATE_GOVERNANCE, which is what Openapi.grade
+       returned, INCLUDING the headline: the verdict word, its sentence and its chips are minted by
+       GovernanceDigest and rendered identically by the markdown reader (D227f).
+
+       Same order as the Contract page, and deliberately: answer → work → the three judgements → the
+       findings → the method. A reader moving between the tabs should not have to learn a second grammar. -->
+  <link rel="stylesheet" href="../coverage.css">
+  <link rel="stylesheet" href="../governance-report.css">
+</head>
+<body>
+  <div id="k-topnav"></div>
+  <div class="k-coverage-ext" x-data="governanceReport" x-cloak>
+    <div class="k-head">
+      <div>
+        <h1>Governance &mdash; the graded spec</h1>
+        <div class="k-sub"><span x-text="subtitle"></span><button
+            type="button" class="k-help-q"
+            title="What is this grade? Copy the help-id — paste it into the Help tab or your AI chat"
+            onclick="kaCopyHelp('governance')">?</button></div>
+      </div>
+      <div class="k-head-actions">
+        <button class="k-gloss-btn" @click="glossaryOpen = true" title="What do these terms mean?">? Glossary</button>
+        <span class="k-pill k-tagpill" x-show="level.name" :title="level.means" x-text="level.name"></span>
+      </div>
+    </div>
+
+    <!-- THE EMPTY STATE — the ordinary answer for a project that declared the ext before it bound a
+         document. An absence of evidence, stated, with the thing to declare. -->
+    <template x-if="grade.absent">
+      <div class="k-notmeasured">
+        <span class="k-pill k-warn">NOTHING GRADED</span>
+        <div>
+          <div x-text="grade.absent"></div>
+          <div class="k-sub" x-text="grade.why"></div>
+          <div class="k-refresh">
+            <div class="k-lbl">Grade one with</div>
+            <pre x-text="grade.mint"></pre>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ── 1. THE VERDICT ──────────────────────────────────────────────────────────────────────────── -->
+    <template x-if="headline.word">
+      <div class="k-shipbanner" :class="stateClass">
+        <div class="k-shipverdict">
+          <div class="k-shiplbl">Result</div>
+          <div class="k-shipword" x-text="headline.word"></div>
+          <div class="k-shipsub" x-text="headline.sentence"></div>
+        </div>
+        <div class="k-shipsplit">
+          <template x-for="c in (headline.chips || [])" :key="c.label">
+            <span class="k-shipcount" :class="c.tone ? 'k-' + c.tone : ''" x-text="c.n + ' ' + c.label"></span>
+          </template>
+        </div>
+      </div>
+    </template>
+
+    <!-- ── 2. NEXT ─────────────────────────────────────────────────────────────────────────────────── -->
+    <template x-if="(grade.actions || []).length">
+      <div class="k-next">
+        <h2>Next</h2>
+        <ol>
+          <template x-for="(a, ai) in grade.actions" :key="ai">
+            <li><b x-text="a.do"></b> <span class="k-sub" x-text="a.why"></span></li>
+          </template>
+        </ol>
+      </div>
+    </template>
+
+    <!-- ── 3. THE SHIP VERDICT AND THE LADDER, kept apart from the findings ────────────────────────────
+         The verdict is decided by GATES, never by the index — so they are shown as separate facts rather
+         than as one number a reader would take for a grade. -->
+    <div class="k-scorecards" x-show="!grade.absent">
+      <div class="k-axiscard">
+        <div class="k-axishd"><span class="k-axislabel">Ship verdict</span><span class="k-info" @click="openGlossary('verdict')" title="What decides this?">&#9432;</span></div>
+        <div class="k-axisnum" :class="verdictClass" x-text="verdictWord"></div>
+        <div class="k-axisask">Can this API ship on what was checked?</div>
+        <div class="k-axisnote" x-show="grade.verdictNote" x-text="grade.verdictNote"></div>
+      </div>
+      <div class="k-axiscard">
+        <div class="k-axishd"><span class="k-axislabel">Index</span><span class="k-info" @click="openGlossary('index')" title="How is this computed?">&#9432;</span></div>
+        <div class="k-axisnum" x-text="grade.index == null ? 'not scored' : pct(grade.index)"></div>
+        <div class="k-axisask">The weighted harmonic mean of the dimensions that had evidence. A gate is never folded into it.</div>
+        <div class="k-axisnote" x-show="(grade.notMeasured || []).length">
+          Not measured: <span x-text="(grade.notMeasured || []).join(', ')"></span>
+        </div>
+      </div>
+      <div class="k-axiscard">
+        <div class="k-axishd"><span class="k-axislabel">Maturity</span><span class="k-info" @click="openGlossary('level')" title="What are the levels?">&#9432;</span></div>
+        <div class="k-axisnum">
+          <span x-text="level.name || '—'"></span><span class="k-axisden" x-show="level.rung != null" x-text="' · level ' + level.rung"></span>
+        </div>
+        <div class="k-axisask" x-show="level.means" x-text="level.means"></div>
+        <div class="k-axisnote" x-show="level.blockedBy" x-text="'Held here by: ' + level.blockedBy"></div>
+      </div>
+    </div>
+
+    <!-- the gates: each one decides the verdict on its own, so they are read before anything is scored -->
+    <template x-if="(grade.gates || []).length">
+      <div class="k-warnbox">
+        <h2>Gates &mdash; each of these decides the verdict on its own</h2>
+        <ul>
+          <template x-for="(g, gi) in grade.gates" :key="gi">
+            <li><code x-text="g.gate"></code> &mdash; <span x-text="g.detail"></span></li>
+          </template>
+        </ul>
+      </div>
+    </template>
+
+    <!-- an inert graph is not a clean one: the rules that needed a run and could not ask -->
+    <template x-if="graph.available === false && graph.note">
+      <div class="k-warnbox">
+        <h2>Some rules could not ask their question</h2>
+        <div class="k-sub" x-text="graph.note"></div>
+        <div class="k-sub" x-show="(graph.graphReachingRules || []).length">
+          Rules affected: <template x-for="(r, ri) in (graph.graphReachingRules || [])" :key="r"><span><code x-text="r"></code><span x-show="ri < graph.graphReachingRules.length - 1">, </span></span></template>
+        </div>
+      </div>
+    </template>
+
+    <!-- ── 4. THE DIMENSIONS ────────────────────────────────────────────────────────────────────────── -->
+    <h2 x-show="!grade.absent">Dimensions<span class="k-info" @click="openGlossary('dimensions')" title="What does each dimension mean?">&#9432;</span></h2>
+    <div class="k-sub" x-show="!grade.absent">
+      Each score is the proportion of the subjects a rule actually looked at &mdash; failing operations over
+      operations, never findings counted up. A dimension with no evidence reads <code>not measured</code>,
+      never zero.
+    </div>
+    <div class="k-dims" x-show="!grade.absent">
+      <template x-for="d in dimensions" :key="d.key">
+        <div class="k-dim">
+          <div class="k-dim-head">
+            <span class="k-dim-name" x-text="d.label"></span>
+            <span class="k-pill" :class="d.measured ? scoreClass(d.score) : 'k-tagpill'"
+                  x-text="d.measured ? pct(d.score) : 'not measured'"></span>
+            <span class="k-muted" x-show="d.effectiveWeight != null" x-text="'weight ' + pct(d.effectiveWeight)"></span>
+          </div>
+          <div class="k-segbar" x-show="d.measured">
+            <span class="k-seg k-seg-ok" :style="'width:' + pctOf(d.score) + '%'"></span>
+            <span class="k-seg k-seg-bad" :style="'width:' + (100 - pctOf(d.score)) + '%'"></span>
+          </div>
+          <!-- the `contract` dimension is scored from a recorded pair rather than from rules, so it has no
+               rule count to print — and "undefined of 0 rules" is exactly the kind of nonsense a renderer
+               invents when it assumes every row has the same shape. -->
+          <div class="k-sub" x-show="d.measured && d.gradedRules != null && (d.rules || []).length"
+               x-text="d.gradedRules + ' of ' + (d.rules || []).length + ' rules graded it'"></div>
+          <div class="k-sub" x-show="d.measured && !((d.rules || []).length) && d.note" x-text="d.note"></div>
+          <div class="k-sub" x-show="d.carries" x-text="d.carries"></div>
+          <!-- a cap is not a low score: it is a rule saying "however good the rest is, not above this" -->
+          <div class="k-axisnote" x-show="d.cappedAt != null">
+            Capped at <span x-text="pct(d.cappedAt)"></span> by <span x-text="(d.cappedBy || []).join(', ')"></span>
+            (uncapped <span x-text="pct(d.uncappedScore)"></span>).
+          </div>
+          <div class="k-axisnote" x-show="!d.measured && d.note" x-text="d.note"></div>
+          <div class="k-sub" x-show="d.ungradedRules" x-text="d.ungradedRules + ' rule(s) could not be graded'"></div>
+        </div>
+      </template>
+    </div>
+
+    <!-- ── 5. FINDINGS ─────────────────────────────────────────────────────────────────────────────── -->
+    <h2 x-show="!grade.absent">Findings <span class="k-muted" x-text="'(' + findings.length + ')'"></span><span
+        class="k-info" @click="openGlossary('severity')" title="What do the severities mean?">&#9432;</span></h2>
+    <div class="k-outcomes" x-show="!grade.absent">
+      <template x-for="s in severities" :key="s">
+        <button class="k-outcome" :class="[severityTile(s), filter === s ? 'k-on' : '']"
+                @click="filter = (filter === s ? '' : s)" :title="severityHelp(s)">
+          <span class="k-num" x-text="counts[s] || 0"></span>
+          <span class="k-lbl" x-text="s"></span>
+        </button>
+      </template>
+    </div>
+    <div class="k-empty" x-show="!grade.absent && !findings.length">
+      No rule reports a finding against this document, over the <span x-text="summary.rules"></span> rules
+      that ran. A rule that was never written cannot report one.
+    </div>
+    <div class="k-sub" x-show="findings.length && !shown.length">
+      Nothing at this severity &mdash; <button class="k-linkbtn" @click="filter = ''">clear the filter</button>.
+    </div>
+    <table x-show="shown.length">
+      <thead><tr><th>Rule</th><th>Severity</th><th>Where</th><th>Points at</th><th>Message</th></tr></thead>
+      <tbody>
+        <template x-for="(f, fi) in shown" :key="fi">
+          <tr :class="f.waived ? 'k-ignored' : ''">
+            <td><code x-text="f.rule"></code></td>
+            <td>
+              <span class="k-pill" :class="severityClass(f.severity, f.waived)"
+                    x-text="f.waived ? 'waived' : f.severity"></span>
+            </td>
+            <td class="k-muted" x-text="where(f)"></td>
+            <!-- a rule whose selector could not pin a position says nothing rather than guessing: a wrong
+                 line number is worse than none, and the page may not invent one either -->
+            <td class="k-pointer"><code x-show="f.pointer" x-text="f.pointer"></code><span class="k-muted" x-show="!f.pointer">(document)</span></td>
+            <td x-text="f.message"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+
+    <!-- ── 6. WAIVERS ──────────────────────────────────────────────────────────────────────────────── -->
+    <template x-if="(grade.lint && grade.lint.waivers || []).length">
+      <div>
+        <h2>Waivers <span class="k-muted" x-text="'(' + waivers.length + ')'"></span><span
+            class="k-info" @click="openGlossary('waiver')" title="What is a waiver?">&#9432;</span></h2>
+        <div class="k-sub">
+          A waiver is a signed exception, not a fix. An API that passes with waivers is not the same artifact
+          as one that passes clean, and this table is where that shows.
+        </div>
+        <table>
+          <thead><tr><th>Rule</th><th>Scope</th><th>Source</th><th>Owner</th><th>Applied</th><th>Reason</th></tr></thead>
+          <tbody>
+            <template x-for="(w, wi) in waivers" :key="wi">
+              <tr :class="w.rejected ? 'k-rejected' : ''">
+                <td><code x-show="w.rule" x-text="w.rule"></code><span class="k-muted" x-show="!w.rule" x-text="'unreadable directive at line ' + w.line"></span></td>
+                <td class="k-pointer"><code x-show="w.scope" x-text="w.scope"></code><span class="k-muted" x-show="!w.scope">(whole document)</span></td>
+                <td class="k-muted" x-text="w.source"></td>
+                <td><span x-show="w.owner" x-text="w.owner"></span><span class="k-muted" x-show="!w.owner">&mdash;</span></td>
+                <td>
+                  <span class="k-pill k-no" x-show="w.rejected">refused</span>
+                  <span x-show="!w.rejected" x-text="w.applied"></span>
+                  <div class="k-sub" x-show="w.rejected" x-text="w.rejected"></div>
+                </td>
+                <td><span x-show="w.reason" x-text="w.reason"></span><span class="k-muted" x-show="!w.reason">&mdash;</span></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </template>
+
+    <!-- ── 7. METHOD AND EVIDENCE ──────────────────────────────────────────────────────────────────── -->
+    <div class="k-evidencebox" x-show="!grade.absent">
+      <button class="k-methodtoggle" @click="method = !method"
+              x-text="(method ? '▾ ' : '▸ ') + 'Method and evidence'"></button>
+      <div x-show="method">
+        <h3>Weights</h3>
+        <div class="k-sub" x-show="weights.note" x-text="weights.note"></div>
+        <table>
+          <thead><tr><th>Dimension</th><th>Declared</th><th>Effective</th></tr></thead>
+          <tbody>
+            <template x-for="d in dimensions" :key="'w-' + d.key">
+              <tr>
+                <td x-text="d.label"></td>
+                <td class="k-muted" x-text="pct(d.weight)"></td>
+                <td class="k-muted" x-text="d.effectiveWeight == null ? 'not measured' : pct(d.effectiveWeight)"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+
+        <h3 x-show="level.next">Next level</h3>
+        <div class="k-sub" x-show="level.next"
+             x-text="'Level ' + (level.next && level.next.rung) + ', ' + (level.next && level.next.name) + ': ' + (level.next && level.next.needs)"></div>
+        <div class="k-qual" x-show="level.ceiling" x-text="level.ceiling"></div>
+
+        <h3>Scoring</h3>
+        <div class="k-sub">
+          Precedence: <span x-text="(scoring.precedence || []).join(' → ')"></span>
+          (version <span x-text="scoring.version"></span>). A cap binds a dimension before the mean sees
+          it, and a bound cap is also a gate. A gate decides the verdict and is never folded into the number.
+        </div>
+        <div class="k-sub" x-show="judged.note" x-text="judged.note"></div>
+
+        <h3>Document</h3>
+        <div class="k-idstrip">
+          <span x-show="grade.spec">spec <code x-text="grade.spec"></code></span>
+          <span x-show="summary.rules">rules <code x-text="summary.rules"></code></span>
+          <span x-show="waived.count">waived <code x-text="waived.count"></code></span>
+        </div>
+        <div class="k-qual" x-show="waived.note" x-text="waived.note"></div>
+        <div class="k-qual" x-show="rehearsal.note" x-text="rehearsal.note"></div>
+      </div>
+    </div>
+
+    <!-- the glossary overlay — static, page-owned, and the reason the page can afford to be terse -->
+    <div class="k-overlay" x-show="glossaryOpen" @click.self="glossaryOpen = false" x-transition.opacity>
+      <div class="k-modal" role="dialog" aria-label="Glossary">
+        <div class="k-modal-head">
+          <h2>Glossary</h2>
+          <button class="k-x" @click="glossaryOpen = false" aria-label="Close">&times;</button>
+        </div>
+        <div class="k-modal-body">
+          <template x-for="group in glossary" :key="group.key">
+            <div class="k-gloss-group" :id="'gloss-' + group.key">
+              <h3 x-text="group.title"></h3>
+              <div class="k-sub" x-show="group.intro" x-text="group.intro"></div>
+              <template x-for="term in group.terms" :key="term.t">
+                <div class="k-gloss-term">
+                  <span class="k-pill" :class="term.cls || 'k-tagpill'" x-text="term.t"></span>
+                  <span x-text="term.d"></span>
+                </div>
+              </template>
+            </div>
+          </template>
+          <div class="k-gloss-foot">
+            Every number here is computed from the document and the rulepack alone — no model, no network,
+            no run-time guess — so anyone with the same two inputs gets the same grade. For the full
+            explanation, copy the help-id <code>governance</code> into the Help tab.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="k-foot" x-show="!grade.absent">
+      <div>
+        This page shows what <code>Openapi.grade</code> returned; it recalculates nothing. Run
+        <code>Openapi.report()</code> again after the document or the rulepack changes.
+      </div>
+    </div>
+  </div>
+
+  <script src="../help-affordance.js"></script>
+  <script src="../governance-data.js"></script>
+  <script src="../governance-report.js"></script>
+  <script src="../../../res/alpine.min.js" defer></script>
+  <script src="../../../res/karate-report.js"></script>
+  <script>
+    (function () {
+      var d = window.KARATE_GOVERNANCE || {};
+      var tabs = [];
+      if (d.coverageHref) tabs.push({ key: 'coverage', title: 'Coverage', href: d.coverageHref });
+      if (d.traceabilityHref) tabs.push({ key: 'traceability', title: 'Traceability', href: d.traceabilityHref });
+      if (d.contractHref) tabs.push({ key: 'contract', title: 'Contract', href: d.contractHref });
+      tabs.push({ key: 'governance', title: 'Governance', href: 'governance.html' });
+      KarateReport.renderTopNav({ current: 'governance', summary: d.karateSummary, tabs: tabs });
+    })();
+  </script>
+</body>
+</html>

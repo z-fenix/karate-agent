@@ -1,0 +1,35 @@
+# Maven build output
+**/target/
+**/dependency-reduced-pom.xml
+*.class
+*.jar
+*.war
+*.ear
+
+# Local IDE and agent settings
+.idea/
+*.iml
+.vscode/
+.claude/settings.local.json
+.playwright-mcp/
+
+# Recovery inputs, scratch work and execution output
+/.build-repair/
+/decompiled/
+/extracted/
+/runs/
+*.log
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p12
+*.pfx
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini

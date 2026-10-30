@@ -1,0 +1,440 @@
+<!--/* Manual mode — one test (/manual/tests/edit?test=<project-relative path>; ?check=<name> is the same thing
+     spelled the way a check is named): the page a row on Tests opens. It says how the test has done and runs it,
+     and on a check it changes the test — its name, description and the criteria it proves, or, in words, what
+     it does, which the AI changes.
+     Reads, all server-side: runner.tests() (the row: which engine runs it, what it declares, its history) ·
+     check.info(name) (the header, its mtime for ifMatch, the run working on it) · requirement.list() (the
+     criteria) · harness.providers() (the models) · harness.runs() (a run replaying it; the one browser, D48).
+     Run this test and Ask the AI to fix it kick off over /api/eval (run-modal.js: kaKickSuite, kaKickHeal);
+     Save posts /ui/checks/annotate, one call to Check.annotate; Delete posts /ui/checks/delete (page actions,
+     D98); Ask the AI calls Harness.revise over /api/eval. Each lands on the run it started.
+     A .feature declares its header in its own file: its page reads it, and changes nothing. Only the summary
+     is data-m-live — a fresh render of the form would wipe what is being typed. */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'Test · Karate Agent');
+  (function () {
+    function safe(fn) { try { return fn(); } catch (e) { return null; } }
+    function isList(v) { return v != null && v.length != null && typeof v != 'string'; }
+    var stampId = kaWords.stampId, fileName = kaWords.fileOf, ago = kaWords.ageInWords,
+        duration = kaWords.compactDuration;
+
+    var wanted = request.param('test');
+    wanted = wanted ? String(wanted).replace(/^\/+/, '') : null;
+    if (!wanted && request.param('check')) {
+      var byName = String(request.param('check')).replace(/^\/+/, '').replace(/^checks\//, '');
+      wanted = 'checks/' + (/\.js$/.test(byName) ? byName : byName + '.js');
+    }
+    _.path = wanted;
+    _.code = wanted ? '/checks?file=' + encodeURI(wanted) : null;
+    _.api = wanted && /\.feature$/.test(wanted) ? '/manual/tests/api?test=' + encodeURIComponent(wanted) : null;
+    _.title = wanted ? fileName(wanted) : 'Test';
+    _.missing = null;
+    _.found = null;
+    _.feature = null;
+    _.summary = null;
+    _.verifies = null;
+    _.edit = null;
+    _.editTest = null;
+    _.busy = null;
+    _.held = null;
+    _.saved = request.param('saved') ? true : null;
+
+    // the same list the Tests screen shows (and the rail counts)
+    var tests = request.cache('manual.tests', function () { return runner.tests(); });
+    var row = null;
+    for (var t = 0; isList(tests) && wanted && t < tests.length; t++) {
+      if (tests[t].path == wanted) row = tests[t];
+    }
+    if (!row) { _.missing = true; return; }
+    var feature = row.kind == 'feature';
+    var info = feature ? null : safe(function () { return check.info(wanted); });
+    if (!feature && (!info || info.error)) { _.missing = true; return; }
+    _.found = true;
+    _.feature = feature ? true : null;
+    if (row.title) _.title = String(row.title);
+    context.setGlobal('pageTitle', _.title + ' · Karate Agent');
+
+    // the models a fix or a change can be asked of, the default first chosen as New test's hand-off chooses it
+    var llm = safe(function () { return harness.providers(); });
+    var models = [];
+    var chosen = null;
+    var ps = llm && isList(llm.providers) ? llm.providers : [];
+    for (var p = 0; p < ps.length; p++) {
+      var ms = isList(ps[p].models) ? ps[p].models : [];
+      for (var m = 0; m < ms.length; m++) {
+        var value = JSON.stringify({ provider: String(ps[p].name), model: String(ms[m].id) });
+        models.push({ value: value, label: ps[p].name + ' · ' + (ms[m].label || ms[m].id) });
+        if (!chosen && ps[p]['default'] && String(ms[m].id) == String(llm.defaultModel)) chosen = value;
+      }
+    }
+    if (!chosen && models.length) chosen = models[0].value;
+
+    // how it has done, in one line, and its last run — the mark the Tests list gives it (a running run
+    // replaying it is the purple ring)
+    var runs = request.cache('manual.runs', function () { return harness.runs(); });
+    var rs = runs && isList(runs.runs) ? runs.runs : [];
+    var replaying = false;
+    for (var k = 0; k < rs.length; k++) {
+      if (rs[k].status != 'running') continue;
+      if (rs[k].check && 'checks/' + String(rs[k].check).replace(/^\/+/, '').replace(/^checks\//, '') == wanted) replaying = true;
+      var sel = isList(rs[k].selector) ? rs[k].selector : [];
+      for (var j = 0; j < sel.length; j++) { if (String(sel[j]) == wanted) replaying = true; }
+    }
+    var last = row.lastStatus ? String(row.lastStatus) : null;
+    var state = replaying ? 'inflight' : (last || 'notrun');
+    // the AI's part, as its // @ai: note says (aiBy): a test it repaired or changed was someone's before
+    var aiBy = !feature && row.ai ? String(row.aiBy || '') : null;
+    _.summary = {
+      dot: 'm-dot--' + state,
+      state: state == 'inflight' ? 'running now' : state == 'passed' ? 'passed' : state == 'failed' ? 'failed' : 'never run',
+      record: row.runs ? row.passed + ' of ' + row.runs + (row.runs == 1 ? ' run passed' : ' runs passed')
+          + (row.typicalMs != null ? ' · usually ' + duration(row.typicalMs) : '') : 'Never run yet.',
+      last: replaying ? 'Running now' : last ? ('Last run ' + last + ' ' + (ago(row.lastRunAt) || '')).trim() : null,
+      ai: aiBy == null ? null : aiBy == 'repaired' ? 'Repaired by AI' : aiBy == 'changed' ? 'Changed by AI' : 'Written by AI',
+      // only what the AI wrote is thrown away from here
+      del: aiBy == 'written' ? true : null,
+      // turning a failing check green again is the AI's work: offered only on red, and only with a model
+      heal: !feature && models.length && last == 'failed' ? true : null
+    };
+
+    // the criteria, by id: a feature's are listed as it declares them, a check's are ticked in its form
+    var reqs = safe(function () { return requirement.list(); });
+    var crit = {};
+    var groups = [];
+    var linked = feature ? (isList(row.req) ? row.req : []) : (isList(info.req) ? info.req : []);
+    for (var r = 0; isList(reqs) && r < reqs.length; r++) {
+      var q = reqs[r];
+      var items = [];
+      var cs = isList(q.criteria) ? q.criteria : [];
+      // a link to the whole requirement is kept where it can be seen, beside its criteria
+      if (!cs.length || linked.indexOf(String(q.id)) >= 0) {
+        items.push({ id: String(q.id), n: null, text: cs.length ? 'The whole requirement' : String(q.title) });
+        crit[q.id] = { label: String(q.id), text: String(q.title), req: String(q.id) };
+      }
+      for (var c = 0; c < cs.length; c++) {
+        var cid = stampId(cs[c].stamp);
+        items.push({ id: cid, n: String(cs[c].id), text: String(cs[c].text) });
+        crit[cid] = { label: q.id + ', criterion ' + cs[c].id, text: String(cs[c].text), req: String(q.id) };
+      }
+      groups.push({ id: String(q.id), title: String(q.title), items: items });
+    }
+
+    if (feature) {
+      _.verifies = [];
+      for (var v = 0; v < linked.length; v++) {
+        var id = String(linked[v]);
+        var hit = crit[id] || null;
+        _.verifies.push({
+          label: hit ? hit.label : id,
+          text: hit ? hit.text : 'Not found in the requirements. The link points at nothing yet.',
+          href: '/manual/coverage#req-' + encodeURIComponent(hit ? hit.req : id.split('/')[0])
+        });
+      }
+      return;
+    }
+
+    if (info.busy) {
+      _.busy = { id: String(info.busy.runId), href: '/manual/runs/' + encodeURIComponent(String(info.busy.runId)) };
+    }
+    var unknown = [];
+    for (var u = 0; u < linked.length; u++) {
+      if (!crit[linked[u]]) unknown.push({ id: String(linked[u]), n: null, text: 'Not found in the requirements' });
+    }
+    if (unknown.length) groups.push({ id: '', title: 'Not in the requirements', items: unknown });
+
+    // the one browser: a run holding it holds the change too (D48)
+    var inFlight = (runs && runs.inFlight) || [];
+    var active = runs && runs.active ? String(runs.active) : (inFlight.length ? String(inFlight[0]) : null);
+    if (active && !(_.busy && _.busy.id == active)) {
+      _.held = { id: active, href: '/manual/runs/' + encodeURIComponent(active) };
+    }
+
+    _.edit = { ai: models.length ? true : null };
+    _.editTest = {
+      name: wanted,
+      title: info.title ? String(info.title) : '',
+      description: info.description ? String(info.description) : '',
+      req: linked,
+      mtime: String(info.mtime),
+      groups: groups,
+      models: models,
+      model: chosen || '',
+      busy: _.busy,
+      held: _.held
+    };
+  })();
+</script>
+<div ka:island="editTest"/>
+<style>
+  .m-edit-page { display: flex; flex-direction: column; gap: 26px; padding-top: 26px; max-width: 900px; }
+  .m-edit-form { display: flex; flex-direction: column; gap: 26px; }
+  .m-edit-path { font-size: 13px; color: var(--m-text-3); overflow-wrap: anywhere; }
+  .m-edit-summary-sub { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+  .m-edit-card { display: flex; flex-direction: column; gap: 22px; }
+  .m-edit-card-head { display: flex; flex-direction: column; gap: 4px; }
+  .m-edit-crit { max-height: 440px; overflow-y: auto; border-top: 1px solid var(--m-line); }
+  .m-edit-group { padding: 14px 0 4px; }
+  .m-edit-group + .m-edit-group { border-top: 1px solid var(--m-line-soft); }
+  .m-edit-group-title { display: flex; align-items: baseline; gap: 10px; font-size: 13.5px; font-weight: 600; }
+  .m-edit-group-id { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--m-purple); }
+  .m-edit-item { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; align-items: start; padding: 8px 0; cursor: pointer; }
+  .m-edit-item-n { font-size: 12.5px; font-weight: 600; color: var(--m-text-2); margin-right: 8px; }
+  .m-edit-item-text { font-size: 13.5px; line-height: 1.5; overflow-wrap: anywhere; }
+  .m-edit-verify { display: flex; flex-direction: column; gap: 4px; }
+  .m-edit-verify-text { font-size: 13.5px; line-height: 1.5; color: var(--m-text-2); }
+  .m-edit-count { font-size: 13.5px; color: var(--m-text-2); }
+  .m-edit-model { max-width: 420px; }
+  .m-edit-err { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 13.5px; overflow-wrap: anywhere; }
+  .m-edit-err .m-dot { align-self: center; }
+  .m-edit-err[hidden] { display: none; }
+  .m-edit-why { font-size: 13.5px; color: var(--m-text-2); }
+  .m-edit-saved { font-size: 13.5px; color: var(--m-text-2); }
+  .m-edit-note { margin: 0; font-size: 14px; line-height: 1.55; color: var(--m-text-2); }
+</style>
+<section class="m-page" data-ka-section="manual.tests.edit">
+  <header class="m-head">
+    <div class="m-head-text">
+      <span class="m-eyebrow">Test</span>
+      <h1 class="m-title" th:text="title">Sign in works</h1>
+      <p th:if="path" class="m-edit-path" th:text="path">checks/login.js</p>
+    </div>
+    <div class="m-head-end"><a class="m-link" href="/manual/tests">All tests</a></div>
+  </header>
+
+  <div th:if="missing" class="m-section">
+    <div class="m-empty">
+      <div class="m-empty-title">No test at this path</div>
+      <div class="m-empty-sub">It may have been renamed or deleted. <a href="/manual/tests">See every test</a></div>
+    </div>
+  </div>
+
+  <div th:if="found" class="m-edit-page">
+    <div class="m-summary" data-ka-section="manual.tests.edit.summary" data-m-live>
+      <span th:class="'m-dot m-dot--lg ' + summary.dot" role="img" th:attr="'aria-label': summary.state, 'title': summary.state"></span>
+      <div>
+        <div class="m-summary-title" th:text="summary.record">2 of 2 runs passed · usually 2.1s</div>
+        <div class="m-summary-sub m-edit-summary-sub">
+          <span th:if="summary.last" th:text="summary.last">Last run passed 3 min ago</span>
+          <span th:if="summary.ai" th:text="summary.ai">Written by AI</span>
+          <a th:href="code" target="_blank" rel="noopener" title="Opens in the developer console">Show the code ↗</a>
+          <button th:if="summary.del" type="button" class="m-link" th:attr="'data-m-delete': path">Delete</button>
+        </div>
+      </div>
+      <div class="m-summary-end">
+        <a th:if="api" class="m-btn m-btn--ghost" th:href="api" title="Each call with what it sent and got back">Open as API test</a>
+        <button th:if="summary.heal" type="button" class="m-btn m-btn--ghost" th:attr="'data-m-heal': path"
+                title="It replays the test and repairs it until it passes. Uses AI.">Ask the AI to fix it</button>
+        <button type="button" class="m-btn" th:attr="'data-m-run': path">Run this test</button>
+      </div>
+    </div>
+    <p class="m-edit-err" id="m-edit-act-err" role="alert" hidden><span class="m-dot m-dot--xs m-dot--failed"></span><span data-m-err-text></span></p>
+
+    <div th:if="feature" class="m-card m-edit-card" data-ka-section="manual.tests.edit.verifies">
+      <h2 class="m-section-title">What it proves</h2>
+      <div th:each="v: verifies" class="m-edit-verify">
+        <a th:href="v.href" th:text="v.label">ORD-002, criterion 2.1</a>
+        <span class="m-edit-verify-text" th:text="v.text">WHEN the history opens …</span>
+      </div>
+      <p class="m-edit-note">This test names what it verifies in its own file. Change it in the developer console.</p>
+    </div>
+
+    <div th:if="edit" class="m-edit-form" x-data="kaEditTest()">
+      <div th:if="busy" class="m-summary m-summary--note" role="status">
+        <span class="m-dot m-dot--inflight"></span>
+        <span class="m-edit-note">A run is working on this test. You can change it once that run is done.</span>
+        <a class="m-link" th:href="busy.href">Watch it</a>
+      </div>
+
+      <div class="m-card m-edit-card" data-ka-section="manual.tests.edit.form">
+        <label class="m-field">
+          <span class="m-label">Name</span>
+          <input class="m-input" x-model="title" @input="err = ''" placeholder="What a person calls this test" autocomplete="off" aria-label="Test name">
+        </label>
+        <label class="m-field">
+          <span class="m-label-row"><span class="m-label">What it checks</span><span class="m-hint">One line.</span></span>
+          <input class="m-input" x-model="description" @input="err = ''" placeholder="Opens the app and signs in with the test account" autocomplete="off" aria-label="What it checks">
+        </label>
+
+        <div class="m-field" id="proves">
+          <span class="m-label-row"><span class="m-label">What it proves</span>
+            <span class="m-hint">Coverage counts this test for the criteria you tick.</span></span>
+          <input class="m-input" x-model="q" placeholder="Find a criterion" aria-label="Find a criterion">
+          <div class="m-edit-crit">
+            <template x-for="g in shown()" :key="g.id || '-'">
+              <div class="m-edit-group">
+                <div class="m-edit-group-title"><span class="m-edit-group-id" x-show="g.id" x-text="g.id"></span><span x-text="g.title"></span></div>
+                <template x-for="c in g.items" :key="c.id">
+                  <label class="m-edit-item">
+                    <input type="checkbox" class="m-checkbox" :value="c.id" x-model="req" @change="err = ''">
+                    <span class="m-edit-item-text"><span class="m-edit-item-n" x-show="c.n" x-text="c.n"></span><span x-text="c.text"></span></span>
+                  </label>
+                </template>
+              </div>
+            </template>
+            <p x-show="!shown().length" x-cloak class="m-hint" style="padding-top: 12px">No criterion matches. Write it in Requirements first.</p>
+          </div>
+          <span class="m-edit-count" x-text="req.length ? (req.length == 1 ? 'Proves 1 criterion' : 'Proves ' + req.length + ' criteria') : 'Not linked to a requirement: coverage does not count it'"></span>
+        </div>
+
+        <div class="m-actions">
+          <button type="button" class="m-btn m-btn--lg" data-m-save :disabled="saving || !!s.busy" @click="save()"><span x-text="saving ? 'Saving…' : 'Save changes'">Save changes</span></button>
+          <button type="button" class="m-quiet" x-show="dirty()" x-cloak @click="undo()">Cancel</button>
+          <span th:if="saved" class="m-edit-saved" x-show="!dirty() &amp;&amp; !err" data-m-saved>Saved.</span>
+          <span class="m-edit-err" role="alert" x-show="err" x-cloak><span class="m-dot m-dot--xs m-dot--failed"></span><span x-text="err"></span>
+            <a x-show="errRun" :href="errRun" class="m-link">Watch it</a>
+            <button x-show="stale" type="button" class="m-link" style="font-size: 13.5px" @click="location.reload()">Reload</button></span>
+        </div>
+      </div>
+
+      <div class="m-card m-edit-card" id="change" data-ka-section="manual.tests.edit.change">
+        <div class="m-edit-card-head">
+          <h2 class="m-section-title">Change what it does</h2>
+          <span class="m-section-sub">Say the change in your own words. The AI makes it and runs the test once. If it cannot make the change, the test is put back as it was.</span>
+        </div>
+        <th:block th:if="edit.ai">
+          <label class="m-field">
+            <span class="m-label">What should change</span>
+            <textarea class="m-input m-textarea" x-ref="request" x-model="request" @input="askErr = ''" rows="3"
+                      placeholder="After adding two items, also check that the cart shows 2." aria-label="What should change"></textarea>
+          </label>
+          <label class="m-field m-edit-model">
+            <span class="m-label">Model</span>
+            <select class="m-input" x-model="model" aria-label="Model">
+              <template x-for="o in s.models" :key="o.value"><option :value="o.value" x-text="o.label" :selected="o.value === model"></option></template>
+            </select>
+          </label>
+          <div class="m-actions">
+            <button type="button" class="m-btn m-btn--lg" data-m-ask :disabled="asking || !!s.busy || !!s.held" @click="ask()"><span x-text="asking ? 'Starting…' : 'Ask the AI'">Ask the AI</span></button>
+            <span th:if="held" class="m-edit-why">A run is using the browser; the console drives one at a time. <a th:href="held.href">Watch it</a></span>
+            <span class="m-edit-err" role="alert" x-show="askErr" x-cloak><span class="m-dot m-dot--xs m-dot--failed"></span><span x-text="askErr"></span></span>
+            <span class="m-cost">Uses AI. Replaying the test later is free.</span>
+          </div>
+        </th:block>
+        <p th:unless="edit.ai" class="m-edit-note">Changing what the test does needs an AI model, and this console has none. Start the console
+          with <span class="m-mono">ANTHROPIC_API_KEY</span>, <span class="m-mono">OPENAI_API_KEY</span> or
+          <span class="m-mono">OLLAMA_HOST</span> set.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<script src="/pub/run-modal.js" ka:nocache="true"></script>
+<script>
+  // The form (Alpine): its initial state is the SSR island. Save sends the whole header in one call, guarded
+  // by the version read with the page; Ask the AI starts Harness.revise and opens its run.
+  function kaEditTest() {
+    var el = document.getElementById('editTest-data');
+    var s = (el && JSON.parse(el.textContent)) || {};
+    function message(e) { return String(e && e.message ? e.message : e).replace(/^Error: /, ''); }
+    return {
+      s: s, title: s.title || '', description: s.description || '', req: (s.req || []).slice(), q: '',
+      saving: false, err: '', errRun: '', stale: false,
+      request: '', model: s.model || '', asking: false, askErr: '',
+      // the header as typed differs from the one the page opened on
+      dirty() {
+        var was = s.req || [];
+        return this.title.trim() !== (s.title || '') || this.description.trim() !== (s.description || '')
+          || this.req.length !== was.length || this.req.some((id) => was.indexOf(id) < 0);
+      },
+      undo() {
+        this.title = s.title || ''; this.description = s.description || ''; this.req = (s.req || []).slice();
+        this.err = ''; this.errRun = ''; this.stale = false;
+      },
+      shown() {
+        var q = this.q.trim().toLowerCase();
+        if (!q) return s.groups || [];
+        return (s.groups || []).map((g) => ({ id: g.id, title: g.title, items: g.items.filter((c) =>
+          (g.id + ' ' + g.title + ' ' + c.id + ' ' + c.text).toLowerCase().indexOf(q) >= 0) }))
+          .filter((g) => g.items.length);
+      },
+      async save() {
+        if (this.saving || s.busy) return;
+        this.err = ''; this.errRun = ''; this.stale = false;
+        this.saving = true;
+        try {
+          var res = await fetch('/ui/checks/annotate', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: s.name, title: this.title.trim(), description: this.description.trim(),
+              req: this.req.slice(), ifMatch: s.mtime })
+          });
+          var out = await res.json().catch(() => ({}));
+          if (out && out.code === 'STALE_MTIME') {
+            this.stale = true;
+            throw new Error('This test changed since you opened it. Reload it, then make your change again.');
+          }
+          if (out && out.code === 'BUSY') {
+            this.errRun = '/manual/runs/' + encodeURIComponent(out.runId);
+            throw new Error('A run is working on this test. Save once that run is done.');
+          }
+          if (!res.ok || (out && out.error)) throw new Error((out && out.error) || ('The test could not be saved (' + res.status + ').'));
+          // the page re-reads what was saved, and says so once
+          location.replace(location.pathname + '?test=' + encodeURIComponent(s.name) + '&saved=1');
+        } catch (e) { this.err = message(e); this.saving = false; }
+      },
+      async ask() {
+        if (this.asking || s.busy || s.held) return;
+        this.askErr = '';
+        var request = this.request.trim();
+        if (!request) { this.askErr = 'Say what should change first.'; this.$refs.request && this.$refs.request.focus(); return; }
+        // the AI changes the file on disk: a header typed above and not saved would be lost on the way to its run
+        if (this.dirty()) { this.askErr = 'Save your changes to the name and criteria first, or undo them.'; return; }
+        this.asking = true;
+        try {
+          var opts = this.model ? JSON.parse(this.model) : {};
+          var out = await window.karate.value('Harness.revise(' + JSON.stringify(s.name) + ', '
+            + JSON.stringify(request) + ', ' + JSON.stringify(opts) + ')');
+          if (!out || !out.runId) throw new Error((out && out.error) || 'The run did not start.');
+          location.href = '/manual/runs/' + encodeURIComponent(out.runId);
+        } catch (e) { this.askErr = message(e); this.asking = false; }
+      }
+    };
+  }
+
+  // "Saved." is said once: reloading the page does not say it again
+  (function () {
+    if (location.search.indexOf('saved=1') < 0) return;
+    try { history.replaceState(null, '', location.pathname + location.search.replace(/[?&]saved=1/, '').replace(/^&/, '?') + location.hash); } catch (e) {}
+  })();
+
+  // The summary's actions — one delegated handler, since a live refresh swaps the summary in place
+  (function () {
+    function say(e) {
+      var box = document.getElementById('m-edit-act-err');
+      if (!box) return;
+      box.querySelector('[data-m-err-text]').textContent = String(e && e.message ? e.message : e).replace(/^Error: /, '');
+      box.hidden = false;
+    }
+    function land(runId) { location.href = runId ? '/manual/runs/' + encodeURIComponent(runId) : '/manual/runs'; }
+    async function act(btn, label, work) {
+      if (btn.disabled) return;
+      var was = btn.textContent;
+      btn.disabled = true; btn.textContent = label;
+      try { await work(); }
+      catch (e) { say(e); btn.disabled = false; btn.textContent = was; }
+    }
+    document.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-m-run],[data-m-heal],[data-m-delete]');
+      if (!b) return;
+      e.preventDefault();
+      if (b.hasAttribute('data-m-run')) {
+        // a replay is a one-member set on the suite lane: no AI; the run video is on, as every Manual replay's is
+        act(b, 'Starting…', async () => land((await kaKickSuite([b.getAttribute('data-m-run')], { async: true, video: true })).runId));
+      } else if (b.hasAttribute('data-m-heal')) {
+        act(b, 'Starting…', async () => {
+          var out = await kaKickHeal(b.getAttribute('data-m-heal'), { async: true });
+          if (out && out.error && !out.runId) throw new Error(out.error);
+          land(out.runId);
+        });
+      } else if (b.hasAttribute('data-m-delete')) {
+        var name = b.getAttribute('data-m-delete');
+        if (!confirm('Delete ' + name + '? The file is removed from the project.')) return;
+        act(b, 'Deleting…', async () => {
+          var res = await fetch('/ui/checks/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) });
+          var out = await res.json().catch(() => ({}));
+          if (!res.ok || (out && out.error)) throw new Error((out && out.error) || ('The test could not be deleted (' + res.status + ').'));
+          location.href = '/manual/tests';
+        });
+      }
+    });
+  })();
+</script>

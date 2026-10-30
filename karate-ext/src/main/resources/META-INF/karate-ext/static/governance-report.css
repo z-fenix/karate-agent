@@ -1,0 +1,205 @@
+/*
+ * karate-max governance report — ext/governance/pages/governance.html (D191).
+ *
+ * Scoped to .k-coverage-ext and layered on coverage.css, which owns the design TOKENS and, with them, the
+ * class namespace every ext page shares — a new class here is checked against coverage.css first
+ * (`.k-method` was already the HTTP-method badge, and reusing it painted a whole section indigo).
+ *
+ * The head idiom — verdict banner, the three judgement cards, the Next list, the collapsed evidence box,
+ * the glossary overlay — is deliberately identical to the Contract page: a reader moving between the tabs
+ * should not have to learn a second grammar for the same three questions.
+ */
+[x-cloak] { display: none !important; }
+.k-coverage-ext .k-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.k-coverage-ext .k-head-actions { display: flex; gap: 10px; align-items: center; flex: none; }
+.k-coverage-ext .k-empty { color: var(--k-muted); font-size: 13px; padding: 10px 0 4px; }
+.k-coverage-ext .k-muted { color: var(--k-muted); }
+.k-coverage-ext .k-qual { font-size: 12.5px; color: var(--k-muted); font-style: italic; margin-bottom: 6px; }
+.k-coverage-ext .k-idstrip {
+  display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12px; color: var(--k-muted); margin: 0 0 14px;
+}
+.k-coverage-ext .k-idstrip code { color: var(--k-fg); }
+.k-coverage-ext .k-notmeasured {
+  display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--k-warn-fg);
+  border-radius: 10px; padding: 12px 16px; margin-bottom: 18px; font-size: 13px;
+}
+.k-coverage-ext .k-refresh { margin-top: 10px; }
+.k-coverage-ext .k-refresh .k-lbl { font-size: 11px; color: var(--k-muted); text-transform: uppercase; letter-spacing: .04em; }
+.k-coverage-ext pre {
+  background: var(--k-card-bg); border: 1px solid var(--k-border); border-radius: 8px;
+  padding: 8px 12px; font-size: 12.5px; overflow-x: auto; margin: 4px 0 0;
+}
+.k-coverage-ext .k-warnbox { border: 1px solid var(--k-warn-fg); border-radius: 10px; padding: 4px 16px 12px; margin: 18px 0; }
+.k-coverage-ext .k-warnbox h2 { margin-top: 14px; }
+.k-coverage-ext .k-warnbox ul { margin: 0; padding-left: 18px; font-size: 13px; }
+.k-coverage-ext .k-linkbtn {
+  background: none; border: 0; padding: 0; cursor: pointer; font: inherit; font-size: 12px;
+  color: var(--k-link, #2563eb); text-decoration: underline;
+}
+.k-coverage-ext .k-outcomes { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.k-coverage-ext .k-outcome {
+  font: inherit; text-align: left; cursor: pointer; border: 1px solid var(--k-border);
+  border-radius: 10px; background: var(--k-card-bg); padding: 8px 14px; min-width: 96px;
+}
+.k-coverage-ext .k-outcome { color: var(--k-fg); }
+.k-coverage-ext .k-outcome .k-num { display: block; font-size: 22px; font-weight: 700; }
+.k-coverage-ext .k-outcome .k-lbl { font-size: 11px; color: var(--k-muted); }
+.k-coverage-ext .k-outcome.k-on { border-color: var(--k-link); }
+.k-coverage-ext .k-outcome.k-ok .k-num { color: var(--k-ok-fg); }
+.k-coverage-ext .k-outcome.k-no .k-num { color: var(--k-no-fg); }
+.k-coverage-ext .k-outcome.k-warn .k-num { color: var(--k-warn-fg); }
+.k-coverage-ext .k-tagpill { background: var(--k-tag-bg); color: var(--k-tag-fg); }
+.k-coverage-ext .k-link { background: var(--k-link-bg); color: var(--k-link-fg); }
+.k-coverage-ext tr.k-ignored { opacity: .62; }
+.k-coverage-ext tr.k-rejected td:first-child { border-left: 2px solid var(--k-no-fg); }
+.k-coverage-ext .k-foot {
+  margin-top: 32px; padding-top: 14px; border-top: 1px solid var(--k-border);
+  font-size: 12px; color: var(--k-faint); line-height: 1.6; max-width: 88ch;
+}
+
+/* the verdict word, in the readiness palette rather than as a plain number */
+.k-coverage-ext .k-axisnum.k-v-ok { color: var(--k-ok-fg); }
+.k-coverage-ext .k-axisnum.k-v-warn { color: var(--k-warn-fg); }
+.k-coverage-ext .k-axisnum.k-v-no { color: var(--k-no-fg); }
+
+/* the dimension rows — a score, its bar, and what capped it */
+/* align-items: start — the cards hold wildly different amounts of explanation (one dimension carries a
+   four-line disclosure, another carries none), and stretching them to the tallest in the row left a card
+   that is mostly empty box. Each card is as tall as what it has to say. */
+.k-coverage-ext .k-dims {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px; margin: 12px 0 22px; align-items: start;
+}
+.k-coverage-ext .k-dim { border: 1px solid var(--k-border); border-radius: 10px; background: var(--k-card-bg); padding: 12px 14px 14px; }
+/* coverage.css gives .k-sub a 20px bottom margin, which is right for a page subtitle and wrong inside a
+   card: it opened a gap under the rule count and left the explainer flush against the card's bottom
+   edge. Inside a dimension card the card's own padding owns the outer spacing. */
+.k-coverage-ext .k-dim .k-sub { margin: 6px 0 0; }
+.k-coverage-ext .k-dim .k-sub + .k-sub { margin-top: 10px; }
+.k-coverage-ext .k-dim .k-axisnote { margin-top: 10px; }
+.k-coverage-ext .k-dim-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; }
+.k-coverage-ext .k-dim-name { font-size: 13px; font-weight: 700; color: var(--k-fg-strong); }
+.k-coverage-ext .k-dim .k-muted { font-size: 11.5px; margin-left: auto; }
+.k-coverage-ext .k-segbar { display: flex; height: 9px; border-radius: 5px; overflow: hidden; background: var(--k-tag-bg); gap: 1px; }
+.k-coverage-ext .k-seg { display: block; height: 100%; }
+.k-coverage-ext .k-seg-ok { background: var(--k-ok-fg); }
+.k-coverage-ext .k-seg-bad { background: var(--k-no-fg); opacity: .55; }
+
+/* ── the decision-first head: verdict banner + the three judgement cards ─────────────────────────────
+   The same idiom as the coverage report's ship banner and axis cards, and deliberately so: a reader
+   moving between the tabs should not have to learn a second grammar for "here is the answer, here is
+   its scope, here is how much to trust it". Copied rather than shared because this page loads only
+   coverage.css (the design tokens) and its own sheet — one <link>, no cross-report coupling. */
+.k-coverage-ext .k-shipbanner {
+  display: flex; flex-wrap: wrap; gap: 18px 28px; align-items: center; justify-content: space-between;
+  border: 1px solid var(--k-border); border-left-width: 5px; border-radius: 10px;
+  background: var(--k-card-bg); padding: 14px 18px; margin: 4px 0 18px;
+}
+.k-coverage-ext .k-shipbanner.k-sc-ready { border-left-color: var(--k-ok-fg); }
+.k-coverage-ext .k-shipbanner.k-sc-conditional { border-left-color: var(--k-warn-fg); }
+.k-coverage-ext .k-shipbanner.k-sc-block { border-left-color: var(--k-no-fg); }
+.k-coverage-ext .k-shiplbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--k-muted); }
+.k-coverage-ext .k-shipword { font-size: 21px; font-weight: 700; line-height: 1.15; margin: 1px 0 4px; }
+.k-coverage-ext .k-sc-ready .k-shipword { color: var(--k-ok-fg); }
+.k-coverage-ext .k-sc-conditional .k-shipword { color: var(--k-warn-fg); }
+.k-coverage-ext .k-sc-block .k-shipword { color: var(--k-no-fg); }
+.k-coverage-ext .k-shipsub { font-size: 12.5px; color: var(--k-fg); max-width: 62ch; }
+.k-coverage-ext .k-shipsplit { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.k-coverage-ext .k-shipcount {
+  font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 8px;
+  background: var(--k-tag-bg); color: var(--k-tag-fg); white-space: nowrap;
+}
+.k-coverage-ext .k-shipcount.k-ok { background: var(--k-ok-bg); color: var(--k-ok-fg); }
+.k-coverage-ext .k-shipcount.k-no { background: var(--k-no-bg); color: var(--k-no-fg); }
+.k-coverage-ext .k-shipcount.k-warn { background: var(--k-warn-bg); color: var(--k-warn-fg); }
+
+.k-coverage-ext .k-scorecards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-bottom: 18px;
+}
+.k-coverage-ext .k-axiscard { border: 1px solid var(--k-border); border-radius: 10px; background: var(--k-card-bg); padding: 12px 14px; }
+.k-coverage-ext .k-axislabel { font-size: 13px; font-weight: 700; color: var(--k-fg-strong); }
+.k-coverage-ext .k-axisnum { font-size: 22px; font-weight: 700; color: var(--k-fg-strong); font-variant-numeric: tabular-nums; margin: 4px 0 2px; }
+.k-coverage-ext .k-axisden { font-size: 12px; font-weight: 400; color: var(--k-muted); }
+.k-coverage-ext .k-axisask { font-size: 11.5px; color: var(--k-muted); margin-top: 5px; line-height: 1.4; }
+.k-coverage-ext .k-axisnote { font-size: 11.5px; color: var(--k-warn-fg); margin-top: 5px; line-height: 1.4; }
+
+/* NEXT — the work the evidence implies. It is a list of things to do, so it is a list. */
+.k-coverage-ext .k-next { margin-bottom: 18px; }
+.k-coverage-ext .k-next h2 { margin-bottom: 4px; }
+.k-coverage-ext .k-next ol { margin: 0; padding-left: 20px; }
+.k-coverage-ext .k-next li { font-size: 13px; margin-bottom: 5px; line-height: 1.45; }
+.k-coverage-ext .k-next li .k-sub { display: inline; margin: 0; }
+
+/* METHOD AND EVIDENCE — collapsed by default. Nothing left the page; it stopped leading it.
+   NOT `k-method`: coverage.css already owns that class for the HTTP-method badge (GET/POST), so this
+   section rendered as one giant indigo badge, bold text and all. Shared design tokens mean a shared
+   class NAMESPACE — check coverage.css before minting one. */
+/* Collapsed, this section IS just a button — no band, no rule behind it. The bordered pill is the whole
+   affordance; the detail below only appears once it is opened. */
+.k-coverage-ext .k-evidencebox { margin-top: 26px; }
+.k-coverage-ext .k-methodtoggle {
+  display: inline-flex; align-items: center; gap: 6px; font-family: inherit; font-size: 13px;
+  font-weight: 700; cursor: pointer; color: var(--k-fg-strong);
+  padding: 6px 12px; border-radius: 8px; border: 1px solid var(--k-border); background: var(--k-card-bg);
+}
+.k-coverage-ext .k-methodtoggle:hover { border-color: var(--k-faint); }
+/* the ring is OURS, in the report's own accent — the browser default painted a hard blue rectangle that
+   read as a broken stylesheet. :focus-visible, so it appears for the keyboard and not for the mouse. */
+.k-coverage-ext .k-methodtoggle:focus { outline: none; }
+.k-coverage-ext .k-methodtoggle:focus-visible,
+.k-coverage-ext .k-gloss-btn:focus-visible,
+.k-coverage-ext .k-linkbtn:focus-visible,
+.k-coverage-ext .k-outcome:focus-visible {
+  outline: 2px solid var(--k-link); outline-offset: 2px;
+}
+
+/* SELECTION, in the report's palette. Dragging over a block used to paint it in the OS accent (a hard
+   violet in dark mode over the whole padded box), which reads as a stylesheet that failed to load. */
+.k-coverage-ext ::selection { background: var(--k-tag-bg); color: var(--k-fg-strong); }
+.k-coverage-ext .k-evidencebox h3 { font-size: 13px; margin: 18px 0 6px; color: var(--k-fg-strong); }
+.k-coverage-ext .k-evidencebox .k-idstrip { margin: 0; }
+
+/* ── the glossary overlay + the help affordances ────────────────────────────────────────────────────
+   The same static overlay the Traceability report carries, and for the same reason: this vocabulary
+   (leg, rung, admissible, waiver) is unavoidable in the artifact and unfamiliar to a first reader, and
+   the page opens off file:// with no server to ask. Page-owned data, so no claim is derived here — a
+   glossary defines words, it does not compute a number. */
+.k-coverage-ext .k-gloss-btn {
+  flex: none; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 7px 14px; border-radius: 8px; border: 1px solid var(--k-border);
+  background: var(--k-card-bg); color: var(--k-fg);
+}
+.k-coverage-ext .k-gloss-btn:hover { border-color: var(--k-faint); }
+.k-coverage-ext .k-info { cursor: pointer; color: var(--k-faint); margin-left: 4px; font-style: normal; font-size: 12px; user-select: none; }
+.k-coverage-ext .k-info:hover { color: var(--k-link, #2563eb); }
+.k-coverage-ext .k-overlay {
+  position: fixed; inset: 0; z-index: 50; background: rgba(15, 23, 42, .55);
+  display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px;
+}
+.k-coverage-ext .k-modal {
+  background: var(--k-card-bg); color: var(--k-fg); border: 1px solid var(--k-border);
+  border-radius: 14px; width: 100%; max-width: 680px; max-height: 84vh; overflow: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .35);
+}
+.k-coverage-ext .k-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--k-border); position: sticky; top: 0; background: var(--k-card-bg);
+}
+.k-coverage-ext .k-modal-head h2 { margin: 0; }
+.k-coverage-ext .k-x { font-size: 24px; line-height: 1; cursor: pointer; border: 0; background: none; color: var(--k-muted); }
+.k-coverage-ext .k-x:hover { color: var(--k-fg); }
+.k-coverage-ext .k-modal-body { padding: 8px 20px 20px; }
+.k-coverage-ext .k-gloss-group { padding: 12px 12px; border-radius: 10px; margin: 10px 0; }
+.k-coverage-ext .k-gloss-group h3 { margin: 0 0 2px; font-size: 14px; }
+.k-coverage-ext .k-gloss-group .k-sub { margin: 0 0 10px; }
+.k-coverage-ext .k-gloss-term { display: flex; gap: 10px; align-items: baseline; margin: 7px 0; font-size: 13px; }
+.k-coverage-ext .k-gloss-term .k-pill { flex: none; min-width: 108px; text-align: center; }
+.k-coverage-ext .k-gloss-hi { outline: 2px solid var(--k-bar-fill); transition: outline-color .3s; }
+/* a note that explains the table above it — flush against the last row otherwise */
+.k-coverage-ext table + .k-sub { margin-top: 10px; }
+
+/* a JSON pointer is one long unbroken token — without a forced break it dictates the table's width and
+   starves the message column into a one-word-per-line sliver. break-all over overflow-wrap: a pointer has
+   no natural break points, so even wrapping beats one giant overflow. */
+.k-coverage-ext td.k-pointer code { word-break: break-all; overflow-wrap: anywhere; }
+.k-coverage-ext .k-gloss-foot { font-size: 12px; color: var(--k-muted); padding: 4px 12px 0; }

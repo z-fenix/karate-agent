@@ -1,0 +1,66 @@
+<!--/* One action: a bound command's form (the rules UI's schema form over the literal app.* derived
+     from its axes), enabled per Twin.next or listed with the model's reason. Every submit posts to
+     the page, which calls app.act — the one send. Params: f (a form from app.world/creates/docs),
+     post (the page that handles the POST). */-->
+<div th:fragment="action" th:attr="'data-command': f.command, 'data-enabled': '' + f.enabled, 'data-expects': f.expects">
+<div ka:data="spec:f.data" class="bg-white dark:bg-ink-900 rounded-xl shadow-sm border border-ink-100 dark:border-ink-800 p-5">
+  <div class="flex items-start justify-between gap-3">
+    <div>
+      <h3 class="text-sm font-semibold text-ink-900 dark:text-ink-100" th:text="f.title">Action</h3>
+      <p th:if="f.help" class="mt-0.5 text-xs text-ink-500 dark:text-ink-400" th:text="f.help"></p>
+    </div>
+    <span data-status th:attr="'data-badge': f.badge" :data-badge="actionStatus(spec).badge" class="shrink-0 px-2 py-0.5 rounded-full text-[11px] font-medium"
+          th:classappend="f.badge == 'available' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' : (f.badge == 'unavailable' ? 'bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-400' : 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-300')"
+          :class="badgeClass(actionStatus(spec).badge)"
+          th:text="f.badgeText" x-text="actionStatus(spec).badgeText">Available</span>
+  </div>
+  <p data-reason class="mt-2 text-xs text-amber-700 dark:text-amber-300" x-show="actionStatus(spec).reasonText">
+    <span x-text="actionStatus(spec).reasonText" th:text="f.reasonText"></span>
+    <code x-cloak x-show="actionStatus(spec).expects" x-text="actionStatus(spec).expects" th:text="f.expects"
+          class="ml-1 px-1.5 py-0.5 rounded bg-ink-100 dark:bg-ink-800 text-[11px] text-ink-600 dark:text-ink-300"></code>
+  </p>
+  <form method="post" th:action="post" ka:data="form:f.initialData" class="mt-3 space-y-3">
+    <input type="hidden" name="command" th:value="f.command"/>
+    <input type="hidden" name="operation" th:value="f.operation"/>
+    <input type="hidden" name="_csrf" th:if="context.csrf" th:value="context.csrf.token"/>
+    <label th:if="post == '/docs' &amp;&amp; f.addressed" class="block">
+      <span class="block text-xs font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400 mb-1"
+            th:text="app.ui.resource.label">Record</span>
+      <select name="world" x-model="spec.pick"
+              class="block w-full px-3 py-2 text-sm bg-white dark:bg-ink-950 border border-ink-200 dark:border-ink-700 rounded-lg">
+        <option th:each="w : f.worlds" th:value="w.key" th:text="w.key">key</option>
+      </select>
+    </label>
+    <template x-for="row in SchemaForm.flatten(spec.schema, form, {})" :key="row.path.join('.')">
+      <label class="block" :data-field="row.label" :data-provenance="spec.provenance[row.label]">
+        <span class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400 mb-1">
+          <span x-text="spec.labels[row.label] || row.label"></span>
+          <span x-show="spec.provenance[row.label]" data-provenance-marker :title="provenanceTip(spec.provenance[row.label])"
+                class="w-1.5 h-1.5 rounded-full bg-ink-300 dark:bg-ink-600 cursor-help"></span>
+        </span>
+        <span x-show="row.type === 'enum' &amp;&amp; row.enumOpts.length === 1" data-readonly
+              class="block px-3 py-2 text-sm font-mono bg-ink-50 dark:bg-ink-950 rounded-lg" x-text="row.enumOpts &amp;&amp; optionLabel(spec, row.label, row.enumOpts[0])"></span>
+        <select x-show="row.type === 'enum' &amp;&amp; row.enumOpts.length > 1"
+                @change="form[row.label] = row.enumOpts[$event.target.selectedIndex]"
+                class="block w-full px-3 py-2 text-sm bg-white dark:bg-ink-950 border border-ink-200 dark:border-ink-700 rounded-lg">
+          <template x-for="opt in (row.enumOpts || [])">
+            <option :selected="SchemaForm.sameValue(opt, form[row.label])" x-text="optionLabel(spec, row.label, opt)"></option>
+          </template>
+        </select>
+        <input x-show="row.type === 'integer' || row.type === 'number'" type="number" x-model.number="form[row.label]"
+               :min="row.min" :max="row.max" :step="row.type === 'integer' ? 1 : 'any'"
+               class="block w-full px-3 py-2 text-sm font-mono bg-white dark:bg-ink-950 border border-ink-200 dark:border-ink-700 rounded-lg"/>
+        <input x-show="row.type === 'boolean'" type="checkbox" x-model="form[row.label]"
+               class="w-4 h-4 rounded border-ink-300"/>
+        <input x-show="row.type === 'string' || row.type === 'date'" :type="row.type === 'date' ? 'date' : 'text'"
+               x-model="form[row.label]"
+               class="block w-full px-3 py-2 text-sm bg-white dark:bg-ink-950 border border-ink-200 dark:border-ink-700 rounded-lg"/>
+        <span x-show="spec.fieldHelp[row.label]" class="block mt-1 text-[11px] text-ink-500" x-text="spec.fieldHelp[row.label]"></span>
+      </label>
+    </template>
+    <button type="submit" th:disabled="!f.enabled" :disabled="!actionStatus(spec).enabled"
+            class="px-3 py-2 text-sm font-semibold text-white bg-brand-700 hover:bg-brand-800 rounded-lg shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+            th:text="f.title">Send</button>
+  </form>
+</div>
+</div>

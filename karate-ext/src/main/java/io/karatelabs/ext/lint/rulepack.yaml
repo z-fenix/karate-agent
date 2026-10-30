@@ -1,0 +1,864 @@
+# The bundled karate rulepack — OURS, never a copy of a national standard.
+#
+# Three groups, and the split is the product argument:
+#
+#   * generic API hygiene — table stakes, and the reason the checkbox gets ticked;
+#   * security hygiene — deliberately scoped to the document, NOT a posture grade (D36); see its own header;
+#   * graph-reaching rules — "is this operation claimed by a requirement, and did anything but our own mock
+#     answer it?" — which no document linter can express at all, because the facts are not in the document.
+#     Those are the point (api-lint.md §"The ceiling — rules that reach the graph").
+#
+# Every rule here is data with a code predicate (D219b). `given` declares its dialect; `then` is JS source
+# that compiles in the lint sandbox and nowhere else. `resolved: true` is the default; a rule whose SUBJECT
+# is the `$ref` itself declares `resolved: false` and gets the raw document.
+#
+# `dimension` names the scorecard axis a finding counts against, and `cap` is the gating cap — an unwaived
+# finding of a capped rule holds its DIMENSION down however well everything else scored (D222). Both are
+# declared data like everything else here, so a project's own rules grade on the same axes ours do.
+
+# ---------------------------------------------------------------- document-level hygiene
+
+info-contact:
+  given: "$.info"
+  givenType: jsonpath-plus
+  dimension: documentation
+  severity: warn
+  description: the API declares who owns it
+  then: |
+    (info) => !info ? 'the info object is empty — the API describes itself not at all'
+        : info.contact ? undefined : 'info.contact is missing — nobody is named as the owner of this API'
+
+info-description:
+  given: "$.info"
+  givenType: jsonpath-plus
+  dimension: documentation
+  severity: warn
+  description: the API says what it is for
+  then: |
+    (info) => info && info.description ? undefined : 'info.description is missing or empty'
+
+info-license:
+  given: "$.info"
+  givenType: jsonpath-plus
+  dimension: documentation
+  severity: info
+  description: the API declares its licence
+  then: |
+    (info) => info && info.license ? undefined : 'info.license is not declared'
+
+info-version-semver:
+  given: "$.info.version"
+  givenType: jsonpath-plus
+  dimension: design
+  severity: info
+  description: the API version is a semantic version
+  params:
+    match: "^[0-9]+\\.[0-9]+\\.[0-9]+"
+  then: |
+    (version, ctx) => version ? fn.pattern(version, ctx.params) : undefined
+
+server-https:
+  given: "$.servers[*]"
+  givenType: jsonpath-plus
+  dimension: security
+  severity: warn
+  description: servers are reachable over TLS
+  then: |
+    (server) => {
+      var url = server ? server.url : null
+      if (!url || url.charAt(0) === '{') return
+      if (url.indexOf('://') === -1) return
+      if (url.indexOf('https://') === 0) return
+      return "server url '" + url + "' is not https"
+    }
+
+tags-alphabetical:
+  given: "$.tags"
+  givenType: jsonpath-plus
+  dimension: design
+  severity: info
+  description: the declared tag list reads in order
+  params:
+    keyedBy: name
+  then: |
+    (tags, ctx) => tags ? fn.alphabetical(tags, ctx.params) : undefined
+
+# ---------------------------------------------------------------- paths
+
+path-no-trailing-slash:
+  given: "$.paths[*]~"
+  givenType: jsonpath-plus
+  dimension: design
+  # the finding is about the KEY the `~` selector yielded, so its source position anchors there
+  anchor: key
+  severity: warn
+  description: a path does not end in a slash
+  then: |
+    (path) => path && path.length > 1 && path.charAt(path.length - 1) === '/'
+        ? "path '" + path + "' ends with a trailing slash" : undefined
+
+path-kebab-case:
+  given: "$.paths[*]~"
+  givenType: jsonpath-plus
+  dimension: design
+  anchor: key
+  severity: warn
+  description: literal path segments are kebab-case
+  then: |
+    (path) => {
+      if (!path) return
+      var bad = []
+      var parts = path.split('/')
+      for (var i = 0; i < parts.length; i++) {
+        var seg = parts[i]
+        if (!seg) continue
+        if (seg.charAt(0) === '{') continue
+        if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(seg)) bad.push(seg)
+      }
+      return bad.length ? "path '" + path + "' has non-kebab-case segments: " + bad.join(', ') : undefined
+    }
+
+path-params-declared:
+  given: "$.paths"
+  givenType: jsonpath-plus
+  dimension: design
+  severity: error
+  description: every {template} in a path is declared as a path parameter
+  # `resolved` (the default) matters here — a parameter reached through a `$ref` still counts as declared
+  then: |
+    (paths) => {
+      if (!paths) return
+      var METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']
+      var out = []
+      for (var path in paths) {
+        var item = paths[path]
+        if (!item) continue
+        var wanted = templates(path)
+        if (!wanted.length) continue
+        var shared = declared(item.parameters)
+        for (var m = 0; m < METHODS.length; m++) {
+          var op = item[METHODS[m]]
+          if (!op) continue
+          var have = shared.concat(declared(op.parameters))
+          for (var n = 0; n < wanted.length; n++) {
+            if (have.indexOf(wanted[n]) === -1) {
+              out.push({
+                message: "path parameter '" + wanted[n] + "' appears in '" + path
+                    + "' but is not declared on " + METHODS[m].toUpperCase(),
+                path: [path, METHODS[m]]
+              })
+            }
+          }
+        }
+      }
+      return out
+      function templates(path) {
+        var names = [], open = -1
+        for (var i = 0; i < path.length; i++) {
+          if (path.charAt(i) === '{') open = i
+          else if (path.charAt(i) === '}' && open >= 0) { names.push(path.substring(open + 1, i)); open = -1 }
+        }
+        return names
+      }
+      function declared(list) {
+        var got = []
+        if (!list) return got
+        for (var i = 0; i < list.length; i++) {
+          var p = list[i]
+          if (p && p['in'] === 'path' && p.name) got.push(p.name)
+        }
+        return got
+      }
+    }
+
+# ---------------------------------------------------------------- operations
+
+operation-operationId:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace]"
+  givenType: jsonpath-plus
+  dimension: design
+  severity: error
+  description: every operation is addressable by a stable id
+  then: |
+    (op) => op && op.operationId ? undefined : 'operation has no operationId — nothing can address it'
+
+operation-operationId-casing:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace].operationId"
+  givenType: jsonpath-plus
+  dimension: design
+  severity: warn
+  description: operationIds are camelCase
+  params:
+    type: camel
+  then: |
+    (id, ctx) => id ? fn.casing(id, ctx.params) : undefined
+
+operation-operationId-unique:
+  given: "$.paths"
+  givenType: jsonpath-plus
+  dimension: design
+  severity: error
+  description: no two operations share an operationId
+  then: |
+    (paths) => {
+      if (!paths) return
+      var METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']
+      var seen = {}, out = []
+      for (var path in paths) {
+        var item = paths[path]
+        if (!item) continue
+        for (var m = 0; m < METHODS.length; m++) {
+          var op = item[METHODS[m]]
+          if (!op || !op.operationId) continue
+          // the key is PREFIXED: a bare `seen[id]` inherits Object.prototype, so an operationId of
+          // 'toString' or 'constructor' reads as already-seen and reports a duplicate that does not exist
+          var key = 'id:' + op.operationId
+          if (seen[key]) {
+            out.push({
+              message: "operationId '" + op.operationId + "' is already used by " + seen[key],
+              path: [path, METHODS[m], 'operationId']
+            })
+          } else {
+            seen[key] = path + ' ' + METHODS[m].toUpperCase()
+          }
+        }
+      }
+      return out
+    }
+
+operation-summary:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace]"
+  givenType: jsonpath-plus
+  dimension: documentation
+  severity: warn
+  description: every operation says what it does, briefly
+  params:
+    min: 1
+    max: 120
+  then: |
+    (op, ctx) => op && op.summary ? fn.length(op.summary, ctx.params) : 'operation has no summary'
+
+operation-tags:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace]"
+  givenType: jsonpath-plus
+  dimension: documentation
+  severity: warn
+  description: every operation is grouped under at least one tag
+  then: |
+    (op) => op && op.tags && op.tags.length ? undefined : 'operation carries no tags'
+
+operation-success-response:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace].responses"
+  givenType: jsonpath-plus
+  dimension: documentation
+  severity: warn
+  description: every operation declares a success response
+  then: |
+    (responses) => {
+      if (!responses) return
+      for (var code in responses) { if (/^2\d\d$/.test(code)) return }
+      return 'operation declares no 2xx response'
+    }
+
+operation-error-response:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace].responses"
+  givenType: jsonpath-plus
+  dimension: documentation
+  severity: warn
+  description: every operation declares at least one error response
+  then: |
+    (responses) => {
+      if (!responses) return
+      for (var code in responses) { if (/^[45]\d\d$/.test(code)) return }
+      return 'operation declares no 4xx or 5xx response — its error contract is undocumented'
+    }
+
+response-description:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace].responses[*]"
+  givenType: jsonpath-plus
+  dimension: documentation
+  severity: info
+  description: every declared response says what it means
+  then: |
+    (response, ctx) => response && response.description ? undefined
+        : "response '" + ctx.key + "' has no description"
+
+response-error-schema:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace].responses[*]"
+  givenType: jsonpath-plus
+  dimension: documentation
+  severity: info
+  description: an error response describes what came back — a schema, or at least a header
+  then: |
+    (response, ctx) => {
+      if (!response) return
+      if (ctx.path[2] === 'head') return        // a HEAD response has no body to describe
+      var code = '' + ctx.key
+      if (code !== 'default' && !/^[45](\d\d|[xX][xX])$/.test(code)) return
+      if (response.schema != null) return       // OAS2
+      var content = response.content            // OAS3 — any media type carrying a schema satisfies it,
+      if (content) {                            // and `schema: false` IS a schema (JSON Schema's boolean form)
+        for (var mt in content) { if (content[mt] && content[mt].schema != null) return }
+      }
+      // a bodyless error is legitimate when a header carries the contract — a 401 with WWW-Authenticate,
+      // a 429 with Retry-After
+      if (response.headers) { for (var h in response.headers) return }
+      return "error response '" + code + "' declares neither a schema nor a header — a caller is told "
+          + "nothing about the failure beyond its status code"
+    }
+
+# ---------------------------------------------------------------- schemas & components
+
+schema-property-typed:
+  given: "$..properties[*]"
+  givenType: jsonpath-plus
+  dimension: design
+  severity: info
+  description: a schema property declares a type (or a combinator)
+  then: |
+    (prop) => {
+      if (!prop || typeof prop !== 'object') return
+      if (prop.type || prop.oneOf || prop.anyOf || prop.allOf || prop.not
+          || prop['enum'] || prop['$ref'] || prop['const']) return
+      return 'schema property declares neither a type nor a combinator — it constrains nothing'
+    }
+
+component-example-valid:
+  given: "$.components.schemas[*]"
+  givenType: jsonpath-plus
+  dimension: design
+  severity: error
+  description: a component schema's own example validates against that schema
+  # the highest-value use of the shipped JSON Schema validator's non-throwing form (D218): an example that
+  # does not match its schema is a lie every consumer reads first
+  then: |
+    (schema, ctx) => {
+      if (!schema || typeof schema !== 'object') return
+      if (schema.example == null) return
+      var declaredVersion = ctx.document.openapi || ''
+      var dialect = declaredVersion.indexOf('3.0') === 0 ? 'oas-3.0'
+          : declaredVersion ? 'oas-3.1' : '2020-12'
+      var rows = fn.schema(schema.example, {schema: schema, dialect: dialect})
+      if (!rows) return
+      // a helper's `path` is relative to what IT validated — the example, not the schema node the rule
+      // selected — so the rule re-bases it. Nothing else knows that `example` sits between the two.
+      var out = []
+      for (var i = 0; i < rows.length; i++) {
+        out.push({message: rows[i].message, path: ['example'].concat(rows[i].path)})
+      }
+      return out
+    }
+
+component-schema-referenced:
+  given: "$.components.schemas"
+  givenType: jsonpath-plus
+  dimension: design
+  # the SUBJECT is the `$ref` itself, so this rule reads the RAW document — resolving would erase the very
+  # edges it counts
+  resolved: false
+  severity: info
+  description: a reusable schema is referenced by something
+  params:
+    reusableObjectsLocation: "#/components/schemas"
+  then: |
+    (schemas, ctx) => schemas ? fn.unreferencedReusableObject(schemas, ctx.params) : undefined
+
+no-ref-siblings:
+  given: "$..[?(@ && @['$ref'])]"
+  givenType: jsonpath-plus
+  dimension: design
+  resolved: false
+  severity: warn
+  description: a $ref carries no sibling keys beyond summary/description
+  documentationUrl: "https://spec.openapis.org/oas/v3.0.3#reference-object"
+  then: |
+    (node) => {
+      var extra = []
+      for (var k in node) {
+        if (k !== '$ref' && k !== 'description' && k !== 'summary') extra.push(k)
+      }
+      if (!extra.length) return
+      return '$ref carries sibling keys (' + extra.join(', ')
+          + ') — OAS 3.0 ignores them outright, so they silently do nothing'
+    }
+
+# ---------------------------------------------------------------- document validity
+
+# OAS 3.0 is an ALLOW-LIST, and that is the whole reason this rule exists. The specification positively lists
+# the JSON Schema keywords it supports and declares every other one "strictly unsupported", with a
+# meta-schema that closes the set — so an unsupported keyword does not get ignored, it makes the DOCUMENT
+# invalid. That is a document-validity verdict, which is a linter's job; instance validation stays lenient
+# (jsonschema.md §"The supported-keyword matrix" states the ground rule and names this as its first gap).
+#
+# `resolved: false` because the subject is the document as written. `anchor: key` because the finding is
+# about the keyword, and the keyword is a key.
+oas3-unsupported-keyword:
+  given: "$"
+  givenType: jsonpath-plus
+  dimension: design
+  resolved: false
+  formats: [oas3_0]
+  anchor: key
+  severity: error
+  description: a Schema Object uses only the keywords OAS 3.0 defines
+  documentationUrl: "https://spec.openapis.org/oas/v3.0.3#schema-object"
+  then: |
+    ($) => {
+      // 3.0's own list: the JSON Schema keywords it takes as-is, the ones it adjusts, and the ones it adds.
+      // Prefixed keys, because a bare `ALLOWED[k]` inherits Object.prototype — a schema keyword named
+      // 'constructor' or 'toString' would read as allowed and this rule would silently pass it.
+      var ALLOWED = {}
+      var NAMES = ['title', 'multipleOf', 'maximum', 'exclusiveMaximum', 'minimum', 'exclusiveMinimum',
+        'maxLength', 'minLength', 'pattern', 'maxItems', 'minItems', 'uniqueItems', 'maxProperties',
+        'minProperties', 'required', 'enum', 'type', 'allOf', 'oneOf', 'anyOf', 'not', 'items', 'properties',
+        'additionalProperties', 'description', 'format', 'default', 'nullable', 'discriminator', 'readOnly',
+        'writeOnly', 'xml', 'externalDocs', 'example', 'deprecated', '$ref']
+      for (var i = 0; i < NAMES.length; i++) ALLOWED['k:' + NAMES[i]] = true
+      var METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']
+      var out = []
+      return walk()
+
+      // `!!o` rather than `o != null`: a missing method is undefined, and an undefined that survives this
+      // guard reads a property off nothing one line later
+      function isMap(o) { return !!o && typeof o === 'object' && !Array.isArray(o) }
+
+      // the depth cap is a guard against a pathological document, not a coverage choice: a real OAS 3.0
+      // schema nests tens deep, and the raw view is a tree, so nothing legitimate reaches it
+      function schema(node, path, depth) {
+        if (!isMap(node) || depth > 30) return
+        for (var k in node) {
+          if (ALLOWED['k:' + k] || k.indexOf('x-') === 0) continue
+          out.push({
+            message: "'" + k + "' is not an OAS 3.0 keyword — 3.0 lists what it supports and declares every "
+                + "other JSON Schema keyword strictly unsupported, so this makes the document invalid",
+            path: path.concat([k])
+          })
+        }
+        var ONE = ['items', 'not', 'additionalProperties']
+        for (var i = 0; i < ONE.length; i++) schema(node[ONE[i]], path.concat([ONE[i]]), depth + 1)
+        if (isMap(node.properties)) {
+          for (var p in node.properties) schema(node.properties[p], path.concat(['properties', p]), depth + 1)
+        }
+        var MANY = ['allOf', 'oneOf', 'anyOf']
+        for (var m = 0; m < MANY.length; m++) {
+          var list = node[MANY[m]]
+          if (!Array.isArray(list)) continue
+          for (var n = 0; n < list.length; n++) schema(list[n], path.concat([MANY[m], n]), depth + 1)
+        }
+      }
+
+      function content(node, path) {
+        if (!isMap(node)) return
+        for (var mt in node) {
+          if (isMap(node[mt])) schema(node[mt].schema, path.concat([mt, 'schema']), 0)
+        }
+      }
+
+      function parameters(list, path) {
+        if (!Array.isArray(list)) return
+        for (var i = 0; i < list.length; i++) {
+          if (!isMap(list[i])) continue
+          schema(list[i].schema, path.concat([i, 'schema']), 0)
+          content(list[i].content, path.concat([i, 'content']))
+        }
+      }
+
+      function headers(node, path) {
+        if (!isMap(node)) return
+        for (var h in node) {
+          if (!isMap(node[h])) continue
+          schema(node[h].schema, path.concat([h, 'schema']), 0)
+          // a Header Object may carry `content` instead of `schema` — same as a parameter
+          content(node[h].content, path.concat([h, 'content']))
+        }
+      }
+
+      // a Callbacks Object is {name: {runtimeExpression: PathItem}} — the path items inside carry
+      // operations, and their schemas are as much a part of the document as any other
+      function callbacks(node, path) {
+        if (!isMap(node)) return
+        for (var name in node) {
+          var byExpression = node[name]
+          if (!isMap(byExpression)) continue
+          for (var expression in byExpression) {
+            pathItem(byExpression[expression], path.concat([name, expression]))
+          }
+        }
+      }
+
+      function pathItem(item, path) {
+        if (!isMap(item)) return
+        parameters(item.parameters, path.concat(['parameters']))
+        for (var m = 0; m < METHODS.length; m++) {
+          operation(item[METHODS[m]], path.concat([METHODS[m]]))
+        }
+      }
+
+      function responses(node, path) {
+        if (!isMap(node)) return
+        for (var code in node) {
+          if (!isMap(node[code])) continue
+          content(node[code].content, path.concat([code, 'content']))
+          headers(node[code].headers, path.concat([code, 'headers']))
+        }
+      }
+
+      function operation(op, path) {
+        if (!isMap(op)) return
+        parameters(op.parameters, path.concat(['parameters']))
+        if (isMap(op.requestBody)) content(op.requestBody.content, path.concat(['requestBody', 'content']))
+        responses(op.responses, path.concat(['responses']))
+        callbacks(op.callbacks, path.concat(['callbacks']))
+      }
+
+      function walk() {
+        if (isMap($.paths)) {
+          for (var route in $.paths) {
+            pathItem($.paths[route], ['paths', route])
+          }
+        }
+        var c = $.components
+        if (isMap(c)) {
+          if (isMap(c.schemas)) {
+            for (var s in c.schemas) schema(c.schemas[s], ['components', 'schemas', s], 0)
+          }
+          if (isMap(c.parameters)) {
+            for (var pn in c.parameters) {
+              if (isMap(c.parameters[pn])) {
+                schema(c.parameters[pn].schema, ['components', 'parameters', pn, 'schema'], 0)
+              }
+            }
+          }
+          headers(c.headers, ['components', 'headers'])
+          callbacks(c.callbacks, ['components', 'callbacks'])
+          if (isMap(c.requestBodies)) {
+            for (var rb in c.requestBodies) {
+              if (isMap(c.requestBodies[rb])) {
+                content(c.requestBodies[rb].content, ['components', 'requestBodies', rb, 'content'])
+              }
+            }
+          }
+          responses(c.responses, ['components', 'responses'])
+        }
+        return out
+      }
+    }
+
+# ---------------------------------------------------------------- security hygiene
+#
+# SCOPE THIS ROW HONESTLY, IN THE PRODUCT AS WELL AS HERE. These are security-*hygiene* rules over the
+# document — "is auth declared at all, does a key travel somewhere it will be logged, is a collection
+# bounded" — and they are NOT a 300-check posture grade. That is its own product and it is deferred (D36).
+# The scorecard's `security` dimension is exactly this set: a buyer who reads it as a posture score is being
+# misled by a number, which is why both the dimension's label and every public line say what it covers.
+#
+# They exist rather than the dimension reading `not measured` because security is the one dimension a buyer
+# looks for first, and shipping it visibly empty costs more than the rules do. The doctrine still holds — our
+# own pack, never a copy of somebody's standard.
+#
+# `server-https` also belongs to the set; it lives up under document hygiene where it was authored, and
+# carries `dimension: security` from there.
+
+security-scheme-declared:
+  given: "$"
+  givenType: jsonpath-plus
+  dimension: security
+  # THE gating cap of the pack, and the JAIRF mechanic stated precisely: it caps the SECURITY DIMENSION, and
+  # the harmonic mean then drags the index down. An API with no authentication described anywhere is not a
+  # tidy API with one flaw — no amount of good documentation buys that back.
+  cap: 0.2
+  severity: error
+  description: the document describes how a caller authenticates
+  documentationUrl: "https://spec.openapis.org/oas/v3.0.3#security-scheme-object"
+  then: |
+    ($) => {
+      // both generations, because the pack governs swagger 2.0 documents too
+      var schemes = ($.components && $.components.securitySchemes) || $.securityDefinitions
+      if (schemes) {
+        for (var k in schemes) return
+      }
+      return 'no security scheme is declared anywhere — the document does not say how a caller authenticates, '
+          + 'so nothing downstream can tell an intentionally-public API from an undescribed one'
+    }
+
+security-apikey-not-in-query:
+  given: "$"
+  givenType: jsonpath-plus
+  dimension: security
+  # a key in a query string is written to access logs, proxy logs, browser history and `Referer` headers by
+  # every hop it passes — capped because it is a disclosed credential, not a style preference
+  cap: 0.3
+  severity: error
+  description: an API key does not travel in the query string
+  then: |
+    ($) => {
+      var schemes = ($.components && $.components.securitySchemes) || $.securityDefinitions
+      if (!schemes) return
+      var out = []
+      for (var name in schemes) {
+        var s = schemes[name]
+        if (!s || s.type !== 'apiKey' || s['in'] !== 'query') continue
+        out.push({
+          message: "security scheme '" + name + "' passes an API key as the query parameter '" + s.name
+              + "' — query strings land in access logs, proxy logs, browser history and Referer headers",
+          // the path differs by generation, and pointing at the wrong one would put the finding (and any
+          // waiver scoped to it) on a construct the document does not have
+          path: $.securityDefinitions ? ['securityDefinitions', name] : ['components', 'securitySchemes', name]
+        })
+      }
+      return out
+    }
+
+security-applied:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace]"
+  givenType: jsonpath-plus
+  dimension: security
+  severity: warn
+  description: every operation is covered by a security requirement, or opts out explicitly
+  then: |
+    (op, ctx) => {
+      if (!op) return
+      // an EXPLICIT `security: []` is a declared public endpoint, and it passes — at EITHER scope. That is
+      // the whole point of the rule: the failure it reports is silence, not openness, and a document that
+      // declares itself public at the root has decided exactly as loudly as one that decides per operation.
+      // (`[]` is truthy in JS, so presence is the test at both levels; never `.length`, which would read a
+      // root-level `security: []` as silence and then tell the author to write the very line they wrote.)
+      if (op.security) return
+      if (ctx.document.security) return
+      return "operation '" + (op.operationId || ctx.path[2] + ' ' + ctx.path[1])
+          + "' is covered by no security requirement, and does not declare `security: []` to say it is public"
+    }
+
+operation-auth-error-response:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace]"
+  givenType: jsonpath-plus
+  dimension: security
+  severity: warn
+  description: an authenticated operation declares what a rejected caller gets back
+  then: |
+    (op, ctx) => {
+      if (!op) return
+      var effective = op.security || ctx.document.security
+      if (!effective || !effective.length) return    // public by declaration — 401/403 would be noise
+      var responses = op.responses
+      if (!responses) return                         // operation-success-response owns the empty case
+      for (var code in responses) {
+        if (code === '401' || code === '403' || code === 401 || code === 403) return
+      }
+      return "operation '" + (op.operationId || ctx.path[2] + ' ' + ctx.path[1]) + "' requires authentication "
+          + "but declares neither a 401 nor a 403 — its rejection contract is undocumented"
+    }
+
+security-oauth-flow-current:
+  given: "$"
+  givenType: jsonpath-plus
+  dimension: security
+  severity: warn
+  description: an oauth2 scheme declares no retired grant flow
+  documentationUrl: "https://www.rfc-editor.org/rfc/rfc9700.html"
+  then: |
+    ($) => {
+      var schemes = ($.components && $.components.securitySchemes) || $.securityDefinitions
+      if (!schemes) return
+      // OAS2 declares one flow per scheme in `flow`; OAS3 keys them under `flows`
+      var oas2 = !!$.securityDefinitions
+      var RETIRED = ['implicit', 'password']
+      var WHY = {
+        'implicit': 'RFC 9700 says the implicit grant SHOULD NOT be used — it returns the token in the '
+            + 'redirect URI, where browser history, logs and Referer headers keep it',
+        'password': 'RFC 9700 says the resource-owner-password grant MUST NOT be used — it hands the '
+            + 'client the user credentials themselves'
+      }
+      var out = []
+      for (var name in schemes) {
+        var s = schemes[name]
+        if (!s || s.type !== 'oauth2') continue
+        for (var i = 0; i < RETIRED.length; i++) {
+          var flow = RETIRED[i]
+          if (!(oas2 ? s.flow === flow : !!(s.flows && s.flows[flow]))) continue
+          out.push({
+            message: "security scheme '" + name + "' declares the oauth2 '" + flow + "' flow — " + WHY[flow],
+            // the pointer differs by generation: the `flow` field in OAS2, the flow's own key in OAS3
+            path: oas2 ? ['securityDefinitions', name, 'flow']
+                : ['components', 'securitySchemes', name, 'flows', flow]
+          })
+        }
+      }
+      return out
+    }
+
+security-requirement-resolves:
+  given: "$"
+  givenType: jsonpath-plus
+  dimension: security
+  # an error rather than a warning: the requirement is what the document PUBLISHES as the way in, and a
+  # published way in that cannot be followed is a defect whatever alternatives sit beside it
+  severity: error
+  description: every security requirement names a declared scheme, and an oauth2 scope some flow enumerates
+  then: |
+    ($) => {
+      var schemes = ($.components && $.components.securitySchemes) || $.securityDefinitions
+      // prefixed keys, because a bare lookup inherits Object.prototype — a scheme named 'toString' or
+      // 'constructor' would read as declared
+      var declared = {}
+      for (var k in schemes) declared['s:' + k] = schemes[k]
+      var METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']
+      var out = []
+      check($.security, ['security'])
+      if ($.paths) {
+        for (var route in $.paths) {
+          var item = $.paths[route]
+          if (!item) continue
+          for (var m = 0; m < METHODS.length; m++) {
+            if (item[METHODS[m]]) {
+              check(item[METHODS[m]].security, ['paths', route, METHODS[m], 'security'])
+            }
+          }
+        }
+      }
+      return out
+
+      // an empty requirement (`security: []`, or a `{}` entry) names nothing and passes — it is the
+      // declared-public case `security-applied` already owns
+      function check(requirements, path) {
+        if (!requirements) return
+        for (var i = 0; i < requirements.length; i++) {
+          var req = requirements[i]
+          if (!req) continue
+          for (var name in req) {
+            var scheme = declared['s:' + name]
+            if (!scheme) {
+              out.push({
+                message: "security requirement names '" + name + "', which the document declares nowhere "
+                    + "— a caller reading it cannot authenticate at all",
+                path: path.concat([i])
+              })
+              continue
+            }
+            // only oauth2 enumerates its scopes in the document: an openIdConnect scheme's live at its
+            // discovery endpoint, and an apiKey/http requirement carries an empty list
+            if (scheme.type !== 'oauth2') continue
+            var known = enumerated(scheme)
+            var asked = req[name]
+            for (var j = 0; asked && j < asked.length; j++) {
+              if (known['s:' + asked[j]]) continue
+              out.push({
+                message: "security requirement asks '" + name + "' for the scope '" + asked[j]
+                    + "', which no flow of that scheme enumerates",
+                path: path.concat([i])
+              })
+            }
+          }
+        }
+      }
+
+      function enumerated(scheme) {
+        var set = {}
+        if (scheme.flows) {                 // OAS3 — the union across every declared flow
+          for (var f in scheme.flows) {
+            var flow = scheme.flows[f]
+            if (flow && flow.scopes) { for (var s in flow.scopes) set['s:' + s] = true }
+          }
+        }
+        if (scheme.scopes) { for (var t in scheme.scopes) set['s:' + t] = true }   // OAS2
+        return set
+      }
+    }
+
+# The two resource-bound rules below select `$..properties[*]` — the SAME selector `schema-property-typed`
+# already walks, deliberately, because it is measured inside the performance budget. That scopes them to
+# schema PROPERTIES, which is where an unbounded request field actually reaches a parser; a top-level array
+# body is out of their scope and the descriptions say so rather than implying whole-document coverage.
+
+schema-array-bounded:
+  given: "$..properties[*]"
+  givenType: jsonpath-plus
+  dimension: security
+  # the subject is the schema AS WRITTEN, so this reads the raw document. Against the resolved view a
+  # component field reached through twenty `$ref` sites is twenty findings about one line — the same defect
+  # reported once per reference, which buries the report and tells a reader nothing the first row did not.
+  resolved: false
+  severity: warn
+  description: an array property declares an upper bound (scoped to schema properties)
+  then: |
+    (prop) => {
+      if (!prop || typeof prop !== 'object' || prop.type !== 'array') return
+      if (prop.maxItems != null) return
+      return 'array property declares no maxItems — an unbounded collection is a resource-exhaustion surface '
+          + 'and a gateway cannot enforce a limit the contract never states'
+    }
+
+schema-string-bounded:
+  given: "$..properties[*]"
+  givenType: jsonpath-plus
+  dimension: security
+  resolved: false      # as above — one finding per field as written, not one per reference site
+  # info, not warn: most real documents bound almost nothing, and a rule that fires on every field would
+  # dominate the dimension rather than inform it
+  severity: info
+  description: a free-text string property declares an upper bound (scoped to schema properties)
+  then: |
+    (prop) => {
+      if (!prop || typeof prop !== 'object' || prop.type !== 'string') return
+      // already bounded by construction — an enum, a pattern or a declared format is a narrower constraint
+      // than maxLength, so demanding maxLength beside it would be noise
+      if (prop.maxLength != null || prop['enum'] || prop.pattern || prop.format) return
+      return 'string property declares no maxLength — unbounded free text is a resource-exhaustion surface'
+    }
+
+# ---------------------------------------------------------------- the graph-reaching half
+#
+# These are the rules nothing else in the category can express, because the facts they assert over are not in
+# the document at all. Each guards on the graph being readable — a project with no graph yet answers `error`
+# per verb, and a rule that grades on a missing graph would manufacture findings rather than report them.
+
+operation-claimed-by-requirement:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace].operationId"
+  givenType: jsonpath-plus
+  dimension: provenness
+  severity: warn
+  description: every operation is claimed by a requirement (@real=)
+  then: |
+    (id, ctx) => {
+      if (!ctx.graph) return          // no graph at all — inert, and the report's `graph` block says so
+      var item = Coverage.status('openapi:' + id)
+      // with a graph present, an id the graph has never heard of is UNCLAIMED — guarding on item.error
+      // alone would let a spec's newest operation, the very orphan this rule exists for, pass silently
+      if (!item || item.error || !item.requirements || !item.requirements.length) {
+        return "no requirement claims operation '" + id + "' — it is an orphan in the traceability graph"
+      }
+    }
+
+operation-exercised:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace].operationId"
+  givenType: jsonpath-plus
+  dimension: provenness
+  severity: warn
+  description: every operation was exercised by something
+  then: |
+    (id, ctx) => {
+      if (!ctx.graph) return
+      var item = Coverage.status('openapi:' + id)
+      // same reading: absent from the graph means nothing ever exercised it
+      if (!item || item.error || !item.callCount) {
+        return "operation '" + id + "' was never exercised by any test"
+      }
+    }
+
+operation-not-mock-only:
+  given: "$.paths[*][get,put,post,delete,options,head,patch,trace].operationId"
+  givenType: jsonpath-plus
+  dimension: provenness
+  severity: info
+  description: an exercised operation was answered by something other than our own mock
+  then: |
+    (id, ctx) => {
+      if (!ctx.graph) return
+      var item = Coverage.status('openapi:' + id)
+      // an operation absent from the graph was never answered at all, which `operation-exercised` owns —
+      // this rule speaks only about something that DID run, so absence is not its finding to make
+      if (!item || item.error) return
+      if (item.mockOnly) {
+        return "operation '" + id + "' has only ever been answered by a karate mock — its green is mock-only"
+      }
+    }

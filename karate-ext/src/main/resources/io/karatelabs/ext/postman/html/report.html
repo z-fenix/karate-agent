@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Report</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+  .step-screenshot{max-width:100%;height:auto;border:1px solid var(--bs-border-color);border-radius:.375rem}
+  .step-slow{border-left:4px solid var(--bs-warning)}
+  .step-error{border-left:4px solid var(--bs-danger)}
+  .step-pass{border-left:4px solid var(--bs-success)}
+  .step-fail{border-left:4px solid var(--bs-danger)}
+  .stat-card{text-align:center}
+  .stat-card .sv{font-size:1.5rem;font-weight:700}
+  .stat-card .sl{font-size:.875rem;color:var(--bs-secondary-color)}
+</style>
+</head>
+<body>
+<div class="container py-4" id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script type="application/json" id="report-data">
+{{REPORT_DATA}}
+</script>
+<script>
+const D = JSON.parse(document.getElementById('report-data').textContent);
+const M = D.meta, S = D.steps || [];
+const esc = s => s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
+const fmtTok = n => n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':n;
+const isLlm = !!M.title; // LLM-driven report has title; harness has model
+const karateLogo = '<svg width="24" height="24" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><circle style="fill:#36454f" cx="8" cy="8" r="6.75"/><path style="fill:#ced0d6" d="M 8.024.9998 A 7.003 7 0 0 0 1.02 8 7.003 7 0 0 0 8.024 15 7.003 7 0 0 0 15.027 8 7.003 7 0 0 0 8.024.9998Zm0 .3952A6.608 6.605 0 0 1 14.632 8 6.608 6.605 0 0 1 8.024 14.605 6.608 6.605 0 0 1 1.416 8 6.608 6.605 0 0 1 8.024 1.395Z"/><path style="fill:#ffffff" d="m 8.602 2.944c.164.032.176.053.107.199-.068.146-.065.113-.067.64-.002.442-.011.61-.035.634-.002.003-.05.017-.108.032-.188.049-.183.043-.205.261-.01.095-.017.173-.016.173.001.001.193.042.428.091l.432.09.231.13.231.13.17.28c.093.153.17.279.172.279.002 0 .134-.05.294-.112.16-.061.293-.11.294-.108.005.004.144.958.14.96-.02.017-.957.294-.98.289-.015-.003-.183-.053-.372-.111-.19-.058-.346-.104-.348-.103-.002.002-.011.197-.021.434-.01.237-.019.431-.02.432-.001.001-.079.065-.172.142l-.17.141-.133-.005c-.073-.002-.418-.009-.766-.014l-.634-.01-.205-.126C6.733 7.622 6.612 7.548 6.577 7.527c-.076-.046-.077-.023.007-.206.038-.084.07-.159.07-.165 0-.008.275-.108.749-.273.434-.151.738-.261.723-.262-.061-.006-1.477-.04-1.553-.039-.142.004-.464-.157-.625-.312-.017-.017-.046-.89-.029-.905.222-.203.36-.301.601-.432l.243-.132.336.013c.293.012.34.012.363 0 .015-.008.178-.076.363-.152l.336-.137-.318-.02c-.175-.012-.325-.021-.333-.021-.021 0-.224-.282-.232-.325-.004-.018-.03-.18-.057-.36l-.049-.327.143-.243c.112-.19.148-.244.162-.244.01 0 .2-.015.42-.032.427-.034.574-.036.706-.011m2.834 2.045c.099.01.164.027.197.053.02.016.03.12.052.522l.002.04-.428.181c-.236.1-.435.183-.444.186-.018.006-.248-.318-.235-.33.005-.005.071-.032.148-.061.077-.03.142-.055.145-.056.003-.002 0-.08-.006-.174-.006-.094-.009-.175-.005-.18.003-.005.04-.052.083-.105l.078-.095.16.005c.088.003.202.009.253.014m-.393.332c.003.024.01.103.017.175.006.072.013.132.014.134.004.005.357-.096.357-.101-.001-.007-.377-.252-.386-.252-.004 0-.005.02-.002.044M8.578 6.07C8.486 6.246 8.386 6.437 8.356 6.495L8.3 6.601l.181-.141.182-.141.005-.063c.003-.035.023-.15.044-.257.059-.3.059-.3-.134.07M6.537 8.163c.118.035.313.088.434.118.12.029.224.056.23.059.007.004-.017.04-.069.1l-.08.095-.096.239-.096.239.29-.007c.16-.003.291-.007.292-.008.001 0 .01-.091.021-.201.018-.182.022-.202.041-.219.011-.01.088-.068.171-.128l.165-.11.158.112.157.112.017.212c.009.117.017.212.018.212.001 0 .115-.001.254-.003l.252-.003-.152-.314C8.447 8.496 8.38 8.353 8.382 8.352c.002-.002.1-.013.22-.025.203-.02.227-.025.373-.069.085-.026.161-.047.168-.047.007 0 .186.198.399.44.468.534.472.537.791.836.576.539.655.64.739.95.055.202.078.259.276.679.103.218.197.435.232.536.034.096.045.079-.095.16-.05.03-.09.059-.091.065 0 .036.121.087.523.217.519.169.606.232.485.354-.087.088-.148.097-.649.097-.513 0-.652-.015-.71-.076-.04-.043-.054-.015.157-.33.103-.154.186-.281.184-.283-.002-.001-.173.014-.38.033l-.377.036-.289-.025c-.159-.013-.293-.028-.298-.032-.005-.004-.183-.363-.395-.797l-.393-.858-.582-.37-.583-.37-.242.006c-.133.003-.275.008-.315.011l-.073.006-.487.536-.487.537-.606.582-.606.582-.182.023-.183.023-.377-.054c-.208-.029-.379-.052-.38-.051-.001.002.087.124.197.272.11.148.198.274.197.28-.002.006-.034.06-.073.12l-.07.108-.368 0c-.559 0-.57-.005-.489-.203.039-.095.051-.108.2-.222.258-.197.35-.276.373-.32.007-.013-.011-.032-.105-.111-.063-.052-.114-.102-.113-.11.002-.058 1.28-1.802 1.5-2.058.122-.143.329-.398.459-.568l.238-.31.085-.217c.047-.119.092-.24.1-.266.02-.06-.004-.062.252.015"/></svg>';
+
+let h = '';
+
+if (isLlm) {
+  // ========== LLM-Driven Report ==========
+  const passed = M.passed || 0, failed = M.failed || 0, total = M.total || S.length;
+  const allPass = failed === 0 && total > 0;
+
+  // Header
+  h += `<div class="d-flex justify-content-between align-items-start mb-4">
+    <div><h1 class="h3 mb-1 d-flex align-items-center">${karateLogo}<span class="ms-2">${esc(M.title)}</span></h1></div>
+    <div class="d-flex align-items-center gap-2">
+      <span class="badge ${allPass ? 'bg-success' : 'bg-danger'} fs-6">${allPass ? 'PASS' : 'FAIL'}</span>
+      <button class="btn btn-sm btn-outline-secondary" onclick="document.documentElement.setAttribute('data-bs-theme',document.documentElement.getAttribute('data-bs-theme')==='dark'?'light':'dark')">&#9789;</button>
+    </div></div>`;
+
+  // Stats
+  const stats = [['Passed',passed],['Failed',failed],['Total',total],['Duration',M.durationSec+'s']];
+  h += '<div class="row g-3 mb-4">' + stats.map(([l,v])=>{
+    let cls = l==='Passed'?'text-success':l==='Failed'&&v>0?'text-danger':'';
+    return `<div class="col"><div class="card stat-card"><div class="card-body"><div class="sv ${cls}">${v}</div><div class="sl">${l}</div></div></div></div>`;
+  }).join('') + '</div>';
+
+  // Summary
+  if (D.summary) {
+    h += `<div class="card mb-4"><div class="card-body"><h6 class="card-subtitle text-body-secondary mb-2">Summary</h6><div class="card-text mb-0">${marked.parse(D.summary)}</div></div></div>`;
+  }
+
+  // Steps
+  h += '<h5 class="mb-3">Test Steps</h5><div class="accordion mb-4" id="sa">';
+  S.forEach((s,i) => {
+    const pass = s.status === 'pass';
+    const cls = pass ? ' step-pass' : ' step-fail';
+    const bdg = pass ? '<span class="badge bg-success ms-2">PASS</span>' : '<span class="badge bg-danger ms-2">FAIL</span>';
+    h += `<div class="accordion-item${cls}"><h2 class="accordion-header">
+      <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#s${i}">
+        <span class="me-2 text-body-secondary">${i+1}.</span> ${esc(s.name)} ${bdg}
+      </button></h2>
+      <div id="s${i}" class="accordion-collapse collapse" data-bs-parent="#sa"><div class="accordion-body">`;
+    if (s.screenshot) h += `<img src="${s.screenshot}" class="step-screenshot mb-3" alt="${esc(s.name)}" loading="lazy">`;
+    if (s.note) h += `<p class="text-body-secondary mb-0">${esc(s.note)}</p>`;
+    h += '</div></div></div>';
+  });
+  h += '</div>';
+
+  // Hints (recommendations)
+  if (D.hints && D.hints.length) {
+    h += '<h5 class="mb-3">Recommendations</h5><ul class="list-group mb-4">';
+    D.hints.forEach(x => h += `<li class="list-group-item list-group-item-info">${esc(x)}</li>`);
+    h += '</ul>';
+  }
+
+} else {
+  // ========== Harness Report (deterministic) ==========
+  const badge = {COMPLETED:'bg-success',STOPPED:'bg-warning text-dark',ERROR:'bg-danger'};
+
+  // Header
+  h += `<div class="d-flex justify-content-between align-items-start mb-4">
+    <div><h1 class="h3 mb-1 d-flex align-items-center">${karateLogo}<span class="ms-2">Agent Report</span></h1><p class="text-body-secondary mb-0">${esc(M.model)}</p></div>
+    <div class="d-flex align-items-center gap-2">
+      <span class="badge ${badge[M.status]||'bg-secondary'} fs-6">${M.status}</span>
+      <button class="btn btn-sm btn-outline-secondary" onclick="document.documentElement.setAttribute('data-bs-theme',document.documentElement.getAttribute('data-bs-theme')==='dark'?'light':'dark')">&#9789;</button>
+    </div></div>`;
+  // Task
+  h += `<div class="card mb-4"><div class="card-body"><h6 class="card-subtitle text-body-secondary mb-2">Task</h6><p class="card-text mb-0" style="white-space:pre-line">${esc(M.task)}</p></div></div>`;
+  // Summary (agent's final answer)
+  if (D.summary) {
+    h += `<div class="card mb-4 border-success"><div class="card-body"><h6 class="card-subtitle text-body-secondary mb-2">Result</h6><div class="card-text mb-0">${marked.parse(D.summary)}</div></div></div>`;
+  }
+  // Stats
+  const stats = [['Iterations',M.iterations],['Duration',M.durationSec+'s'],['Tokens (in)',fmtTok(M.tokensIn)],['Tokens (out)',fmtTok(M.tokensOut)],['Screens',S.length]];
+  h += '<div class="row g-3 mb-4">' + stats.map(([l,v])=>`<div class="col"><div class="card stat-card"><div class="card-body"><div class="sv">${v}</div><div class="sl">${l}</div></div></div></div>`).join('') + '</div>';
+  // Steps
+  h += '<h5 class="mb-3">Screen Progression</h5><div class="accordion mb-4" id="sa">';
+  S.forEach((s,i) => {
+    const rng = s.startIter===s.endIter ? s.startIter : s.startIter+'-'+s.endIter;
+    const cls = s.errors ? ' step-error' : (s.slow ? ' step-slow' : '');
+    const bdg = s.errors ? '<span class="badge bg-danger ms-2">errors</span>' : (s.slow ? '<span class="badge bg-warning text-dark ms-2">slow</span>' : '');
+    h += `<div class="accordion-item${cls}"><h2 class="accordion-header">
+      <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#s${i}">
+        <span class="me-2 text-body-secondary">[${rng}]</span> ${esc(s.screen)}
+        <span class="ms-2 text-body-secondary">(${s.iterCount} iter${s.iterCount===1?'':'s'})</span>${bdg}
+      </button></h2>
+      <div id="s${i}" class="accordion-collapse collapse" data-bs-parent="#sa"><div class="accordion-body">`;
+    if (s.screenshot) h += `<img src="${s.screenshot}" class="step-screenshot mb-3" alt="${esc(s.screen)}" loading="lazy">`;
+    if (s.errors) { h += '<div class="alert alert-danger py-2">'; s.errors.forEach(e => h += `<div>${esc(e)}</div>`); h += '</div>'; }
+    if (s.actions) h += `<p class="text-body-secondary mb-0"><small>Actions: ${esc(s.actions)}</small></p>`;
+    h += '</div></div></div>';
+  });
+  h += '</div>';
+  // Flow Deviations
+  if (D.flowDeviations) { h += '<h5 class="mb-3">&#9888; Flow Deviations</h5><div class="alert alert-warning py-2 mb-2"><small>These flows failed and the LLM worked around them. Use a Live run to fix the underlying flow.</small></div><ul class="list-group mb-4">'; D.flowDeviations.forEach(d => h += `<li class="list-group-item list-group-item-warning">${esc(d)}</li>`); h += '</ul>'; }
+  // Wasted
+  if (D.wastedIterations) { h += '<h5 class="mb-3">Wasted Iterations</h5><ul class="list-group mb-4">'; D.wastedIterations.forEach(w => h += `<li class="list-group-item">${esc(w)}</li>`); h += '</ul>'; }
+  // Errors
+  if (D.errors) { h += '<h5 class="mb-3">Errors</h5><ul class="list-group mb-4">'; D.errors.forEach(e => h += `<li class="list-group-item list-group-item-danger">${esc(e)}</li>`); h += '</ul>'; }
+  // Hints
+  if (D.hints) { h += '<h5 class="mb-3">Hints Compliance</h5><ul class="list-group mb-4">'; D.hints.forEach(x => h += `<li class="list-group-item ${x.startsWith('\u2713')?'list-group-item-success':'list-group-item-light'}">${esc(x)}</li>`); h += '</ul>'; }
+}
+
+// Footer
+h += `<p class="text-body-secondary text-center mt-4"><small>Generated ${M.timestamp}</small></p>`;
+document.getElementById('app').innerHTML = h;
+</script>
+</body>
+</html>

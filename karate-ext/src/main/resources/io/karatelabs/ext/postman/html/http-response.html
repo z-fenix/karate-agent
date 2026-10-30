@@ -1,0 +1,12 @@
+<script ka:scope="local">
+    _.statusToCss = x => {
+        if (x >= 200 && x < 300) {
+            return 'text-bg-success';
+        }
+        return 'text-bg-danger';
+    };
+</script>
+<div class="p-1">
+    <span class="badge" th:text="response.status" th:classappend="statusToCss(response.status)"></span>
+    <span th:text="response.responseTime"></span> ms
+</div>

@@ -1,0 +1,118 @@
+/*
+ * karate-max coverage tab — hand-authored, scoped under .k-coverage-ext.
+ * Core owns Tailwind and purges unknown classes, so this ext does NOT rely on it.
+ * Dark mode follows the main report: <html data-theme="light|dark"> (localStorage
+ * 'karate-theme'); colours are CSS variables overridden under [data-theme="dark"].
+ */
+.k-coverage-ext {
+  --k-fg: #1e293b;
+  --k-fg-strong: #334155;
+  --k-muted: #64748b;
+  --k-faint: #94a3b8;
+  --k-card-bg: #f8fafc;
+  --k-border: #e2e8f0;
+  --k-row-border: #eef2f7;
+  --k-method-bg: #e0e7ff; --k-method-fg: #3730a3;
+  --k-reqid-bg: #cffafe; --k-reqid-fg: #155e75;
+  --k-rulebook-bg: #ede9fe; --k-rulebook-fg: #5b21b6;   /* rules source — violet: the rulebook-name badge */
+  --k-ok-bg: #dcfce7; --k-ok-fg: #166534;
+  --k-no-bg: #fee2e2; --k-no-fg: #991b1b;
+  --k-warn-bg: #fef9c3; --k-warn-fg: #854d0e;
+  --k-sim-bg: #e0e7ff; --k-sim-fg: #3730a3;   /* oracle-only (D194) — indigo: the rules realize it, nothing outside them checked */
+  --k-tag-bg: #f1f5f9; --k-tag-fg: #475569;
+  --k-link: #2563eb; --k-link-bg: #dbeafe; --k-link-fg: #1e40af;   /* blue accent — links + the covering-array deck */
+  --k-bar-bg: #e2e8f0; --k-bar-fill: #16a34a;
+
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--k-fg);
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 20px 64px;
+}
+[data-theme="dark"] .k-coverage-ext {
+  --k-fg: #e2e8f0;
+  --k-fg-strong: #cbd5e1;
+  --k-muted: #94a3b8;
+  --k-faint: #64748b;
+  --k-card-bg: #1e293b;
+  --k-border: #334155;
+  --k-row-border: #1e293b;
+  --k-method-bg: #312e81; --k-method-fg: #c7d2fe;
+  --k-reqid-bg: #164e63; --k-reqid-fg: #a5f3fc;
+  --k-rulebook-bg: #4c1d95; --k-rulebook-fg: #ddd6fe;   /* rules source — violet */
+  --k-ok-bg: #14532d; --k-ok-fg: #bbf7d0;
+  --k-no-bg: #7f1d1d; --k-no-fg: #fecaca;
+  --k-warn-bg: #713f12; --k-warn-fg: #fde68a;
+  --k-sim-bg: #312e81; --k-sim-fg: #c7d2fe;   /* oracle-only (D194) — indigo */
+  --k-tag-bg: #334155; --k-tag-fg: #cbd5e1;
+  --k-link: #60a5fa; --k-link-bg: #1e3a8a; --k-link-fg: #bfdbfe;   /* blue accent — links + the covering-array deck */
+  --k-bar-bg: #334155; --k-bar-fill: #22c55e;
+}
+[data-theme="dark"] body { background: #0f172a; }
+
+.k-coverage-ext h1 { font-size: 22px; font-weight: 700; margin: 0 0 4px; }
+.k-coverage-ext h2 { font-size: 16px; font-weight: 650; margin: 28px 0 10px; color: var(--k-fg-strong); }
+.k-coverage-ext .k-sub { color: var(--k-muted); font-size: 13px; margin-bottom: 20px; }
+.k-coverage-ext .k-back {
+  display: inline-block; font-size: 13px; color: var(--k-muted); text-decoration: none; margin-bottom: 14px;
+}
+.k-coverage-ext .k-back:hover { color: var(--k-fg); text-decoration: underline; }
+.k-coverage-ext .k-cards { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+.k-coverage-ext .k-card {
+  flex: 1 1 150px; background: var(--k-card-bg); border: 1px solid var(--k-border); border-radius: 10px; padding: 14px 16px;
+}
+.k-coverage-ext .k-card .k-num { font-size: 26px; font-weight: 700; }
+.k-coverage-ext .k-card .k-lbl { font-size: 12px; color: var(--k-muted); text-transform: uppercase; letter-spacing: .04em; }
+.k-coverage-ext .k-bar { display: flex; height: 10px; border-radius: 6px; background: var(--k-bar-bg); overflow: hidden; margin-top: 6px; }
+.k-coverage-ext .k-bar > span { display: block; height: 100%; background: var(--k-bar-fill); }
+.k-coverage-ext .k-bar > span.k-bar-sim { background: var(--k-sim-fg); }   /* rules-only slice (D194) — indigo */
+.k-coverage-ext table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.k-coverage-ext th, .k-coverage-ext td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--k-row-border); }
+.k-coverage-ext th { color: var(--k-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+.k-coverage-ext .k-method { font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px; background: var(--k-method-bg); color: var(--k-method-fg); }
+.k-coverage-ext .k-reqid { font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px; background: var(--k-reqid-bg); color: var(--k-reqid-fg); }
+.k-coverage-ext .k-rulebook { font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px; background: var(--k-rulebook-bg); color: var(--k-rulebook-fg); text-transform: uppercase; letter-spacing: .03em; }
+.k-coverage-ext .k-proto { font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px; background: var(--k-method-bg); color: var(--k-method-fg); text-transform: uppercase; letter-spacing: .03em; }   /* grpc/kafka protocol-kind badge (shares the method palette) */
+/* mock-served disclosure — deliberately NEUTRAL (muted outline, not a status colour): it says what
+   answered, it does not grade the item (D194). Never restyle it as a warning. */
+.k-coverage-ext .k-mock { font-weight: 600; font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--k-muted); color: var(--k-muted); text-transform: uppercase; letter-spacing: .03em; margin-left: 6px; }
+/* rules-only disclosure (hollow green, D194) — the indigo oracle-only palette, worn inline by the item */
+.k-coverage-ext .k-rulesonly { font-weight: 600; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--k-sim-bg); color: var(--k-sim-fg); text-transform: uppercase; letter-spacing: .03em; margin-left: 6px; }
+.k-coverage-ext .k-pill { font-size: 11px; padding: 1px 7px; border-radius: 999px; }
+.k-coverage-ext .k-ok { background: var(--k-ok-bg); color: var(--k-ok-fg); }
+.k-coverage-ext .k-no { background: var(--k-no-bg); color: var(--k-no-fg); }
+.k-coverage-ext .k-warn { background: var(--k-warn-bg); color: var(--k-warn-fg); }
+.k-coverage-ext .k-sim { background: var(--k-sim-bg); color: var(--k-sim-fg); }   /* oracle-only (D194) — indigo */
+.k-coverage-ext .k-tag { display: inline-block; font-size: 11px; color: var(--k-tag-fg); background: var(--k-tag-bg); border-radius: 4px; padding: 1px 6px; margin: 0 4px 4px 0; }
+/* the execution history under a test line (D314) */
+.k-coverage-ext .k-hist-caret { cursor: pointer; font-size: 9px; }
+.k-coverage-ext .k-history { margin: 2px 0 8px 20px; padding-left: 10px; border-left: 2px solid var(--k-border); }
+.k-coverage-ext .k-hist-row { font-size: 12px; }
+.k-coverage-ext .k-hist-row.k-hist-current { font-weight: 600; }
+.k-coverage-ext .k-hist-t { color: var(--k-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.k-coverage-ext .k-hist-why { margin-left: auto; }
+.k-coverage-ext .k-provisional { color: var(--k-muted); font-style: italic; }
+/* error-path (outcome) chips, D228b — seen is NEUTRAL (a fact of the wire, not a grade); "never" is the
+   finding (a declared response code no run produced); happy-only is the amber worklist marker. */
+.k-coverage-ext .k-status-seen { display: inline-block; font-size: 10.5px; font-weight: 600; color: var(--k-tag-fg); background: var(--k-tag-bg); border-radius: 4px; padding: 1px 5px; margin: 0 3px 2px 0; }
+.k-coverage-ext .k-status-never { display: inline-block; font-size: 10.5px; font-weight: 600; color: var(--k-no-fg); background: var(--k-no-bg); border-radius: 4px; padding: 1px 5px; margin: 0 3px 2px 0; white-space: nowrap; }
+.k-coverage-ext .k-status-happy { display: inline-block; font-size: 10.5px; font-weight: 600; color: var(--k-warn-fg); background: var(--k-warn-bg); border-radius: 4px; padding: 1px 5px; margin: 0 3px 2px 0; white-space: nowrap; }
+.k-coverage-ext .k-muted { color: var(--k-faint); }
+.k-coverage-ext .k-source { border: 1px solid var(--k-border); border-radius: 12px; padding: 18px 20px; margin-bottom: 24px; }
+
+/* §2h/D67: the combination-coverage sub-stat on a source card (headline strip + scorecard tile) — the
+   "100%-green" honesty fix: all endpoints hit yet most required combinations untested. Self-contained
+   (no dependency on coverage-report.css's .k-dimbar, which the traceability page does not link). */
+.k-coverage-ext .k-combos { margin-top: 8px; font-size: 11.5px; }
+.k-coverage-ext .k-combobar { display: block; height: 6px; border-radius: 4px; background: var(--k-bar-bg); overflow: hidden; margin-bottom: 4px; }
+.k-coverage-ext .k-combobar > span { display: block; height: 100%; border-radius: 4px; }
+.k-coverage-ext .k-combobar > span.k-ok { background: var(--k-bar-fill); }
+.k-coverage-ext .k-combobar > span.k-warn { background: var(--k-warn-fg); }
+.k-coverage-ext .k-combobar > span.k-no { background: var(--k-no-fg); }
+.k-coverage-ext .k-combotxt { color: var(--k-fg); font-variant-numeric: tabular-nums; }
+.k-coverage-ext .k-combotxt strong { color: var(--k-fg-strong); font-weight: 650; }
+.k-coverage-ext .k-combomuted { display: block; color: var(--k-faint); margin-top: 1px; }
+
+/* back-link to the karate suite report (shown only when co-located — Report.addBackLink) */
+.k-coverage-ext .k-backlink { display: inline-block; margin-bottom: 10px; font-size: 13px; color: var(--k-faint); text-decoration: none; }
+.k-coverage-ext .k-backlink:hover { color: var(--k-fg, inherit); text-decoration: underline; }

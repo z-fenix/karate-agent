@@ -1,0 +1,321 @@
+<!--/* Manual mode — Coverage (/manual/coverage): what must be true, and what tests it. One line of figures
+     (Requirement.readiness() totals, criteria being what coverage counts), then every requirement with its
+     acceptance criteria: the state, the test behind each (Requirement.matrix()) and the one thing to do.
+     Requirements that still have a gap come first, highest risk first. The ship verdict itself is the
+     rail's. Import posts the picked .md to /ui/requirements/import (D98); Edit requirements, and each
+     requirement's Edit, open the markdown on /manual/requirements/edit (requirement.list() names each one's
+     file), and New requirements opens it on a new file (?new=1); /manual/requirements and /manual/matrix
+     redirect here. Last, the calls in the project's API description, each with the test behind it or the
+     recording that only called it (Coverage.items/tests, D398). */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'Coverage · Karate Agent');
+
+  var rd = null;
+  try { rd = request.cache('manual.readiness', function () { return requirement.readiness(); }); } catch (e) { rd = null; }
+  var hasGraph = !!(rd && rd.state);
+  var matrix = hasGraph ? requirement.matrix() : null;
+  var rows = (matrix && !matrix.error) ? (matrix.requirements || []) : [];
+
+  // the leaves readiness() grades (the ones the rail counts), with their normalized criticality
+  var leaf = {};
+  var leafRows = hasGraph ? (rd.requirements || []) : [];
+  for (var li = 0; li < leafRows.length; li++) leaf[String(leafRows[li].reqId)] = leafRows[li];
+
+  // a row's tests open by the files they run from (the matrix's testFiles: only files still in the project);
+  // a test with no file to open (a rulebook row, a file deleted since its run) is named by the matrix's label
+  var fileOf = kaWords.fileOf;
+  function namesOf(files, tests) {
+    var out = [], seen = {}, i;
+    for (i = 0; i < files.length; i++) out.push(fileOf(files[i]));
+    for (i = 0; !files.length && tests && i < tests.length; i++) {
+      var l = String(tests[i].label != null ? tests[i].label : tests[i]);
+      if (!seen[l]) { seen[l] = true; out.push(l); }
+    }
+    return out;
+  }
+  // what a green is standing on when it is not a test that checked something (readiness grades these as gaps)
+  function caveat(x) {
+    if (x.notasserted) return 'its test checked nothing';
+    if (x.oracleOnly) return 'only the rules vouch for it';
+    if (x.refusalOnly) return 'only refused inputs vouch for it';
+    if (x.mockOnly) return 'only a mock answered';
+    if (x.modelOnly) return 'only a model proof vouches for it';
+    return null;
+  }
+  // a test that names the criterion but has not run yet is not on the graph: it is said, never graded
+  var linkedRows = null;
+  try { linkedRows = request.cache('manual.tests', function () { return runner.tests(); }); } catch (e) { linkedRows = null; }
+  var linked = kaWords.linkedTests(linkedRows);
+  function row(ref, text, status, crit, tests, files, x) {
+    files = files || [];
+    var names = namesOf(files, tests);
+    var said = status == 'COVERED' ? 'Tested by ' : status == 'FAILING' ? 'Failing in ' : x && x.weakened ? 'Passed on a weakened check, not counted until a person reviews it: '
+        : status == 'NOTRUN' ? 'Not run yet: ' : null;
+    var sub = names.length && said ? said + names.join(', ') : 'No test yet';
+    if (!files.length && !names.length && linked(ref).length) {
+      files = linked(ref);
+      sub = 'Linked to ' + files.map(fileOf).join(', ') + ', not run since. Open it and run it: Coverage counts a link once a run carries it.';
+    }
+    var why = caveat(x);
+    if (why) sub += ' — ' + why;
+    return {
+      ref: ref, text: text, status: status, mark: kaWords.coverageMark(status, crit), sub: sub,
+      // the one thing to do: open the test behind it, or make one for it (in the browser, or of the API)
+      label: files.length ? 'Open test' : 'New test',
+      href: files.length ? (/\.feature$/.test(String(files[0])) && !names.length ? '/manual/tests/api?test=' : '/manual/tests/edit?test=') + encodeURIComponent(String(files[0]))
+          : '/manual/tests/new?req=' + encodeURIComponent(ref),
+      api: files.length ? null : '/manual/tests/api?req=' + encodeURIComponent(ref)
+    };
+  }
+
+  var RISK = ['HIGH', 'MEDIUM', 'LOW', 'NONE'], CRIT = ['high', 'medium', 'low'];
+  function rank(list, v) { var r = list.indexOf(v); return r < 0 ? list.length : r; }
+  // the file each requirement is written in, so Edit opens it there
+  var fileOfReq = {};
+  var listed = null;
+  try { listed = requirement.list(); } catch (e) { listed = null; }
+  for (var lj = 0; listed && listed.length && lj < listed.length; lj++) {
+    if (listed[lj].file && !fileOfReq[listed[lj].id]) fileOfReq[String(listed[lj].id)] = String(listed[lj].file);
+  }
+  function editHref(id) {
+    return fileOfReq[id] ? '/manual/requirements/edit?file=' + encodeURIComponent(fileOfReq[id]) + '&req=' + encodeURIComponent(id) : null;
+  }
+  _.canEdit = listed && listed.length ? true : null;
+  var reqs = [];
+  for (var ri = 0; ri < rows.length; ri++) {
+    var r = rows[ri];
+    var id = String(r.id);
+    if (!leaf[id]) continue;
+    var crit = String(leaf[id].criticality);
+    var criteria = [];
+    var covered = 0;
+    var cs = r.criteria || [];
+    for (var ci = 0; ci < cs.length; ci++) {
+      var st = String(cs[ci].status);
+      if (st == 'COVERED') covered++;
+      criteria.push(row(id + '/' + cs[ci].id, String(cs[ci].text), st, crit, cs[ci].tests, cs[ci].testFiles, cs[ci]));
+    }
+    var rst = String(r.status);
+    if (!cs.length) {
+      // a requirement with no criteria is covered as a whole — its own row
+      criteria.push(row(id, 'This requirement has no acceptance criteria: it is tested as a whole.', rst, crit, r.tests, r.testFiles, r));
+      if (rst == 'COVERED') covered = 1;
+    }
+    // where the requirement stands is the graph's: the AND-rollup over its criteria, or its own status without any
+    var rolled = cs.length ? String(r.acceptanceStatus) : rst;
+    var done = rolled == 'COVERED';
+    // "high risk" is readiness()'s grade, the one the rail's verdict counts: a covered high-criticality requirement is not
+    // one, a failing medium one is
+    reqs.push({ id: id, title: String(r.title), risk: String(leaf[id].risk) == 'HIGH' ? 'high risk' : null, edit: editHref(id),
+      criteria: criteria, done: done,
+      pillDot: done ? 'm-dot--passed' : rolled == 'FAILING' ? 'm-dot--failed' : 'm-dot--notrun',
+      count: done ? 'covered' : covered + ' of ' + (cs.length || 1) + ' covered',
+      order: ri, grade: rank(RISK, String(leaf[id].risk)), rank: rank(CRIT, crit) });
+  }
+  // what still needs work first, highest risk first (readiness()'s grade, then criticality); then what is done, in
+  // the file's order
+  reqs.sort(function (a, b) {
+    if (a.done != b.done) return a.done ? 1 : -1;
+    if (!a.done && (a.grade != b.grade || a.rank != b.rank)) return a.grade - b.grade || a.rank - b.rank;
+    return a.order - b.order;
+  });
+  _.reqs = reqs;
+  _.hasReqs = reqs.length > 0;
+
+  // the calls in the project's API description (Coverage.items('openapi')) and what made each: a test, or only a
+  // recording, which called it and checked nothing (D398)
+  var ops = null, testRows = null;
+  try { ops = hasGraph ? coverage.items('openapi') : null; testRows = hasGraph ? coverage.tests() : null; } catch (e) { ops = null; }
+  var testById = {};
+  for (var ti = 0; testRows && testRows.length && ti < testRows.length; ti++) testById[String(testRows[ti].id)] = testRows[ti];
+  var api = [], apiTested = 0;
+  for (var oi = 0; ops && ops.length && oi < ops.length; oi++) {
+    var o = ops[oi], ost = String(o.status), byTest = [], byRec = [], ids = o.tests || [];
+    for (var tj = 0; tj < ids.length; tj++) {
+      var t = testById[String(ids[tj])];
+      if (!t) continue;
+      if (t.recording != null) byRec.push(t);
+      else if (byTest.indexOf(fileOf(t.feature)) < 0) byTest.push(fileOf(t.feature));
+    }
+    var recWords = byRec.map(function (t) { return '“' + t.name + '”'; }).join(', ');
+    var osub = ost == 'FAILING' ? 'Failing in ' + byTest.join(', ')
+        : byTest.length && ost == 'COVERED' ? 'Tested by ' + byTest.join(', ')
+        : byRec.length ? 'Only called while you recorded ' + recWords + ': nothing checked it'
+        : ost == 'NOTRUN' ? 'Not run yet' : 'No test calls it yet';
+    if (byRec.length && byTest.length) osub += ' · also called while you recorded ' + recWords;
+    var tested = byTest.length > 0 && ost == 'COVERED';
+    if (tested) apiTested++;
+    api.push({ id: String(o.id), name: String(o.id).substring(String(o.source).length + 1), where: (o.method ? String(o.method).toUpperCase() + ' ' : '') + (o.path || ''),
+      sub: osub, status: ost, recorded: byRec.length ? true : null,
+      mark: tested ? 'm-dot--passed' : ost == 'FAILING' ? 'm-dot--failed' : 'm-dot--notrun',
+      href: byRec.length && !byTest.length ? '/manual/runs/' + encodeURIComponent(String(byRec[0].recording)) : null });
+  }
+  _.api = api.length ? { rows: api, count: apiTested + ' of ' + api.length + ' tested', done: apiTested == api.length } : null;
+
+  var totals = hasGraph ? rd.totals : null;
+  var squares = [];
+  if (totals && totals.criteria.total <= 60) {
+    var t = totals.criteria, k;
+    for (k = 0; k < t.covered; k++) squares.push('m-sq--covered');
+    for (k = 0; k < t.failing; k++) squares.push('m-sq--failing');
+    for (k = 0; k < t.notrun; k++) squares.push('m-sq--notrun');
+    for (k = 0; k < t.notcovered; k++) squares.push('');
+  }
+  _.squares = squares;
+  _.headline = totals ? totals.criteria.covered + ' of ' + totals.criteria.total
+      + (totals.criteria.total == 1 ? ' acceptance criterion has' : ' acceptance criteria have') + ' a passing test.' : null;
+</script>
+<style>
+  .m-cov-head { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; margin-top: 26px; padding: 24px 26px; }
+  .m-cov-text { flex: 1 1 320px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .m-cov-headline { font-size: 20px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; }
+  .m-cov-rule { margin: 0; font-size: 13.5px; color: var(--m-text-2); }
+  .m-cov-head .m-squares { gap: 6px; max-width: 420px; }
+  .m-cov-msg { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 14px 0 0; font-size: 13.5px; }
+  /* one card per requirement: its id and risk as the kicker, its title, then its criteria */
+  .m-req { margin-top: 16px; padding: 20px 26px 8px; }
+  .m-req:first-child { margin-top: 30px; }
+  .m-req-head {
+    display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; column-gap: 8px; row-gap: 3px;
+    grid-template-areas: "id risk . edit count" "title title title edit count"; align-items: baseline; padding-bottom: 8px;
+  }
+  .m-body a.m-req-edit { grid-area: edit; align-self: center; margin-right: 10px; font-size: 13.5px; font-weight: 500; }
+  .m-req-id { grid-area: id; font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--m-text-2); }
+  .m-req-risk { grid-area: risk; font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--m-text-2); }
+  .m-req-risk::before { content: '· '; }
+  .m-req-title { grid-area: title; font-size: 19px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; }
+  .m-req-count {
+    grid-area: count; align-self: center; display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px;
+    border-radius: 999px; background: var(--m-surface); font-size: 13px; font-weight: 500; color: var(--m-text-2); white-space: nowrap;
+  }
+  .m-req-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 110px; gap: 16px; align-items: center; padding: 14px 0; }
+  .m-req-row + .m-req-row { border-top: 1px solid var(--m-line); }
+  .m-req-row > .m-dot { justify-self: center; }
+  .m-req-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .m-req-text > :first-child { font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+  .m-req-row .m-row-act { font-size: 14px; text-align: right; }
+  .m-req-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .m-req-list > .m-section { padding-top: 30px; }
+  @media (max-width: 760px) {
+    .m-req { padding: 18px 18px 6px; }
+    .m-req-row { grid-template-columns: 24px minmax(0, 1fr) auto; }
+  }
+</style>
+<script>
+  // Import a requirements .md: the server refuses to overwrite an existing file (409 EXISTS), so the
+  // choice to replace it is offered here, then the import is sent again with overwrite=true.
+  function kaManualImport(input) {
+    var f = input.files && input.files[0];
+    input.value = '';
+    if (!f) return;
+    var msg = document.getElementById('m-cov-msg');
+    function say(text, offer) {
+      msg.textContent = '';
+      var t = document.createElement('span');
+      t.textContent = text;
+      msg.appendChild(t);
+      if (offer) {
+        var yes = document.createElement('button');
+        yes.type = 'button'; yes.className = 'm-link m-link--strong'; yes.textContent = 'Replace it';
+        yes.onclick = offer;
+        var no = document.createElement('button');
+        no.type = 'button'; no.className = 'm-quiet'; no.textContent = 'Keep the old one';
+        no.onclick = function () { msg.hidden = true; };
+        msg.appendChild(yes); msg.appendChild(no);
+      }
+      msg.hidden = false;
+    }
+    function send(text, overwrite) {
+      say('Importing ' + f.name + '…');
+      fetch('/ui/requirements/import?name=' + encodeURIComponent(f.name) + (overwrite ? '&overwrite=true' : ''), {
+        method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: text
+      }).then(function (r) {
+        return r.json().then(function (out) { return { status: r.status, out: out || {} }; });
+      }).then(function (res) {
+        if (res.status == 409 && res.out.code == 'EXISTS') {
+          say(f.name + ' already exists.', function () { send(text, true); });
+        } else if (res.out.error) {
+          say(res.out.error);
+        } else {
+          location.reload();
+        }
+      }).catch(function (e) { say(String(e)); });
+    }
+    f.text().then(function (text) { send(text, false); });
+  }
+</script>
+<section class="m-page" data-ka-section="manual.coverage">
+  <header class="m-head">
+    <div class="m-head-text">
+      <h1 class="m-title">Coverage</h1>
+      <p class="m-sub">What must be true, and the tests that prove it.</p>
+    </div>
+    <div class="m-head-end">
+      <a th:if="canEdit" class="m-btn m-btn--ghost" href="/manual/requirements/edit">Edit requirements</a>
+      <a class="m-btn m-btn--ghost" href="/manual/requirements/edit?new=1">New requirements</a>
+      <button type="button" class="m-btn m-btn--ghost" onclick="document.getElementById('m-cov-file').click()">Import requirements</button>
+      <input id="m-cov-file" type="file" accept=".md,text/markdown" hidden onchange="kaManualImport(this)">
+    </div>
+  </header>
+  <p id="m-cov-msg" class="m-cov-msg" role="status" hidden></p>
+
+  <!--/* only the SSR figures follow the project live: the import message keeps its state */-->
+  <div data-ka-section="manual.coverage.summary" data-m-live>
+    <div th:if="headline" class="m-cov-head m-card">
+      <div class="m-cov-text">
+        <span class="m-cov-headline" th:text="headline">7 of 8 acceptance criteria have a passing test.</span>
+        <p class="m-cov-rule">A requirement is covered only when every one of its criteria is.</p>
+      </div>
+      <span th:if="squares.length > 0" class="m-squares"><span class="m-sq" th:each="sq: squares" th:classappend="sq"></span></span>
+    </div>
+  </div>
+
+  <div class="m-req-list" data-ka-section="manual.coverage.list" data-m-live>
+    <div class="m-req m-card" th:each="r: reqs" th:id="'req-' + r.id" th:attr="'data-req': r.id">
+      <div class="m-req-head">
+        <span class="m-req-id" th:text="r.id">REQ-001</span>
+        <span class="m-req-title" th:text="r.title">title</span>
+        <span th:if="r.risk" class="m-req-risk" th:text="r.risk">high risk</span>
+        <a th:if="r.edit" class="m-link m-req-edit" th:href="r.edit">Edit</a>
+        <span class="m-req-count"><span class="m-dot m-dot--xs" th:classappend="r.pillDot"></span><span th:text="r.count">2 of 3 covered</span></span>
+      </div>
+      <div class="m-req-row" th:each="c: r.criteria" th:attr="'data-criterion': c.ref, 'data-status': c.status">
+        <span class="m-dot" th:classappend="c.mark"></span>
+        <div class="m-req-text">
+          <span th:text="c.text">criterion</span>
+          <span class="m-row-sub" th:text="c.sub">Tested by quote-api.feature</span>
+        </div>
+        <span class="m-req-acts">
+          <a class="m-row-act" th:href="c.href" th:text="c.label">New test</a>
+          <a th:if="c.api" class="m-row-act" th:href="c.api">New API test</a>
+        </span>
+      </div>
+    </div>
+    <div th:if="api" class="m-req m-card" id="api" data-ka-section="manual.coverage.api">
+      <div class="m-req-head">
+        <span class="m-req-id">API</span>
+        <span class="m-req-title">The calls in your API description</span>
+        <span class="m-req-count"><span class="m-dot m-dot--xs" th:classappend="api.done ? 'm-dot--passed' : 'm-dot--notrun'"></span><span th:text="api.count">4 of 8 tested</span></span>
+      </div>
+      <div class="m-req-row" th:each="o: api.rows" th:attr="'data-operation': o.id, 'data-status': o.status, 'data-recorded': o.recorded">
+        <span class="m-dot" th:classappend="o.mark"></span>
+        <div class="m-req-text">
+          <span><th:block th:text="o.name">createOrder</th:block> <span class="m-row-sub" th:text="o.where">POST /demo/api/orders</span></span>
+          <span class="m-row-sub" th:text="o.sub">Tested by orders-flow.feature</span>
+        </div>
+        <span class="m-req-acts"><a th:if="o.href" class="m-row-act" th:href="o.href">Open recording</a></span>
+      </div>
+    </div>
+    <div class="m-section" th:unless="hasReqs">
+      <div class="m-empty">
+        <div class="m-empty-title">No requirements yet</div>
+        <div class="m-empty-sub">Write what must be true, or import a requirements file (.md), to see it here with what tests it.</div>
+        <div class="m-empty-act">
+          <a class="m-btn" href="/manual/requirements/edit?new=1">New requirements</a>
+          <button type="button" class="m-btn m-btn--ghost" onclick="document.getElementById('m-cov-file').click()">Import a file</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

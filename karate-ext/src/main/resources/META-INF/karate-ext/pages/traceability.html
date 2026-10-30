@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Requirements Traceability</title>
+  <!-- theme before paint (no flash); follows the main report's <html data-theme>, else OS preference. -->
+  <script>
+    (function () {
+      try {
+        // 'karate-theme' is the ONE theme key — the served console writes the same one, so this
+        // page follows the console's dark mode (same origin → same localStorage)
+        var t = localStorage.getItem('karate-theme');
+        if (!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', t);
+        // follow a console toggle live (this page usually opens in its own tab)
+        window.addEventListener('storage', function (e) {
+          if (e.key === 'karate-theme' && e.newValue) {
+            document.documentElement.setAttribute('data-theme', e.newValue);
+          }
+        });
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    })();
+  </script>
+  <!-- THE one K-RTM traceability page shell (D75/D191): always at ext/traceability/pages/traceability.html —
+       copied there by a real run's report-asset contribution (CoverageExt) or by the run-free
+       Report.traceability(); assets sit one level up in ext/traceability/, Alpine + the top-nav util at
+       the report root's res/. -->
+  <link rel="stylesheet" href="../coverage.css">
+  <link rel="stylesheet" href="../traceability-report.css">
+</head>
+<body>
+  <div id="k-topnav"></div>
+  <div class="k-coverage-ext" x-data="traceabilityReport" x-cloak>
+    <div class="k-head">
+      <div>
+        <h1>Requirements Traceability</h1>
+        <div class="k-sub">Every requirement, what verifies it, and whether that verification can be trusted &mdash; derived from the traceability graph.<button
+            type="button" class="k-help-q"
+            title="What is the traceability report / readiness? Copy the help-id — paste it into the Help tab or your AI chat"
+            onclick="kaCopyHelp('report.traceability')">?</button></div>
+      </div>
+      <div class="k-head-actions">
+        <div class="k-viewtoggle" role="tablist">
+          <button :class="view === 'matrix' && 'k-on'" @click="view = 'matrix'" role="tab">Matrix</button>
+          <button :class="view === 'grid' && 'k-on'" @click="view = 'grid'" role="tab" title="The bidirectional requirement × test grid (T1)">Grid</button>
+          <button :class="view === 'tree' && 'k-on'" @click="view = 'tree'" role="tab" title="The epic → feature → leaf requirement hierarchy">Tree</button>
+        </div>
+        <button class="k-gloss-btn" @click="glossaryOpen = true" title="What do these terms mean?">? Glossary</button>
+      </div>
+    </div>
+
+    <!-- confidence-to-ship scorecard (the canonical Requirement.readiness() verdict, inlined) -->
+    <div class="k-scorecard" :class="scorecardClass()">
+      <div class="k-verdict">
+        <div class="k-verdict-lbl">Confidence to ship</div>
+        <div class="k-verdict-val" x-text="verdictWord()"></div>
+        <div class="k-verdict-sub" x-text="readySub()"></div>
+        <div class="k-verdict-sub k-provisional" x-show="provisional" title="the run that wrote this is still settling its evidence; the settle replaces it">provisional &mdash; evidence not yet finalized</div>
+        <div class="k-verdict-sub" x-show="assertionStrength" x-text="'assertions · ' + strengthLine()"
+             title="how strongly the passing tests check — not measured: the field fraction, where the expected value came from, which hit an assertion was about"></div>
+        <a class="k-verdict-link" :href="coverageHref">See tested-depth &amp; gaps &rarr;</a>
+      </div>
+      <div class="k-riskcards">
+        <template x-for="r in riskOrder" :key="r">
+          <div class="k-riskcard" :class="riskClass(r)">
+            <div class="k-num" x-text="riskCount(r)"></div>
+            <div class="k-lbl">
+              <span x-text="r.toLowerCase() + ' risk'"></span>
+              <span class="k-info" @click="openGlossary('risk')" title="What is risk?">&#9432;</span>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- unified 3-source coverage — requirements + OpenAPI endpoints + rules in one view -->
+    <div class="k-srcstrip" x-show="sources.length">
+      <template x-for="s in sources" :key="s.namespace">
+        <!-- hollow green (D194): the req tile's bar splits genuinely-verified (green) from rules-only
+             (indigo), so "100% covered" can't read as risk-free next to a NOT READY verdict -->
+        <div class="k-card" :title="(s.covered || 0) + ' of ' + (s.total || 0) + ' ' + srcUnit(s) + ' covered' + (srcHollow(s) ? ' — ' + srcHollow(s) + ' by the rules only, not independently verified (see Blockers)' : '')">
+          <div class="k-num" x-text="pct(s) + '%'"></div>
+          <div class="k-lbl">
+            <span x-text="s.title || s.namespace"></span> &middot;
+            <span x-text="(s.covered || 0) + '/' + (s.total || 0)"></span>
+            <span class="k-unit" x-text="srcUnit(s)"></span>
+            <span class="k-prov k-sim" x-show="srcHollow(s)" x-text="srcHollow(s) + ' rules only'"></span>
+          </div>
+          <div class="k-bar">
+            <span :style="'width:' + srcPctGenuine(s) + '%'"></span>
+            <span class="k-bar-sim" x-show="srcHollow(s)" :style="'width:' + srcPctHollow(s) + '%'"></span>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- the two differentiators: the risk heatmap + the eval-independence view (§2f) -->
+    <div class="k-panels">
+      <div class="k-panel">
+        <div class="k-panel-h"><h2>Risk heatmap</h2><span class="k-info" @click="openGlossary('risk')" title="What is risk?">&#9432;</span></div>
+        <div class="k-sub">Criticality &times; coverage &mdash; cell colour is the resulting risk. Click a cell to filter.</div>
+        <table class="k-heat">
+          <thead>
+            <tr>
+              <th></th>
+              <template x-for="st in statuses" :key="st"><th x-text="st"></th></template>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="cr in crits" :key="cr">
+              <tr>
+                <th x-text="cr"></th>
+                <template x-for="st in statuses" :key="st">
+                  <!-- the RISK matrix: a hollow-green requirement (D194) is graded down the NOTCOVERED
+                       column, exactly like the readiness engine — so these cells always sum to the
+                       headline risk cards, and the COVERED column is only ever genuinely-verified green -->
+                  <td class="k-cell" :class="heatClass(cr, st)" @click="setFilter(cr, st)"
+                      :title="heatTitle(cr, st)">
+                    <span class="k-badge"><span x-text="heatCount(cr, st) || ''"></span><span
+                        class="k-hollow" x-show="heatHollow(cr, st)" x-text="heatHollow(cr, st) + ' covered, unchecked'"></span></span>
+                  </td>
+                </template>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="k-panel">
+        <div class="k-panel-h"><h2>Eval independence</h2><span class="k-info" @click="openGlossary('provenance')" title="What is provenance?">&#9432;</span></div>
+        <div class="k-sub">Is coverage actually <em>exercised</em>, or just claimed / incidental?</div>
+        <div class="k-provbars">
+          <template x-for="p in provOrder" :key="p">
+            <div class="k-provbar" :class="provFilter === p && 'k-on'" @click="provFilter = (provFilter === p ? '' : p)" :title="def('provenance', p)">
+              <span class="k-prov" :class="provClass(p)" x-text="p"></span>
+              <span class="k-provn" x-text="provCount(p)"></span>
+            </div>
+          </template>
+        </div>
+        <div class="k-trustgap" x-show="trustGaps.length">
+          <div class="k-tg-head">&#9888; Looks green, but isn't really <span class="k-muted" x-text="'(' + trustGaps.length + ')'"></span></div>
+          <template x-for="t in trustGaps" :key="t.reqId">
+            <div class="k-line">
+              <span class="k-pill k-ok" title="derived coverage status">COVERED</span>
+              <strong x-text="t.reqId"></strong>
+              <span x-text="t.title || t.name"></span>
+              <span class="k-prov k-sim" x-show="t.refusalOnly"
+                    title="covered only by reject rows the rulebook's shape refused — that proves those rows are refused, not that the behaviour works">refusal only</span>
+              <span class="k-prov k-sim" x-show="t.modelOnly"
+                    title="covered only by a model checker's verdict — the design was checked, nothing exercised the implementation">model only</span>
+              <span class="k-prov k-sim" x-show="t.oracleOnly && !t.refusalOnly"
+                    title="the rules realize it, but nothing outside the rulebook checked it — add a test, or stamp the comparison with Rule.execute(…).verify(…)">rules only</span>
+              <span class="k-prov k-sim" x-show="t.notasserted"
+                    title="covered by tests that assert nothing — a lock on a value or shape clears it">notasserted</span>
+              <span class="k-prov k-warn" x-show="prov(t) === 'incidental'" :title="def('provenance', 'incidental')">incidental</span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- blockers: the high-risk requirements gating release. A COVERED blocker is the hollow-green case
+         (D194 / §2f) — the engine's trustGap says WHY the green cannot be trusted, and it must render
+         here, or the row reads as a contradiction ("COVERED, yet blocking"). -->
+    <div class="k-blockers" x-show="blockers.length">
+      <h2>Blockers <span class="k-muted" x-text="'(' + blockers.length + ')'"></span></h2>
+      <template x-for="b in blockers" :key="b.reqId">
+        <div>
+          <div class="k-line">
+            <span class="k-pill" :class="statusClass(b.coverage)" x-text="b.coverage" :title="def('status', b.coverage)"></span>
+            <span class="k-crit k-crit-high" x-text="b.criticality" :title="def('criticality', b.criticality)"></span>
+            <strong x-text="b.reqId"></strong>
+            <span x-text="b.title"></span>
+            <span class="k-prov k-sim" x-show="b.refusalOnly" :title="b.trustGap">refusal only</span>
+            <span class="k-prov k-sim" x-show="b.oracleOnly && !b.refusalOnly" :title="b.trustGap">rules only</span>
+            <span class="k-prov k-sim" x-show="b.modelOnly" :title="b.trustGap">model only</span>
+            <span class="k-prov k-sim" x-show="b.notasserted" :title="b.trustGap">notasserted</span>
+            <span class="k-prov k-warn" x-show="b.trustGap && !b.oracleOnly && !b.refusalOnly && !b.modelOnly && !b.notasserted" :title="b.trustGap">not verified</span>
+          </div>
+          <div class="k-blocker-why" x-show="b.trustGap" x-text="b.trustGap"></div>
+        </div>
+      </template>
+    </div>
+
+    <!-- T2: gaps & drift — the "what's missing" worklist: uncovered requirements, untested criteria,
+         declared-but-unexercised drift, orphan tests. Blockers above shows only the high-risk cut;
+         this is the full backlog a team works through. Hidden entirely when the estate is clean. -->
+    <div class="k-blockers k-gaps" x-show="gapCount">
+      <h2>Gaps &amp; drift <span class="k-muted" x-text="'(' + gapCount + ')'"></span></h2>
+      <template x-if="gapUncovered.length">
+        <div class="k-gap-group">
+          <h4>Uncovered requirements <span class="k-muted" x-text="'(' + gapUncovered.length + ')'"></span></h4>
+          <template x-for="r in gapUncovered" :key="r.reqId">
+            <div class="k-line">
+              <span class="k-pill k-no" :title="def('status', 'NOTCOVERED')">&mdash;</span>
+              <span class="k-crit" :class="critClass(r.criticality)" :title="def('criticality', r.criticality)" x-text="r.criticality || 'medium'"></span>
+              <strong x-text="r.reqId"></strong>
+              <span x-text="r.title || r.name"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+      <template x-if="gapCriteria.length">
+        <div class="k-gap-group">
+          <h4>Untested acceptance criteria <span class="k-muted" x-text="'(' + gapCriteria.length + ')'"></span></h4>
+          <template x-for="c in gapCriteria" :key="c.id">
+            <div class="k-line">
+              <span class="k-pill" :class="statusClass(c.status)" :title="def('status', c.status)" x-text="statusIcon(c.status)"></span>
+              <strong x-text="critParent(c)"></strong>
+              <code x-text="c.criterion"></code>
+              <span x-text="c.name"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+      <!-- D214e — "claimed done, not verified": the task gate's finding, rendered FIRST in the worklist
+           because it is the one gap nobody is expecting (the work is recorded as finished). -->
+      <template x-if="gapClaimed.length">
+        <div class="k-gap-group">
+          <h4>Claimed done, not verified <span class="k-muted" x-text="'(' + gapClaimed.length + ')'"></span></h4>
+          <template x-for="c in gapClaimed" :key="c.id">
+            <div class="k-line">
+              <span class="k-pill" :class="statusClass(c.status)" :title="def('status', c.status)" x-text="statusIcon(c.status)"></span>
+              <strong x-text="critParent(c)"></strong>
+              <code x-text="c.criterion"></code>
+              <span x-text="c.name"></span>
+              <span class="k-ai" x-text="'task ' + (c.claimedBy || '?') + ' ✓'"
+                    :title="'a task marked complete claims this criterion' + (c.claimedTask ? ': ' + c.claimedTask : '') + ' — the checkbox is a claim, not evidence'"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+      <template x-if="gapDrift.length">
+        <div class="k-gap-group">
+          <h4>Drift &mdash; linked to tests but never exercised <span class="k-muted" x-text="'(' + gapDrift.length + ')'"></span></h4>
+          <template x-for="r in gapDrift" :key="r.reqId">
+            <div class="k-line">
+              <span class="k-pill" :class="statusClass(r.status)" :title="def('status', r.status)" x-text="statusIcon(r.status)"></span>
+              <strong x-text="r.reqId"></strong>
+              <span x-text="r.title || r.name"></span>
+              <span class="k-prov k-tag" :title="def('provenance', 'notexercised')">notexercised</span>
+            </div>
+          </template>
+        </div>
+      </template>
+      <template x-if="orphanTests.length">
+        <div class="k-gap-group">
+          <h4>Orphan tests &mdash; verify nothing in the graph <span class="k-muted" x-text="'(' + orphanTests.length + ')'"></span></h4>
+          <template x-for="t in orphanTests" :key="t.id">
+            <div class="k-line">
+              <span class="k-pill" :class="statusClass(t.status)" :title="def('status', t.status)" x-text="statusIcon(t.status)"></span>
+              <span x-text="t.name || t.id"></span>
+              <span class="k-muted" x-text="t.feature ? (String(t.feature).split('/').pop() + (t.line ? ':' + t.line : '')) : ''"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+
+    <!-- filter toolbar (slices the matrix AND the grid — the grid columns follow the filtered rows) -->
+    <div class="k-toolbar" x-show="view === 'matrix' || view === 'grid'">
+      <input type="search" placeholder="Filter by id, title, prose…" x-model="q">
+      <select x-model="critFilter">
+        <option value="">All criticality</option>
+        <option value="high">high</option><option value="medium">medium</option><option value="low">low</option>
+      </select>
+      <select x-model="statusFilter">
+        <option value="">All statuses</option>
+        <option>COVERED</option><option>FAILING</option><option>NOTRUN</option><option>NOTCOVERED</option>
+      </select>
+      <select x-model="provFilter">
+        <option value="">All provenance</option>
+        <option>exercised</option><option>partexercised</option><option>incidental</option><option>notexercised</option>
+      </select>
+      <button class="k-csv-btn" @click="exportCsv()" title="Export the filtered matrix as CSV (Excel)">&#8595; CSV</button>
+      <span class="k-count" x-text="rows.length + ' of ' + total + ' requirements'"></span>
+    </div>
+
+    <!-- the Requirements Traceability Matrix -->
+    <table x-show="view === 'matrix'">
+      <thead>
+        <tr>
+          <th style="width:18px"></th>
+          <th style="width:34px" class="k-sortable" @click="sortBy('status')" title="sort by status (click again to flip / reset)">Status<span class="k-sort" x-text="sortInd('status')"></span><span class="k-info" @click.stop="openGlossary('status')">&#9432;</span></th>
+          <th class="k-sortable" @click="sortBy('req')" title="sort by requirement id">Requirement<span class="k-sort" x-text="sortInd('req')"></span></th>
+          <th style="width:74px" class="k-sortable" @click="sortBy('criticality')" title="sort by criticality">Criticality<span class="k-sort" x-text="sortInd('criticality')"></span><span class="k-info" @click.stop="openGlossary('criticality')">&#9432;</span></th>
+          <th style="width:64px" class="k-sortable" @click="sortBy('risk')" title="sort by risk">Risk<span class="k-sort" x-text="sortInd('risk')"></span><span class="k-info" @click.stop="openGlossary('risk')">&#9432;</span></th>
+          <th style="width:96px" class="k-sortable" @click="sortBy('provenance')" title="sort by provenance">Provenance<span class="k-sort" x-text="sortInd('provenance')"></span><span class="k-info" @click.stop="openGlossary('provenance')">&#9432;</span></th>
+          <th style="width:66px" class="k-sortable" @click="sortBy('posture')" title="sort by posture">Posture<span class="k-sort" x-text="sortInd('posture')"></span><span class="k-info" @click.stop="openGlossary('posture')">&#9432;</span></th>
+          <th style="width:52px" class="k-sortable" @click="sortBy('tests')" title="sort by covering-test count">Tests<span class="k-sort" x-text="sortInd('tests')"></span></th>
+          <th style="width:66px" class="k-sortable" @click="sortBy('accept')" title="sort by acceptance-criteria coverage">Accept.<span class="k-sort" x-text="sortInd('accept')"></span></th>
+        </tr>
+      </thead>
+      <template x-for="it in rows" :key="it.id">
+        <tbody class="k-itembody">
+          <tr class="k-row" @click="toggle(it.id)">
+            <td><span class="k-caret" :class="isOpen(it.id) && 'k-open'">&#9654;</span></td>
+            <!-- hollow green (D194): a COVERED row the engine still grades at risk wears the indigo
+                 pill, so the status column agrees with its own Risk column -->
+            <td><span class="k-pill" :class="it.status === 'COVERED' && it.risk && it.risk !== 'NONE' ? 'k-sim' : statusClass(it.status)"
+                      :title="it.status === 'COVERED' && it.risk && it.risk !== 'NONE' ? 'COVERED, but not independently verified — see Blockers' : def('status', it.status)"
+                      x-text="statusIcon(it.status)"></span></td>
+            <td class="k-name">
+              <a class="k-reqid" x-show="reqHref(it.reqId)" :href="reqHref(it.reqId)" target="_blank" rel="noopener" :title="'open ' + it.reqId + ' in tracker'" x-text="it.reqId"></a><span class="k-reqid" x-show="!reqHref(it.reqId)" x-text="it.reqId"></span>
+              <span class="k-path" x-text="it.title || it.name"></span>
+              <span class="k-parent" x-show="it.parent" x-text="it.parent"></span>
+            </td>
+            <td><span class="k-crit" :class="critClass(it.criticality)" :title="def('criticality', it.criticality)" x-text="it.criticality || 'medium'"></span></td>
+            <td><span class="k-pill" :class="riskClass(it.risk)" :title="def('risk', it.risk)" x-text="it.risk || '—'"></span></td>
+            <td><span class="k-prov" :class="provClass(prov(it))" :title="def('provenance', prov(it))" x-text="prov(it)"></span></td>
+            <td><span class="k-posture" :title="def('posture', it.posture)" x-text="it.posture || '—'"></span></td>
+            <td x-text="testsOf(it).length || ''"></td>
+            <td>
+              <span x-show="acceptOf(it).length" x-text="acceptCovered(it) + '/' + acceptOf(it).length"></span>
+            </td>
+          </tr>
+          <tr class="k-drill" x-show="isOpen(it.id)">
+            <td colspan="9">
+              <div x-show="it.body" class="k-prose" x-html="md(it.body)"></div>
+              <template x-if="acceptOf(it).length">
+                <div>
+                  <h4>Acceptance criteria</h4>
+                  <template x-for="c in acceptOf(it)" :key="c.id">
+                    <div>
+                      <div class="k-line">
+                        <span class="k-pill" :class="c.oracleOnly && c.status === 'COVERED' ? 'k-sim' : statusClass(c.status)" :title="def('status', c.status)" x-text="statusIcon(c.status)"></span>
+                        <code x-text="c.criterion"></code>
+                        <span x-text="c.name"></span>
+                        <!-- the weak link behind a requirement-level "rules only" rollup (D194): name the
+                             criterion nothing outside the rulebook checked, so the auditor sees WHICH -->
+                        <span class="k-prov k-sim" x-show="c.refusalOnly && c.status === 'COVERED'"
+                              title="covered only by reject rows the rulebook's shape refused — that proves those rows are refused, not that the behaviour this criterion describes works">refusal only</span>
+                        <span class="k-prov k-sim" x-show="c.modelOnly && c.status === 'COVERED'"
+                              title="covered only by a model checker's verdict — the design was checked, nothing exercised the implementation">model only</span>
+                        <span class="k-prov k-sim" x-show="c.oracleOnly && !c.refusalOnly && c.status === 'COVERED'"
+                              title="covered by the rules only — nothing outside the rulebook checked this criterion (a @req= test or a Rule.execute(…).verify(…) stamp clears it)">rules only</span>
+                        <span class="k-prov k-sim" x-show="c.notasserted && c.status === 'COVERED'"
+                              title="covered by tests that assert nothing — a lock on a value or shape clears it">notasserted</span>
+                        <!-- §2f honest grading (D96): lit only by machine claims → flagged @ai (attested, review pending) -->
+                        <span class="k-ai" x-show="attestedOnly(c.id)"
+                              title="attested — a machine claim from a harness run (@ai, review pending); observed/verified evidence upgrades it">@ai attested</span>
+                        <!-- D214e: a ticked task says this criterion is done; the pill beside it is what we
+                             derived. Shown only where the two disagree — agreement needs no badge. -->
+                        <span class="k-ai" x-show="c.claimed && c.status !== 'COVERED'"
+                              :title="'claimed complete by task ' + (c.claimedBy || '?') + (c.claimedTask ? ' — ' + c.claimedTask : '') + ', but no passing check verifies it'"
+                              x-text="'claimed done · task ' + (c.claimedBy || '?')"></span>
+                      </div>
+                      <!-- the attested evidence rail (D96): {shot, note, t} per run claim — thumbnail + narration -->
+                      <template x-if="evidenceOf(c.id).length">
+                        <div class="k-evidence">
+                          <template x-for="(e, ei) in evidenceOf(c.id)" :key="ei">
+                            <div class="k-ev">
+                              <a x-show="e.shot && shotHref(e)" :href="shotHref(e)" target="_blank" rel="noopener">
+                                <img class="k-ev-shot" :src="shotHref(e)" :alt="e.note || 'evidence'" loading="lazy"/>
+                              </a>
+                              <span class="k-ev-shotless" x-show="e.shot && !shotHref(e)" title="screenshot evidence — open the served console to view">📷</span>
+                              <span class="k-pill" x-show="e.status" :class="statusClass(e.status === 'fail' ? 'FAILING' : 'COVERED')" :title="'the claim\'s own verdict: ' + e.status" x-text="e.status === 'fail' ? '✗' : '✓'"></span>
+                              <span class="k-ev-note" x-text="e.note || ''"></span>
+                              <span class="k-muted" x-text="(e.test ? e.test : '') + (e.t ? ' · ' + evTime(e) : '')"></span>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <!-- requirement-level attested evidence (the run @req anchor / a bare @req=ID token) -->
+              <template x-if="evidenceOf(it.id).length">
+                <div>
+                  <h4>Run evidence <span class="k-ai" title="attested — machine claims (@ai); observed/verified evidence upgrades them">@ai attested</span></h4>
+                  <div class="k-evidence">
+                    <template x-for="(e, ei) in evidenceOf(it.id)" :key="ei">
+                      <div class="k-ev">
+                        <a x-show="e.shot && shotHref(e)" :href="shotHref(e)" target="_blank" rel="noopener">
+                          <img class="k-ev-shot" :src="shotHref(e)" :alt="e.note || 'evidence'" loading="lazy"/>
+                        </a>
+                        <span class="k-ev-shotless" x-show="e.shot && !shotHref(e)" title="screenshot evidence — open the served console to view">📷</span>
+                        <span class="k-pill" x-show="e.status" :class="statusClass(e.status === 'fail' ? 'FAILING' : 'COVERED')" :title="'the claim\'s own verdict: ' + e.status" x-text="e.status === 'fail' ? '✗' : '✓'"></span>
+                        <span class="k-ev-note" x-text="e.note || ''"></span>
+                        <span class="k-muted" x-text="(e.test ? e.test : '') + (e.t ? ' · ' + evTime(e) : '')"></span>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+              <template x-if="testsOf(it).length">
+                <div>
+                  <h4>Verified by</h4>
+                  <template x-for="(t, idx) in testsOf(it)" :key="idx">
+                    <div>
+                      <div class="k-line">
+                        <span class="k-caret k-hist-caret" :class="histIsOpen(t) && 'k-open'" x-show="historyOf(t).length"
+                              @click.stop="histToggle(t)" :title="historyOf(t).length + ' execution(s) — every run of this test, and which one the row believes'">&#9654;</span>
+                        <span class="k-pill" :class="statusClass(testStatus(t))" :title="def('status', testStatus(t))" x-text="statusIcon(testStatus(t))"></span>
+                        <span x-text="testName(t)"></span>
+                        <span class="k-prov k-tag" x-show="assertedOf(t)" x-text="assertedOf(t)"
+                              title="how strongly this test checks — 0 asserts nothing · 0.5 weak or unmeasured · 1 a locked value or shape"></span>
+                        <a class="k-testlink" x-show="testLoc(t) && testHref(t)" :href="testHref(t)" target="_blank" rel="noopener" x-text="testLoc(t)" @click.stop></a>
+                        <span class="k-muted" x-show="testLoc(t) && !testHref(t)" x-text="testLoc(t)"></span>
+                        <span class="k-prov k-warn" x-show="testNode(t).previouslyFailed" title="an earlier execution failed; the latest one passed">previously failed</span>
+                        <span class="k-prov k-warn" x-show="testNode(t).pending" title="a newer execution is still running — the verdict is the last terminal one">pending</span>
+                        <span class="k-muted" x-show="historyOf(t).length > 1" x-text="historyOf(t).length + ' runs'"></span>
+                      </div>
+                      <!-- the execution history: time · outcome · grade · lane · provenance · report · why not selected -->
+                      <div class="k-history" x-show="histIsOpen(t)">
+                        <template x-for="e in historyOf(t)" :key="e.id">
+                          <div class="k-line k-hist-row" :class="e.selected && 'k-hist-current'">
+                            <span class="k-pill" :class="statusClass(execStatus(e))" :title="'outcome: ' + e.outcome" x-text="statusIcon(execStatus(e))"></span>
+                            <span class="k-hist-t" x-text="execTime(e) || '—'"></span>
+                            <span x-text="e.outcome"></span>
+                            <span class="k-prov k-tag" x-show="execGrade(e)" x-text="execGrade(e)"></span>
+                            <span class="k-tag" x-text="e.lane"></span>
+                            <template x-for="p in execProv(e)" :key="p"><span class="k-tag" x-text="p"></span></template>
+                            <a class="k-testlink" x-show="execReportHref(e)" :href="execReportHref(e)" target="_blank" rel="noopener" @click.stop x-text="e.runId" title="the run's report"></a>
+                            <span class="k-muted" x-show="!execReportHref(e)" x-text="e.runId"></span>
+                            <span class="k-pill k-hist-why" :class="execWhyClass(e)" x-text="execWhy(e)"></span>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <template x-if="!acceptOf(it).length && !testsOf(it).length">
+                <div class="k-muted k-line">No covering tests or acceptance criteria &mdash; this requirement is unverified.</div>
+              </template>
+            </td>
+          </tr>
+        </tbody>
+      </template>
+    </table>
+    <div class="k-empty" x-show="view === 'matrix' && rows.length === 0">No requirements match the filter.</div>
+
+    <!-- T1: the bidirectional requirement × test cross-grid — the canonical RTM artifact (rows =
+         requirements, columns = the tests covering any filtered row, a cell = that test's own status
+         where it verifies the requirement; column headers deep-link to the test source) -->
+    <div class="k-grid-wrap" x-show="view === 'grid'">
+      <table class="k-grid">
+        <thead>
+          <tr>
+            <th class="k-grid-req">Requirement</th>
+            <template x-for="t in gridTests" :key="t">
+              <th class="k-grid-test">
+                <div class="k-grid-test-lbl" :title="testName(t) + (testLoc(t) ? ' · ' + testLoc(t) : '')">
+                  <a x-show="testHref(t)" :href="testHref(t)" target="_blank" rel="noopener" x-text="testName(t)"></a>
+                  <span x-show="!testHref(t)" x-text="testName(t)"></span>
+                </div>
+              </th>
+            </template>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="it in rows" :key="it.id">
+            <tr>
+              <th class="k-grid-req">
+                <span class="k-pill" :class="statusClass(it.status)" :title="def('status', it.status)" x-text="statusIcon(it.status)"></span>
+                <a class="k-reqid" x-show="reqHref(it.reqId)" :href="reqHref(it.reqId)" target="_blank" rel="noopener" :title="'open ' + it.reqId + ' in tracker'" x-text="it.reqId"></a><span class="k-reqid" x-show="!reqHref(it.reqId)" x-text="it.reqId"></span>
+                <span class="k-path" x-text="it.title || it.name"></span>
+              </th>
+              <template x-for="t in gridTests" :key="t">
+                <td class="k-grid-cell" :class="covers(it, t) ? statusClass(testStatus(t)) : ''"
+                    :title="covers(it, t) ? (it.reqId + ' &#8592; ' + testName(t) + ' (' + testStatus(t) + ')') : ''">
+                  <span x-text="covers(it, t) ? statusIcon(testStatus(t)) : ''"></span>
+                </td>
+              </template>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <div class="k-empty" x-show="rows.length === 0">No requirements match the filter.</div>
+      <div class="k-empty" x-show="rows.length && !gridTests.length">No covering tests in the graph yet.</div>
+    </div>
+
+    <!-- the epic → feature → leaf hierarchy tree (the "it's all connected" structural view) -->
+    <div class="k-tree" x-show="view === 'tree'">
+      <div class="k-sub">The requirement hierarchy &mdash; epic &rarr; feature &rarr; leaf. Click a parent to collapse its subtree.</div>
+      <template x-for="r in treeRows" :key="r.node.reqId">
+        <div class="k-tree-row" :class="r.hasKids && 'k-clickable'" :style="'padding-left:' + (r.depth * 22) + 'px'"
+             @click="r.hasKids && treeToggle(r.node.reqId)">
+          <span class="k-caret" :class="[r.hasKids ? '' : 'k-caret-leaf', treeOpen(r.node.reqId) && 'k-open']"
+                x-text="r.hasKids ? '▶' : '·'"></span>
+          <span class="k-pill" :class="statusClass(r.node.status)" :title="def('status', r.node.status)" x-text="statusIcon(r.node.status)"></span>
+          <a class="k-reqid" x-show="reqHref(r.node.reqId)" :href="reqHref(r.node.reqId)" target="_blank" rel="noopener" :title="'open ' + r.node.reqId + ' in tracker'" x-text="r.node.reqId"></a><span class="k-reqid" x-show="!reqHref(r.node.reqId)" x-text="r.node.reqId"></span>
+          <span class="k-path" x-text="r.node.title"></span>
+          <span class="k-tree-type" x-show="r.node.type" x-text="r.node.type"></span>
+          <span class="k-crit" :class="critClass(r.node.criticality)" :title="def('criticality', r.node.criticality)" x-show="!r.hasKids" x-text="r.node.criticality || 'medium'"></span>
+        </div>
+      </template>
+      <div class="k-empty" x-show="treeRows.length === 0">No requirements to show.</div>
+    </div>
+
+    <!-- glossary overlay -->
+    <div class="k-overlay" x-show="glossaryOpen" @click.self="glossaryOpen = false" x-transition.opacity>
+      <div class="k-modal" role="dialog" aria-label="Glossary">
+        <div class="k-modal-head">
+          <h2>Glossary</h2>
+          <button class="k-x" @click="glossaryOpen = false" aria-label="Close">&times;</button>
+        </div>
+        <div class="k-modal-body">
+          <template x-for="group in glossary" :key="group.title">
+            <div class="k-gloss-group" :id="'gloss-' + group.key">
+              <h3 x-text="group.title"></h3>
+              <div class="k-sub" x-text="group.intro"></div>
+              <template x-for="term in group.terms" :key="term.t">
+                <div class="k-gloss-term">
+                  <span class="k-pill" :class="term.cls" x-text="term.t"></span>
+                  <span x-text="term.d"></span>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="../traceability-data.js"></script>
+  <script src="../traceability-report.js"></script>
+  <script src="../help-affordance.js"></script>
+  <script src="../../../res/alpine.min.js" defer></script>
+  <!-- shared report top-nav via the core KarateReport util — consistent bar, Traceability tab highlighted. -->
+  <script src="../../../res/karate-report.js"></script>
+  <script>
+    (function () {
+      var d = window.KARATE_TRACE || {};
+      var tabs = [
+        // the Coverage sibling is always part of the deliverable — the writer stamps the href seam
+        { key: 'coverage', title: 'Coverage', href: d.coverageHref || '../../coverage/pages/coverage.html' },
+        { key: 'traceability', title: 'Traceability', href: 'traceability.html' }
+      ];
+      // the paired-run page, iff one was published beside this report (stamped only when it is there)
+      if (d.contractHref) {
+        tabs.push({ key: 'contract', title: 'Contract', href: d.contractHref });
+      }
+      KarateReport.renderTopNav({ current: 'traceability', summary: d.karateSummary, tabs: tabs });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+<!--/* The wire, one click away (D315(e)): the exchange exactly as recorded, its parts, and curl.
+     Param: x (a result's or a step's exchange). */-->
+<details th:fragment="exchange" data-exchange
+         class="mt-3 rounded-lg border border-ink-200 dark:border-ink-700 bg-ink-50 dark:bg-ink-950 text-xs">
+  <summary class="cursor-pointer px-3 py-2 font-mono text-ink-600 dark:text-ink-300">
+    <span th:text="x.method">POST</span> <span th:text="x.url">url</span> → <span th:text="x.status">200</span>
+  </summary>
+  <div class="px-3 pb-3 space-y-2">
+    <div th:if="x.requestBody">
+      <div class="text-[10px] uppercase tracking-wide text-ink-500">Request body</div>
+      <pre class="font-mono whitespace-pre-wrap break-all" th:text="x.requestBody"></pre>
+    </div>
+    <div>
+      <div class="text-[10px] uppercase tracking-wide text-ink-500">Response <span th:text="x.status"></span></div>
+      <pre class="font-mono whitespace-pre-wrap break-all" th:text="x.responseBody"></pre>
+    </div>
+    <div>
+      <div class="text-[10px] uppercase tracking-wide text-ink-500">curl</div>
+      <pre data-curl class="font-mono whitespace-pre-wrap break-all" th:text="x.curl"></pre>
+      <button type="button" onclick="copyText(this)"
+              class="mt-1 px-2 py-1 rounded border border-ink-200 dark:border-ink-700 hover:bg-white dark:hover:bg-ink-900">Copy as curl</button>
+    </div>
+    <div>
+      <div class="text-[10px] uppercase tracking-wide text-ink-500">As recorded</div>
+      <pre data-exchange-json class="font-mono whitespace-pre-wrap break-all text-ink-500" th:text="x.json"></pre>
+    </div>
+  </div>
+</details>

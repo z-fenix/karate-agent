@@ -1,0 +1,1 @@
+schema = { status: ['valid','used','cancelled','replaced','expired'], phoneMatches: '#boolean', accountMatches: '#boolean', projectMatches: '#boolean', unitMatches: '#boolean', roleMatches: '#boolean', replay: '#boolean' }

@@ -1,0 +1,67 @@
+<!--/* Manual mode — Campaigns (/manual/campaigns): the sets of tests launched together, the most recently
+     launched first (campaign.list(), shared with Home and New campaign through request.cache
+     'manual.campaigns'). A row says how its last launch ended, as campaign.list() says it (lastStatus):
+     passed (green dot) · failed (red dot) · launching (purple ring) · no verdict or never launched (grey
+     ring); the campaign's own page grades each test. The list is data-m-live, so a launch starting or
+     settling re-renders it. */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'Campaigns · Karate Agent');
+  var list = request.cache('manual.campaigns', function () { return campaign.list(); });
+  list = list && list.length != null ? list : [];
+
+  var plural = kaWords.plural, age = kaWords.age;
+  var DOT = { passed: 'm-dot--passed', failed: 'm-dot--failed', running: 'm-dot--inflight', notrun: 'm-dot--notrun' };
+  var LABEL = { passed: 'last launch passed', failed: 'last launch failed', running: 'launching', notrun: 'no verdict' };
+  var LAST = { passed: 'the last launch passed', failed: 'the last launch failed', notrun: 'the last launch gave no verdict' };
+
+  var rows = [];
+  for (var i = 0; i < list.length; i++) {
+    var c = list[i];
+    var st = String(c.lastStatus || 'notrun');
+    var t = c.totals && c.totals.tests ? c.totals.tests : {};
+    var sub = plural(t.total || 0, 'test', 'tests');
+    if (st == 'running') sub += ' · launching now';
+    else if (!c.launches) sub += ' · never launched';
+    else sub += ' · ' + (LAST[st] || LAST.notrun);
+    var when = c.lastRunAt ? 'launched ' + age(c.lastRunAt) : 'created ' + age(c.createdMs);
+    rows.push({
+      name: String(c.name),
+      href: '/manual/campaign?c=' + encodeURIComponent(String(c.name)),
+      dot: 'm-dot ' + (DOT[st] || DOT.notrun),
+      label: c.launches ? (LABEL[st] || LABEL.notrun) : 'not launched yet',
+      sub: sub,
+      meta: when,
+      status: st
+    });
+  }
+  _.rows = rows;
+</script>
+<section class="m-page" data-ka-section="manual.campaigns">
+  <header class="m-head">
+    <div class="m-head-text">
+      <h1 class="m-title">Campaigns</h1>
+      <p class="m-sub">Tests you launch together, for a release or a sprint.</p>
+    </div>
+    <div class="m-head-end"><a class="m-btn" href="/manual/campaigns/new">New campaign</a></div>
+  </header>
+
+  <div class="m-section" data-ka-section="manual.campaigns.list" data-m-live>
+    <div th:if="rows.length == 0" class="m-empty">
+      <div class="m-empty-title">No campaign yet</div>
+      <div class="m-empty-sub">Pick the tests a release needs, launch them in one go, and see what passed each time.</div>
+    </div>
+    <div th:if="rows.length > 0" class="m-rows">
+      <a th:each="r: rows" class="m-row m-row--act" th:href="r.href"
+         th:attr="'data-m-campaign': r.name, 'data-m-status': r.status">
+        <span th:class="r.dot" role="img" th:attr="'aria-label': r.label, 'title': r.label"></span>
+        <span class="m-row-main">
+          <span class="m-row-title" th:text="r.name">Release 1.3</span>
+          <span class="m-row-sub" th:text="r.sub">3 tests · 1 failed</span>
+        </span>
+        <span class="m-row-meta" th:text="r.meta">launched 2 h ago</span>
+        <span class="m-row-act">Open</span>
+      </a>
+    </div>
+  </div>
+</section>

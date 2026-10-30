@@ -1,0 +1,18 @@
+<script ka:scope="local">
+    _.methodToCss = x => {
+        switch (x.toLowerCase()) {
+            case 'post':
+            case 'put':
+            case 'patch':
+                return 'text-bg-warning';
+            case 'delete':
+                return 'text-bg-danger';
+            default:
+                return 'text-bg-primary';
+        }
+    };
+</script>
+<div class="p-1">
+    <span class="badge" th:text="request.method" th:classappend="methodToCss(request.method)"></span>
+    <span th:text="request.path"></span>
+</div>

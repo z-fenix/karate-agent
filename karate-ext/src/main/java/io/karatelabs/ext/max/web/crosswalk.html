@@ -1,0 +1,115 @@
+<!--/* /checks/crosswalk — oasdiff's check catalog crosswalked to Openapi.diff (D329(i)), read-only. A content
+     fragment; layout.html provides the shell. Pure SSR (D88) off openapi.crosswalk() — the jar's
+     crosswalk.json, the same document GET /api/openapi/crosswalk serves; the filters only hide rows. */-->
+<script ka:scope="global">
+  var summary = openapi.crosswalk();
+  var levels = ['error', 'warning', 'info'];
+  _.version = summary.reference.version;
+  _.total = summary.count;
+  _.levels = levels;
+  _.counts = ['detected', 'notEvaluated', 'declined'].map(function (d) {
+    var byLevel = summary.counts[d] || {};
+    var cells = levels.map(function (l) { return byLevel[l] || 0; });
+    return { disposition: d, meaning: summary.dispositions[d], cells: cells,
+             total: cells.reduce(function (a, b) { return a + b; }, 0) };
+  });
+  _.checks = openapi.crosswalk({}).map(function (c) {
+    var detail = c.disposition === 'detected'
+        ? c.kinds.join(', ') + (c.direction ? ' · ' + c.direction : '') + (c.facet ? ' · ' + c.facet : '')
+          + (c.site ? ' @ ' + c.site : '')
+        : (c.disposition === 'notEvaluated' ? c.code : c.reason);
+    return { id: c.id, level: c.level, disposition: c.disposition, detail: detail,
+             levelNote: c.levelNote || '', description: c.description };
+  });
+  context.setGlobal('pageTitle', 'oasdiff crosswalk · Karate Agent');
+</script>
+
+<div class="max-w-6xl mx-auto px-4 sm:px-6 py-8" data-ka-section="checks.crosswalk"
+     x-data="{ d: '', l: '', q: '', shown: 0,
+               apply() {
+                 const q = this.q.trim().toLowerCase(); let n = 0;
+                 this.$refs.rows.querySelectorAll('tr').forEach(r => {
+                   const hide = (this.d && r.dataset.d !== this.d) || (this.l && r.dataset.l !== this.l)
+                       || (q && r.dataset.id.indexOf(q) < 0);
+                   r.style.display = hide ? 'none' : ''; if (!hide) n++;
+                 });
+                 this.shown = n;
+               } }"
+     x-effect="apply()">
+  <h1 class="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">oasdiff crosswalk</h1>
+  <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+    Every check in oasdiff <span class="font-mono text-slate-700 dark:text-slate-300" th:text="version">1.32.1</span>'s
+    catalog, against what <span class="font-mono">Openapi.diff</span> does with it. Read-only — also served as JSON at
+    <a href="/api/openapi/crosswalk" class="font-mono text-indigo-600 dark:text-indigo-400 hover:underline">/api/openapi/crosswalk</a>
+    and <span class="font-mono">Openapi.crosswalk()</span>.
+  </p>
+
+  <div class="mt-5 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm">
+    <table class="w-full text-xs sm:text-sm" data-ka-counts>
+      <thead class="text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500">
+        <tr class="border-b border-slate-100 dark:border-slate-700">
+          <th class="px-2 sm:px-4 py-2 text-left font-medium">disposition</th>
+          <th th:each="l: levels" class="px-2 sm:px-4 py-2 text-right font-medium" th:text="l">level</th>
+          <th class="px-2 sm:px-4 py-2 text-right font-medium">total</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr th:each="r: counts" class="border-b border-slate-100 dark:border-slate-700 last:border-0">
+          <td class="px-2 sm:px-4 py-2 font-mono text-slate-800 dark:text-slate-200" th:attr="'title': r.meaning" th:text="r.disposition">detected</td>
+          <td th:each="n: r.cells" class="px-2 sm:px-4 py-2 text-right tabular-nums text-slate-700 dark:text-slate-300" th:text="n">0</td>
+          <td class="px-2 sm:px-4 py-2 text-right tabular-nums font-medium text-slate-900 dark:text-slate-100" th:text="r.total">0</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr class="border-t border-slate-200 dark:border-slate-700">
+          <td class="px-2 sm:px-4 py-2 text-xs text-slate-500 dark:text-slate-400" th:attr="'colspan': levels.length + 1">checks</td>
+          <td class="px-2 sm:px-4 py-2 text-right tabular-nums font-semibold text-slate-900 dark:text-slate-100" th:text="total">0</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <div class="mt-5 flex flex-wrap items-center gap-2 text-sm">
+    <select x-model="d" aria-label="disposition"
+            class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-slate-700 dark:text-slate-200">
+      <option value="">all dispositions</option>
+      <option th:each="r: counts" th:value="r.disposition" th:text="r.disposition">detected</option>
+    </select>
+    <select x-model="l" aria-label="level"
+            class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-slate-700 dark:text-slate-200">
+      <option value="">all levels</option>
+      <option th:each="l: levels" th:value="l" th:text="l">error</option>
+    </select>
+    <input type="search" x-model="q" placeholder="search check id…" aria-label="search check id"
+           class="flex-1 min-w-[12rem] rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-200"/>
+    <span class="text-xs text-slate-500 dark:text-slate-400 tabular-nums" x-text="shown + ' shown'"></span>
+  </div>
+
+  <div class="mt-3 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm">
+    <table class="w-full text-xs">
+      <thead class="hidden sm:table-header-group text-left uppercase tracking-wide text-slate-400 dark:text-slate-500">
+        <tr class="border-b border-slate-100 dark:border-slate-700">
+          <th class="px-3 py-2 font-medium">check</th>
+          <th class="px-3 py-2 font-medium">level</th>
+          <th class="px-3 py-2 font-medium">disposition</th>
+          <th class="px-3 py-2 font-medium">kinds · code · reason</th>
+          <th class="px-3 py-2 font-medium">description</th>
+        </tr>
+      </thead>
+      <tbody x-ref="rows" class="divide-y divide-slate-100 dark:divide-slate-700">
+        <tr th:each="c: checks" th:attr="'data-d': c.disposition, 'data-l': c.level, 'data-id': c.id" class="block sm:table-row px-1 py-1.5 sm:p-0 align-top">
+          <td class="block sm:table-cell px-3 py-0.5 sm:py-1.5 font-mono text-slate-800 dark:text-slate-200 break-words sm:min-w-[14rem]" th:text="c.id">id</td>
+          <td class="inline-block sm:table-cell px-3 py-0.5 sm:py-1.5 text-slate-600 dark:text-slate-300" th:text="c.level">level</td>
+          <td class="inline-block sm:table-cell px-3 py-0.5 sm:py-1.5 font-mono"
+              th:classappend="c.disposition == 'detected' ? 'text-emerald-700 dark:text-emerald-400' : (c.disposition == 'declined' ? 'text-amber-700 dark:text-amber-400' : 'text-slate-500 dark:text-slate-400')"
+              th:text="c.disposition">disposition</td>
+          <td class="block sm:table-cell px-3 py-0.5 sm:py-1.5 text-slate-700 dark:text-slate-300 sm:min-w-[14rem]">
+            <span class="font-mono break-words" th:text="c.detail">detail</span>
+            <div th:if="c.levelNote" class="mt-0.5 text-[11px] text-amber-700 dark:text-amber-400" th:text="c.levelNote">levelNote</div>
+          </td>
+          <td class="block sm:table-cell px-3 py-0.5 sm:py-1.5 text-slate-600 dark:text-slate-400 sm:min-w-[12rem]" th:text="c.description">description</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>

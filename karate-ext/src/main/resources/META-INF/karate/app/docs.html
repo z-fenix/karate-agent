@@ -1,0 +1,239 @@
+<!--/* The API docs made interactive: each operation of the projected spec with its description and
+     schemas, and a try-it — for a bound command the detail page's own action form, for a derived
+     read its request — sent by the same app.act. The lifecycle pane (playground.md §7) is
+     app.docs().lifecycle, grouped here as the console lens and Rule.report group it, in their order:
+     disclosure · flow · what next · per operation beside its try-it · the two lists. */-->
+<script ka:scope="global">
+  if (request.post) {
+    var posted = app.act(request.param('world') || null, request.param('command'), request.paramJson('form'));
+    context.init();
+    context.flash.result = posted;
+    context.flash.operation = request.param('operation');
+    context.redirect('/docs#' + request.param('operation'));
+  }
+  _.d = app.docs();
+  function outcomeText(o) {
+    var parts = [];
+    if (o.stage) parts.push(o.stage);
+    if (o.reason) parts.push(o.reason);
+    if (o.message) parts.push(o.message);
+    if (o.wire) parts.push(o.wire.status + ' ' + o.wire.code);
+    if (o.depthPruned) parts.push(o.depthPruned + ' depth-pruned');
+    if (o.worlds) parts.push('worlds ' + o.worlds.join(', '));
+    return parts.join(' · ');
+  }
+  function valuesText(values) {
+    return Object.keys(values || {}).map(function (k) { return k + ' ' + values[k].join('|'); }).join(' · ');
+  }
+  function lcView(pane) {
+    if (!pane) return null;
+    if (pane.unavailable) return { rule: pane.rule, unavailable: pane.unavailable, text: 'No lifecycle pane for '
+        + pane.rule + ' — ' + pane.unavailable.code + ': ' + pane.unavailable.reason };
+    var order = pane.states.map(function (s) { return s.state; });
+    var ops = {};
+    pane.operations.forEach(function (op) {
+      var groups = {};
+      op.groups.forEach(function (g) { groups[g.state] = g.rows; });
+      var states = [];
+      order.forEach(function (s) {
+        var rows = groups[s] || [];
+        function values(pred) { var r = rows.filter(pred); return r.length ? valuesText(r[0].values) : ''; }
+        var tuples = op.tuples.filter(function (t) { return t.fromStates.indexOf(s) >= 0; }).map(function (t) {
+          return { id: t.id, grade: t.grade, witness: t.witness,
+            head: t.argsClass + '  ' + t.fromStates.join('/') + ' → ' + t.toStates.join('/'),
+            detail: 'members ' + t.members.map(function (m) { return m.from + '→' + m.to; }).join(', ')
+              + (t.differing.length ? ' · differing ' + t.differing.join(', ') : '')
+              + (t.maskedFields.length ? ' · masked ' + t.maskedFields.join(', ') : '')
+              + (t.sequences.length ? ' · sequences ' + t.sequences.join(', ') : ''),
+            values: values(function (r) { return r.tuple === t.id; }) };
+        });
+        var others = op.refusals.concat(op.errors).filter(function (r) { return r.fromStates.indexOf(s) >= 0; }).map(function (r) {
+          return { status: r.status, text: outcomeText(r) + ' · ×' + r.count + ' · from ' + r.fromStates.join('/'),
+            values: values(function (x) { return !x.tuple && x.stage === r.stage && (x.reason || x.message) === (r.reason || r.message); }) };
+        });
+        if (tuples.length + others.length) {
+          states.push({ state: s, tuples: tuples, others: others,
+            summary: tuples.length + ' tuples · ' + others.length + ' refusal/error rows' });
+        }
+      });
+      ops[op.opId] = { states: states, req: op.req, summary: op.command + ' · ' + op.tuples.length + ' tuples · '
+          + op.refusals.length + ' refusals · ' + op.errors.length + ' errors' };
+    });
+    var d = pane.disclosure;
+    return { rule: pane.rule, line: d.line, boundary: d.boundary,
+      drift: d.projectionDrift.drift ? 'projection drift — ' + (d.projectionDrift.reason || '') : null,
+      ops: ops, flow: pane.flow,
+      flowTitle: 'flow — ' + pane.flow.edges.length + ' edges between ' + pane.flow.nodes.length + ' operations',
+      edges: pane.flow.edges.map(function (e) { return { ends: e.from + ' → ' + e.to,
+        sequences: e.sequence.length ? 'sequences: ' + e.sequence.join(', ') : null,
+        walk: e.walk.length ? 'walk paths: ' + e.walk.length : null, walkIds: e.walk.join(', ') }; }),
+      reads: 'Derived reads, listed, not drawn: ' + pane.flow.reads.join(', '),
+      states: pane.states.map(function (st) {
+        var counts = {};
+        st.commands.forEach(function (c) { c.outcomes.forEach(function (o) { counts[o.outcome] = (counts[o.outcome] || 0) + 1; }); });
+        return { state: st.state, worlds: st.worlds + ' worlds', noneEnabled: st.noneEnabled,
+          counts: ['applied', 'refused', 'unavailable', 'errored', 'notreached'].filter(function (o) { return counts[o]; })
+            .map(function (o) { return { outcome: o, text: o + ' ' + counts[o] }; }),
+          commands: st.commands.map(function (c) { return { command: c.command, operation: c.operation || '—',
+            inputs: c.inputs.length ? 'in: ' + c.inputs.join(', ') : 'no input',
+            outcomes: c.outcomes.map(function (o) { return { outcome: o.outcome, text: outcomeText(o) }; }) }; }) };
+      }),
+      modelOnly: pane.modelOnly.map(function (m) { return m.command + ' — ' + m.reason + (m.operation ? ' (' + m.operation + ')' : ''); }),
+      unmodelled: pane.unmodelled };
+  }
+  _.lc = lcView(_.d.lifecycle);
+  _.oc = { applied: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+    refused: 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-300',
+    unavailable: 'bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-400',
+    errored: 'bg-coral-50 text-coral-500 dark:bg-coral-500/10 dark:text-coral-300',
+    notreached: 'border border-dashed border-ink-300 text-ink-500 dark:border-ink-600 dark:text-ink-400' };
+  _.result = context.flash.result;
+  _.resultFor = context.flash.operation;
+</script>
+<style>
+  .kd-flow svg { max-width: 100%; height: auto; }
+  .kd-svg { font-family: system-ui, sans-serif; }
+  .kd-shape { fill: #fff; stroke: #CBD5E1; stroke-width: 1.2; }
+  .kd-node:hover .kd-shape { stroke: #6366F1; }
+  .kd-text { fill: #334155; font-size: 11px; }
+  .kd-text-quiet { fill: #64748B; font-style: italic; }
+  .kd-edge { stroke: #94A3B8; stroke-width: 1.2; fill: none; }
+  .kd-edge-label { fill: #64748B; font-size: 10px; }
+  .kd-arrow { fill: #94A3B8; }
+  .kd-flow .kd-edge-label { display: none; }
+  [data-lc-flow]:has(.kd-labels-on:checked) .kd-flow .kd-edge-label { display: inline; }
+  .dark .kd-shape { fill: #1E293B; stroke: #475569; }
+  .dark .kd-text { fill: #E2E8F0; }
+  .dark .kd-text-quiet, .dark .kd-edge-label { fill: #94A3B8; }
+  .dark .kd-edge { stroke: #64748B; }
+  .dark .kd-arrow { fill: #64748B; }
+</style>
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight"><span th:text="d.title">Title</span> API</h1>
+    <p th:if="d.description" class="mt-1 text-sm text-ink-500 dark:text-ink-400" th:text="d.description"></p>
+  </div>
+  <section th:if="lc" data-lifecycle class="bg-white dark:bg-ink-900 rounded-xl shadow-sm border border-ink-100 dark:border-ink-800 p-5 space-y-4">
+    <h2 class="text-[11px] font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400">Lifecycle</h2>
+    <p th:if="lc.unavailable" data-lc-unavailable class="text-sm text-ink-500 dark:text-ink-400" th:text="lc.text"></p>
+    <th:block th:unless="lc.unavailable">
+      <div>
+        <div data-lc-disclosure class="text-xs font-mono text-ink-600 dark:text-ink-300 break-all" th:text="lc.line"></div>
+        <p class="text-xs text-ink-400" th:text="lc.boundary"></p>
+        <p th:if="lc.drift" class="text-xs text-amber-700 dark:text-amber-300" th:text="lc.drift"></p>
+      </div>
+      <div data-lc-flow class="rounded-lg border border-ink-100 dark:border-ink-800 p-3">
+        <div class="flex items-center gap-3 mb-2">
+          <span class="text-[11px] font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400" th:text="lc.flowTitle">flow</span>
+          <label class="ml-auto text-xs text-ink-500 dark:text-ink-400 flex items-center gap-1 cursor-pointer"><input type="checkbox" class="kd-labels-on"/> edge labels</label>
+        </div>
+        <div class="kd-flow overflow-x-auto" th:utext="lc.flow.svg"></div>
+        <p class="mt-2 text-xs text-ink-500 dark:text-ink-400" th:text="lc.flow.caption"></p>
+        <p class="text-xs text-ink-500 dark:text-ink-400" th:text="lc.reads"></p>
+        <details class="mt-2 text-xs">
+          <summary class="cursor-pointer text-ink-500" th:text="'edges (' + lc.edges.length + ')'">edges</summary>
+          <div th:each="e : lc.edges" data-lc-edge class="py-1 border-b border-ink-100 dark:border-ink-800">
+            <span class="font-mono" th:text="e.ends"></span>
+            <span th:if="e.sequences" class="ml-2 text-ink-500" th:text="e.sequences"></span>
+            <details th:if="e.walk" class="inline-block ml-2 align-top">
+              <summary class="cursor-pointer text-ink-500" th:text="e.walk"></summary>
+              <div class="font-mono text-ink-500 break-all" th:text="e.walkIds"></div>
+            </details>
+          </div>
+        </details>
+      </div>
+      <div data-lc-states>
+        <div class="text-[11px] font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400 mb-1">What next, by state</div>
+        <details th:each="st : lc.states" th:attr="'data-lc-state': st.state" class="mb-1 rounded-lg border border-ink-100 dark:border-ink-800">
+          <summary class="px-3 py-1.5 cursor-pointer text-xs">
+            <span class="font-mono font-semibold" th:text="st.state">STATE</span>
+            <span class="ml-1 text-ink-400" th:text="st.worlds"></span>
+            <span th:each="c : st.counts" class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold" th:classappend="oc[c.outcome]" th:text="c.text"></span>
+            <span th:if="st.noneEnabled" class="ml-1 text-ink-500">no command enabled in this state</span>
+          </summary>
+          <div class="px-3 pb-2">
+            <div th:each="c : st.commands" class="py-1 border-t border-ink-100 dark:border-ink-800 text-xs flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <span class="font-mono font-semibold w-28 shrink-0" th:text="c.command"></span>
+              <span class="font-mono text-ink-400 w-28 shrink-0" th:text="c.operation"></span>
+              <span class="text-ink-400 w-24 shrink-0" th:text="c.inputs"></span>
+              <div class="flex-1 min-w-0 space-y-0.5">
+                <div th:each="o : c.outcomes"><span class="px-1.5 py-0.5 rounded text-[10px] font-semibold" th:classappend="oc[o.outcome]" th:text="o.outcome"></span>
+                  <span class="text-ink-500 dark:text-ink-400 break-all" th:text="o.text"></span></div>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </th:block>
+  </section>
+  <section th:each="op : d.operations" th:id="op.opId" th:attr="'data-operation': op.opId"
+           class="bg-white dark:bg-ink-900 rounded-xl shadow-sm border border-ink-100 dark:border-ink-800 p-5 space-y-3">
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900" th:text="op.method">POST</span>
+      <span class="font-mono text-sm" th:text="op.path">/path</span>
+      <span class="text-sm text-ink-500" th:text="op.summary">summary</span>
+    </div>
+    <p th:if="op.description" class="text-sm text-ink-600 dark:text-ink-300" th:text="op.description"></p>
+    <details th:if="op.requestSchema" class="text-xs">
+      <summary class="cursor-pointer text-ink-500">Request schema</summary>
+      <pre class="mt-2 p-3 rounded-lg bg-ink-50 dark:bg-ink-950 font-mono whitespace-pre-wrap" th:text="op.requestSchema"></pre>
+    </details>
+    <details class="text-xs">
+      <summary class="cursor-pointer text-ink-500">Responses</summary>
+      <div th:each="rs : op.responses" class="mt-2">
+        <span class="font-mono font-semibold" th:text="rs.status">200</span>
+        <span class="text-ink-500" th:text="rs.description">description</span>
+        <pre th:if="rs.schema" class="mt-1 p-3 rounded-lg bg-ink-50 dark:bg-ink-950 font-mono whitespace-pre-wrap" th:text="rs.schema"></pre>
+      </div>
+    </details>
+    <div th:if="op.form" data-try-it>
+      <div class="text-[11px] font-semibold uppercase tracking-wide text-ink-500 mb-2">Try it</div>
+      <th:block th:insert="~{components/action :: action}" th:with="f: op.form, post: '/docs'"></th:block>
+    </div>
+    <th:block th:if="result &amp;&amp; resultFor == op.opId" th:insert="~{components/result :: result}" th:with="r: result, full: true"></th:block>
+    <details th:if="lc &amp;&amp; lc.ops &amp;&amp; lc.ops[op.opId]" th:with="lo: lc.ops[op.opId]" th:attr="'data-lc-op': op.opId"
+             class="rounded-lg border border-brand-100 dark:border-brand-800 text-xs">
+      <summary class="px-3 py-1.5 cursor-pointer">
+        <span class="font-semibold text-brand-700 dark:text-brand-300">Lifecycle</span>
+        <span class="ml-1 text-ink-500" th:text="lo.summary"></span>
+        <span th:if="lo.req" class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold font-mono bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300" th:text="lo.req"></span>
+      </summary>
+      <div class="px-3 pb-2 space-y-1">
+        <details th:each="st : lo.states" th:attr="'data-lc-op-state': st.state" class="rounded border border-ink-100 dark:border-ink-800">
+          <summary class="px-2 py-1 cursor-pointer">
+            <span class="font-mono font-semibold" th:text="'from ' + st.state"></span>
+            <span class="ml-1 text-ink-400" th:text="st.summary"></span>
+          </summary>
+          <div class="px-2 pb-1.5 space-y-1">
+            <div th:each="t : st.tuples" th:attr="'data-lc-tuple': t.id" class="py-1 border-t border-ink-100 dark:border-ink-800">
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold" th:classappend="oc.applied">applied</span>
+              <span class="font-mono" th:text="t.head"></span>
+              <span class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300" th:text="t.grade"></span>
+              <span th:if="t.witness" class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand-50 text-brand-700 dark:bg-brand-950 dark:text-brand-300" th:text="'witness: ' + t.witness"></span>
+              <span class="ml-1 font-mono text-ink-400" th:text="t.id"></span>
+              <div class="text-ink-500 dark:text-ink-400 break-all" th:text="t.detail"></div>
+              <div th:if="t.values" class="text-ink-400 break-all" th:text="t.values"></div>
+            </div>
+            <div th:each="r : st.others" class="py-1 border-t border-ink-100 dark:border-ink-800">
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold" th:classappend="oc[r.status]" th:text="r.status"></span>
+              <span class="text-ink-600 dark:text-ink-300 break-all" th:text="r.text"></span>
+              <div th:if="r.values" class="text-ink-400 break-all" th:text="r.values"></div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </details>
+  </section>
+  <section th:if="lc &amp;&amp; !lc.unavailable" data-lc-lists class="grid md:grid-cols-2 gap-4">
+    <div data-lc-model-only class="bg-white dark:bg-ink-900 rounded-xl shadow-sm border border-ink-100 dark:border-ink-800 p-5">
+      <div class="text-[11px] font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400 mb-1" th:text="'Model-only commands (' + lc.modelOnly.length + ')'"></div>
+      <p th:if="lc.modelOnly.length == 0" class="text-xs text-ink-400">None — every command joins an operation.</p>
+      <div th:each="m : lc.modelOnly" class="text-xs font-mono" th:text="m"></div>
+    </div>
+    <div data-lc-unmodelled class="bg-white dark:bg-ink-900 rounded-xl shadow-sm border border-ink-100 dark:border-ink-800 p-5">
+      <div class="text-[11px] font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400 mb-1" th:text="'Behaviour-unmodelled operations (' + lc.unmodelled.length + ')'"></div>
+      <p th:if="lc.unmodelled.length == 0" class="text-xs text-ink-400">None — every operation is modelled.</p>
+      <div th:each="u : lc.unmodelled" class="text-xs font-mono" th:text="u"></div>
+    </div>
+  </section>
+</div>

@@ -1,0 +1,252 @@
+/* Rule Analysis report (D119) — self-contained component styles. Kept independent of Tailwind
+ * utility classes (the report JS lives outside the tailwind content-scan globs), so the report
+ * renders correctly straight off disk. Vendored Tailwind is still inlined for the base/reset. */
+
+:root {
+    --ka-bg: #f8fafc;
+    --ka-panel: #ffffff;
+    --ka-border: #e2e8f0;
+    --ka-border-strong: #cbd5e1;
+    --ka-ink: #1e293b;
+    --ka-muted: #64748b;
+    --ka-faint: #94a3b8;
+    --ka-accent: #4f46e5;
+    --ka-yes: #047857;
+    --ka-yes-bg: #ecfdf5;
+    --ka-yes-border: #a7f3d0;
+    --ka-no: #b91c1c;
+    --ka-no-bg: #fef2f2;
+    --ka-no-border: #fecaca;
+    --ka-both: #b45309;
+    --ka-both-bg: #fffbeb;
+    --ka-both-border: #fde68a;
+    --ka-boundary: #4338ca;
+    --ka-boundary-bg: #eef2ff;
+    --ka-boundary-border: #c7d2fe;
+    --ka-subtle: #f1f5f9;      /* chips, badges, code, generated-provenance */
+    --ka-stripe: #f8fafc;      /* sticky table header + row hover */
+    --ka-group: #eef2f7;       /* decision-table group rows */
+    --ka-scenario-bg: #eef2ff; /* scenario-provenance tag */
+    --ka-bar: #6366f1;         /* What-If tornado bars (SVG) */
+    --ka-flip: #d97706;        /* What-If outcome-flip marks (SVG) */
+}
+
+/* Dark theme — honors the ONE `karate-theme` localStorage key (set pre-paint on <html data-theme>),
+ * the same key the served console + the other coverage reports write. Only the palette flips; every
+ * surface already reads these vars (chart SVGs included), so the whole report follows. */
+[data-theme="dark"] {
+    --ka-bg: #0f172a;
+    --ka-panel: #1e293b;
+    --ka-border: #334155;
+    --ka-border-strong: #475569;
+    --ka-ink: #e2e8f0;
+    --ka-muted: #94a3b8;
+    --ka-faint: #64748b;
+    --ka-accent: #818cf8;
+    --ka-yes: #34d399;
+    --ka-yes-bg: #0c2e25;
+    --ka-yes-border: #15604a;
+    --ka-no: #f87171;
+    --ka-no-bg: #3a1414;
+    --ka-no-border: #7f1d1d;
+    --ka-both: #fbbf24;
+    --ka-both-bg: #3a2c0a;
+    --ka-both-border: #78510f;
+    --ka-boundary: #a5b4fc;
+    --ka-boundary-bg: #272358;
+    --ka-boundary-border: #3b3680;
+    --ka-subtle: #273241;
+    --ka-stripe: #243044;
+    --ka-group: #2a3647;
+    --ka-scenario-bg: #272358;
+    --ka-bar: #818cf8;
+    --ka-flip: #fbbf24;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--ka-bg);
+    color: var(--ka-ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.ka-wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
+
+.ka-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.ka-head h1 { font-size: 20px; font-weight: 700; margin: 0; }
+.ka-head .ka-rule { color: var(--ka-accent); }
+.ka-sub { color: var(--ka-muted); font-size: 13px; margin-bottom: 18px; }
+.ka-sub code { background: var(--ka-subtle); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+.ka-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+    background: var(--ka-subtle); color: var(--ka-muted); border: 1px solid var(--ka-border);
+}
+.ka-badge--ok { background: var(--ka-yes-bg); color: var(--ka-yes); border-color: var(--ka-yes-border); }
+.ka-badge--warn { background: var(--ka-both-bg); color: var(--ka-both); border-color: var(--ka-both-border); }
+.ka-badge--bad { background: var(--ka-no-bg); color: var(--ka-no); border-color: var(--ka-no-border); }
+.ka-badge--gen { background: var(--ka-boundary-bg); color: var(--ka-boundary); border-color: var(--ka-boundary-border); }
+
+.ka-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--ka-border); margin-bottom: 18px; }
+.ka-tab {
+    appearance: none; border: 0; background: transparent; cursor: pointer;
+    padding: 9px 16px; font-size: 13.5px; font-weight: 600; color: var(--ka-muted);
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.ka-tab:hover { color: var(--ka-ink); }
+.ka-tab--active { color: var(--ka-accent); border-bottom-color: var(--ka-accent); }
+.ka-tab .ka-count { font-weight: 500; color: var(--ka-faint); font-size: 11px; }
+
+.ka-view { display: none; }
+.ka-view--active { display: block; }
+
+.ka-headline { font-size: 15px; font-weight: 600; margin: 0 0 14px; }
+.ka-headline .ka-pct { color: var(--ka-accent); }
+.ka-note { color: var(--ka-muted); font-size: 12.5px; margin: 0 0 16px; }
+
+.ka-panel {
+    background: var(--ka-panel); border: 1px solid var(--ka-border);
+    border-radius: 10px; padding: 0; overflow: hidden; margin-bottom: 18px;
+}
+
+/* tables */
+.ka-tablewrap { overflow-x: auto; border: 1px solid var(--ka-border); border-radius: 10px; background: var(--ka-panel); }
+table.ka-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.ka-table th, .ka-table td { padding: 7px 11px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--ka-border); }
+.ka-table thead th {
+    position: sticky; top: 0; background: var(--ka-stripe); z-index: 1;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--ka-muted);
+    border-bottom: 1px solid var(--ka-border-strong);
+}
+.ka-table tbody tr:hover { background: var(--ka-stripe); }
+.ka-table td.ka-num, .ka-table th.ka-num { text-align: right; font-variant-numeric: tabular-nums; }
+.ka-table .ka-group { background: var(--ka-group); color: var(--ka-muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; }
+.ka-row-dup td { color: var(--ka-faint); }
+
+.ka-cell-yes { color: var(--ka-yes); background: var(--ka-yes-bg); font-weight: 700; text-align: center; }
+.ka-cell-no { color: var(--ka-no); background: var(--ka-no-bg); font-weight: 700; text-align: center; }
+.ka-cell-both { color: var(--ka-both); background: var(--ka-both-bg); font-weight: 700; text-align: center; }
+.ka-cell-na { color: var(--ka-faint); text-align: center; }
+
+.ka-prov { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; }
+.ka-prov--scenario { background: var(--ka-scenario-bg); color: var(--ka-boundary); }
+.ka-prov--generated { background: var(--ka-subtle); color: var(--ka-muted); }
+
+.ka-legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--ka-muted); font-size: 11.5px; margin: 10px 2px 0; }
+.ka-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.ka-swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+/* value ranges */
+.ka-dim { padding: 12px 14px; border-bottom: 1px solid var(--ka-border); }
+.ka-dim:last-child { border-bottom: 0; }
+.ka-dim-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ka-dim-path { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.ka-type { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--ka-faint); border: 1px solid var(--ka-border); border-radius: 4px; padding: 1px 5px; }
+.ka-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.ka-chip {
+    font-size: 12px; padding: 2px 9px; border-radius: 6px;
+    background: var(--ka-subtle); color: var(--ka-ink); border: 1px solid var(--ka-border);
+    font-variant-numeric: tabular-nums;
+}
+.ka-chip--sm { font-size: 11px; padding: 1px 7px; }
+.ka-chip--boundary { background: var(--ka-boundary-bg); color: var(--ka-boundary); border-color: var(--ka-boundary-border); font-weight: 600; }
+.ka-gates { color: var(--ka-faint); font-size: 11px; margin-top: 6px; font-family: ui-monospace, monospace; }
+
+/* a step path, read as a numbered list of commands — the arguments follow each one, muted. The
+ * vendored Tailwind preflight strips list markers and the table cells are nowrap, so both are
+ * restored here: the numbering IS the reading, and a long argument list must wrap, not widen. */
+.ka-steps { margin: 0; padding-left: 20px; font-size: 12px; list-style: decimal outside; }
+.ka-steps li { margin: 1px 0; display: list-item; }
+.ka-steps li span { color: var(--ka-muted); }
+.ka-table td .ka-steps, .ka-table td .ka-steps li { white-space: normal; }
+.ka-table td .ka-steps { min-width: 360px; }
+
+/* a prose cell in a nowrap table — bounded so a sentence wraps instead of widening the page */
+.ka-table td.ka-wrap { white-space: normal; min-width: 240px; max-width: 560px; overflow-wrap: anywhere; }
+.ka-table td.ka-wrap .ka-chips { margin-bottom: 4px; }
+.ka-table td.ka-id { white-space: normal; min-width: 120px; max-width: 200px; overflow-wrap: anywhere; }
+
+.ka-grey { background: var(--ka-both-bg); border: 1px solid var(--ka-both-border); border-radius: 10px; padding: 12px 14px; margin-bottom: 18px; }
+.ka-grey h3 { margin: 0 0 4px; font-size: 13px; color: var(--ka-both); }
+.ka-grey .ka-note { margin-bottom: 10px; }
+.ka-grey code { font-family: ui-monospace, monospace; font-size: 11.5px; }
+.ka-grey ul { margin: 0; padding-left: 18px; }
+.ka-grey li { margin: 3px 0; font-size: 12px; }
+
+/* cards / check */
+.ka-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-bottom: 18px; }
+.ka-card { background: var(--ka-panel); border: 1px solid var(--ka-border); border-radius: 10px; padding: 14px; }
+.ka-card h3 { margin: 0 0 10px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.ka-card ul { margin: 0; padding-left: 0; list-style: none; }
+.ka-card li { padding: 6px 0; border-bottom: 1px dashed var(--ka-border); font-size: 12.5px; }
+.ka-card li:last-child { border-bottom: 0; }
+.ka-empty { color: var(--ka-muted); font-size: 12.5px; font-style: italic; }
+.ka-src { font-family: ui-monospace, monospace; font-size: 11px; color: var(--ka-muted); display: block; margin-top: 2px; }
+.ka-inv { display: flex; align-items: flex-start; gap: 8px; }
+.ka-inv .ka-mark { font-weight: 800; }
+.ka-inv--pass .ka-mark { color: var(--ka-yes); }
+.ka-inv--fail .ka-mark { color: var(--ka-no); }
+/* neither pass nor fail — a row that could not be graded (an environmental fault), so it must read
+   as muted rather than borrow either verdict's colour */
+.ka-inv--skip .ka-mark { color: var(--ka-muted); }
+.ka-counter { background: var(--ka-no-bg); border: 1px solid var(--ka-no-border); border-radius: 6px; padding: 6px 8px; margin-top: 5px; font-family: ui-monospace, monospace; font-size: 11px; overflow-x: auto; }
+
+/* mutation — the two rates sit side by side and are never blended, so they get equal weight */
+.ka-scores { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-bottom: 12px; }
+.ka-score { background: var(--ka-panel); border: 1px solid var(--ka-border); border-radius: 10px; padding: 14px; }
+.ka-score-val { font-size: 26px; font-weight: 700; color: var(--ka-accent); font-variant-numeric: tabular-nums; }
+.ka-score-lbl { font-size: 13px; font-weight: 600; margin-top: 2px; }
+.ka-score-den { font-size: 11.5px; color: var(--ka-muted); font-variant-numeric: tabular-nums; }
+.ka-score-note { font-size: 11.5px; color: var(--ka-faint); margin-top: 4px; }
+
+/* what-if */
+.ka-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.ka-controls label { font-size: 12.5px; color: var(--ka-muted); }
+.ka-select { font-size: 13px; padding: 5px 8px; border: 1px solid var(--ka-border-strong); border-radius: 7px; background: var(--ka-panel); color: var(--ka-ink); }
+.ka-chart { background: var(--ka-panel); border: 1px solid var(--ka-border); border-radius: 10px; padding: 14px; margin-bottom: 18px; }
+.ka-chart h3 { margin: 0 0 10px; font-size: 13px; }
+.ka-chart svg { display: block; max-width: 100%; }
+.ka-flipnote { color: var(--ka-both); font-size: 11.5px; margin-top: 6px; }
+
+/* the live record beside each saved sequence (D319) — a non-current freshness is named, never dropped */
+.ka-table td.ka-live { white-space: normal; min-width: 240px; max-width: 340px; overflow-wrap: break-word; font-size: 12px; }
+.ka-table td.ka-live .ka-steps { min-width: 0; }
+/* the saved-sequences rail keeps its live column on screen at >=1280px: label and steps wrap narrower */
+.ka-seqs td.ka-seq-label { white-space: normal; min-width: 140px; }
+.ka-seqs td .ka-steps { min-width: 180px; }
+.ka-seqs td.ka-live { min-width: 220px; max-width: 300px; }
+.ka-table td.ka-who { white-space: normal; min-width: 180px; max-width: 320px; overflow-wrap: anywhere; }
+.ka-table td.ka-said { white-space: normal; min-width: 180px; }
+.ka-live > div + div { margin-top: 3px; }
+.ka-live-fresh { color: var(--ka-both); font-weight: 600; }
+.ka-live-head { font-family: ui-monospace, monospace; font-size: 11px; color: var(--ka-muted); margin-left: 4px; }
+
+.ka-foot { color: var(--ka-faint); font-size: 11px; margin-top: 28px; text-align: center; }
+
+/* the docs' lifecycle pane (playground.md §7) — the kd-* diagram colours come from the inlined
+ * Tailwind; the five status words keep one colour each, never collapsed */
+.ka-lc { margin-top: 28px; }
+.ka-lc .kd-flow svg { display: block; max-width: 100%; height: auto; }
+.ka-lc-fold { background: var(--ka-panel); border: 1px solid var(--ka-border); border-radius: 8px; margin-bottom: 6px; }
+.ka-lc-fold > summary { cursor: pointer; padding: 6px 10px; font-size: 12.5px; }
+.ka-lc-fold > :not(summary) { margin: 0 10px; }
+.ka-lc-fold[open] { padding-bottom: 6px; }
+.ka-lc-inner { margin: 4px 0; }
+.ka-lc-inline { display: inline-block; vertical-align: top; margin-left: 8px; }
+.ka-lc-inline > summary { cursor: pointer; color: var(--ka-muted); font-size: 11.5px; }
+.ka-lc-row { padding: 4px 0; border-top: 1px dashed var(--ka-border); font-size: 11.5px; overflow-wrap: anywhere; }
+.ka-lc-row code, .ka-lc-fold > summary code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; font-weight: 600; }
+.ka-lc-cmd { display: grid; grid-template-columns: 110px 110px 110px 1fr; gap: 8px; align-items: baseline; }
+.ka-lc-dim { color: var(--ka-muted); }
+.ka-lc-toggle { float: right; font-weight: 400; font-size: 11.5px; color: var(--ka-muted); cursor: pointer; }
+.ka-lc-o { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; margin-left: 4px; border: 1px solid transparent; }
+.ka-lc-o--applied { background: var(--ka-yes-bg); color: var(--ka-yes); }
+.ka-lc-o--refused { background: var(--ka-both-bg); color: var(--ka-both); }
+.ka-lc-o--unavailable { background: var(--ka-subtle); color: var(--ka-muted); }
+.ka-lc-o--errored { background: var(--ka-no-bg); color: var(--ka-no); }
+.ka-lc-o--notreached { background: transparent; color: var(--ka-muted); border: 1px dashed var(--ka-border-strong); }

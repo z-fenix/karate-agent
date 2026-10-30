@@ -1,0 +1,318 @@
+<!--/* Manual mode — New test (/manual/tests/new): the tester drives the app once in the live browser while it
+     records; the AI then turns the recording into a test (Harness.author). There is no prose-to-test verb, so
+     the page asks for what a recording needs: the app (prefilled with the project's, any address typed in its
+     place is this recording's own), the test's file name, and the criteria it verifies.
+     Hand-off in: ?req=<id>[,<id>…] (a criterion id, a stamp, or a requirement id, which expands to its
+     criteria) and ?name=<file name>.
+     Reads, server-side: runner.app() (the app under test for the active env: Runner.target's appUrl, unprobed) ·
+     requirement.list() (the criteria to pick) · check.list() (names already taken: Start holds one until
+     Replace it is chosen) · harness.providers() (is an AI model set up) · rail.runs() (the one browser is
+     busy, D48 — the rail's own read). The page renders without waiting on the app: the form asks GET /ui/runner/target whether
+     it answers.
+     Start recording calls kaManual.startRecording (pub/manual.js) and lands on /manual/runs/<id>, where Stop
+     and "Turn it into a test" call kaManual.stopRecording / kaManual.turnIntoTest. */-->
+<script ka:scope="global" src="/pub/manual-words.js"></script>
+<script ka:scope="global">
+  context.setGlobal('pageTitle', 'New test · Karate Agent');
+  (function () {
+    function safe(fn) { try { return fn(); } catch (e) { return null; } }
+    function isList(v) { return v != null && v.length != null && typeof v != 'string'; }
+    var stampId = kaWords.stampId, slug = kaWords.slug;
+
+    // every criterion a test can verify (a requirement with none is its own target)
+    var reqs = safe(function () { return requirement.list(); });
+    var criteria = [];
+    var known = {};
+    var byReq = {};
+    if (isList(reqs)) {
+      for (var r = 0; r < reqs.length; r++) {
+        var q = reqs[r];
+        byReq[q.id] = [];
+        var cs = isList(q.criteria) ? q.criteria : [];
+        if (cs.length) {
+          for (var c = 0; c < cs.length; c++) {
+            var cid = stampId(cs[c].stamp);
+            criteria.push({ id: cid, text: cs[c].text, title: q.title, req: q.id });
+            known[cid] = q;
+            byReq[q.id].push(cid);
+          }
+        } else {
+          criteria.push({ id: q.id, text: q.title, title: q.title, req: q.id });
+          known[q.id] = q;
+          byReq[q.id].push(q.id);
+        }
+      }
+    }
+
+    // ?req= prefill: known ids only; a requirement id stands for all of its criteria
+    var asked = [];
+    var raw = request.paramValues('req');
+    raw = isList(raw) ? raw : (request.param('req') ? [request.param('req')] : []);
+    for (var a = 0; a < raw.length; a++) {
+      var parts = String(raw[a]).split(',');
+      for (var p = 0; p < parts.length; p++) asked.push(stampId(parts[p]));
+    }
+    _.apiHref = '/manual/tests/api' + (asked.length ? '?req=' + encodeURIComponent(asked.join(',')) : '');
+    var picked = [];
+    var firstReq = null;
+    for (var s = 0; s < asked.length; s++) {
+      var id = asked[s];
+      var ids = known[id] ? [id] : (byReq[id] || []);
+      for (var x = 0; x < ids.length; x++) {
+        if (picked.indexOf(ids[x]) < 0) picked.push(ids[x]);
+        if (!firstReq) firstReq = known[ids[x]];
+      }
+    }
+    var list = request.cache('manual.checks', function () { return check.list(); });
+    var taken = [];
+    if (isList(list)) {
+      for (var k = 0; k < list.length; k++) taken.push(String(list[k].name).replace(/\.js$/, ''));
+    }
+    // a name the page makes up is one no test has; an asked one (?name=) is kept, and the form says it is taken
+    var name = slug(request.param('name'));
+    if (!name && firstReq) {
+      var base = slug(String(firstReq.title || firstReq.id).toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+      name = base;
+      for (var n2 = 2; name && taken.indexOf(name) >= 0; n2++) name = base + '-' + n2;
+    }
+
+    // the app under test: Runner.target's appUrl for the active env; the form probes it once the page is up
+    var rp = context.getGlobal('runner');
+    var tg = rp ? safe(function () { return rp.app(null); }) : null;
+    var url = tg && tg.url ? String(tg.url) : null;
+    var env = tg && tg.env ? String(tg.env) : null;
+    _.app = {
+      url: url,
+      env: env,
+      error: tg && tg.error ? String(tg.error) : null,
+      // the config's own sentence, cut to what a hint line holds (the whole text rides the title)
+      errorShort: tg && tg.error ? (String(tg.error).length > 140 ? String(tg.error).substring(0, 140) + '…' : String(tg.error)) : null
+    };
+
+    // the one browser: a run holding it blocks a recording (D48)
+    var runs = request.cache('manual.rail.runs', function () { return rail.runs(); });
+    // `active` is the connectable loop or live run; a leased set or async suite is only in `inFlight` (D358)
+    var inFlight = (runs && runs.inFlight) || [];
+    var active = runs && runs.active ? String(runs.active) : (inFlight.length ? String(inFlight[0]) : null);
+    _.busy = active ? { id: active, href: '/manual/runs/' + encodeURIComponent(active) } : null;
+
+    // turning the recording into a test needs an AI model; recording does not
+    var llm = safe(function () { return harness.providers(); });
+    var aiReady = llm && isList(llm.providers) && llm.providers.length > 0;
+
+    _.stages = kaWords.stageStrip(0);
+
+    _.showTest = {
+      name: name || '',
+      req: picked,
+      criteria: criteria,
+      url: url || '',
+      // where the form asks whether the project's app answers
+      probe: url ? '/ui/runner/target' + (env ? '?env=' + encodeURIComponent(env) : '') : null,
+      blocked: active ? 'busy' : null,
+      ai: aiReady ? true : false,
+      taken: taken
+    };
+  })();
+</script>
+<div ka:island="showTest"/>
+<style>
+  .m-new-grid { display: grid; grid-template-columns: 1.25fr 1.25fr 1fr; gap: 20px; padding-top: 26px; }
+  .m-new-box {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 45px;
+    border: 1px solid var(--m-field-edge); border-radius: var(--m-radius-sm); padding: 11px 14px; min-width: 0; background: var(--m-field);
+  }
+  .m-new-app { padding: 0 14px; }
+  .m-new-app:focus-within, .m-new-name:focus-within { border-color: var(--m-purple); box-shadow: 0 0 0 4px var(--m-purple-soft); }
+  .m-new-app input {
+    flex: 1 1 auto; min-width: 0; border: 0; outline: none; padding: 11px 0; background: none; color: var(--m-ink);
+    font-family: var(--m-mono); font-size: 13.5px; text-overflow: ellipsis; font-variant-ligatures: none;
+  }
+  .m-new-app input::placeholder { color: var(--m-text-3); }
+  .m-new-probe { display: flex; align-items: center; gap: 6px; flex: none; font-size: 12.5px; color: var(--m-text-2); }
+  .m-new-name { display: flex; align-items: baseline; justify-content: flex-start; gap: 0; padding: 0 13px; font-family: var(--m-mono); font-size: 13.5px; }
+  .m-new-name span { flex: none; color: var(--m-text-3); }
+  .m-new-cut { overflow-wrap: anywhere; }
+  .m-new-name input {
+    flex: 0 1 auto; width: 14ch; min-width: 4ch; border: 0; outline: none; padding: 11px 0; background: none; color: var(--m-ink);
+    font-family: var(--m-mono); font-size: 13.5px;
+  }
+  .m-new-chips { flex-wrap: wrap; justify-content: flex-start; gap: 9px; padding: 8px 13px; }
+  .m-new-picker { display: flex; flex-direction: column; gap: 8px; }
+  .m-new-options { max-height: 220px; overflow-y: auto; border-top: 1px solid var(--m-line); }
+  .m-new-option {
+    display: grid; gap: 2px; width: 100%; padding: 9px 0; text-align: left; background: none; border: 0;
+    border-bottom: 1px solid var(--m-line-soft); cursor: pointer; font-family: inherit; color: var(--m-ink);
+  }
+  .m-new-option-id { font-size: 12.5px; font-weight: 600; color: var(--m-purple); }
+  .m-new-option:hover .m-new-option-id { color: var(--m-purple-hover); }
+  .m-new-option-text { font-size: 13px; line-height: 1.45; color: var(--m-text-2); }
+  .m-new-name input:focus-visible, .m-new-app input:focus-visible { outline: none; }   /* the box shows focus (:focus-within) */
+  .m-new-note { margin: 22px 0 0; font-size: 14px; }
+  .m-new-go { margin-top: 30px; }
+  .m-new-why { font-size: 13.5px; color: var(--m-text-2); }
+  .m-new-err { display: flex; align-items: center; gap: 8px; font-size: 13.5px; overflow-wrap: anywhere; }
+  @media (max-width: 960px) {
+    .m-new-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>
+<section class="m-page" data-ka-section="manual.tests.new">
+  <header class="m-head">
+    <div class="m-head-text">
+      <h1 class="m-title">New test</h1>
+      <p class="m-sub">Do the flow once in the live browser. The console records what you do, and the AI turns the recording into a test you can replay for free.</p>
+      <p class="m-sub" data-m-api-choice="">Testing an API, not a web page? <a class="m-link m-link--strong" th:href="apiHref">New API test</a></p>
+    </div>
+    <div class="m-head-end"><a class="m-quiet" href="/manual/tests">Cancel</a></div>
+  </header>
+  <ol th:if="stages" class="m-stages" aria-label="Creating a test" data-m-stages>
+    <li th:each="st: stages" th:class="st.cls" th:attr="'aria-current': st.current"><span class="m-stage-n" th:text="st.n">1</span><span th:text="st.label">Set up</span></li>
+  </ol>
+
+  <div class="m-page" data-ka-section="manual.tests.new.form" x-data="kaShowTest()">
+    <div class="m-new-grid">
+      <div class="m-field">
+        <span class="m-label-row"><label class="m-label" for="m-new-url">Which application</label>
+          <span th:if="app.env" class="m-hint" th:text="app.env">staging</span></span>
+        <span class="m-new-box m-new-app" :title="answer()">
+          <input id="m-new-url" name="url" x-ref="url" x-model="url" @input="err = ''" th:attr="'value': app.url" placeholder="https://staging.my-app.com" autocomplete="off" spellcheck="false">
+          <th:block th:if="app.url">
+            <span class="m-new-probe" x-show="isProjectApp() && checking" x-cloak><span class="m-dot m-dot--xs m-dot--notrun"></span><span>checking</span></span>
+            <span class="m-new-probe" x-show="reachable()" x-cloak><span class="m-dot m-dot--xs m-dot--passed"></span><span>reachable</span></span>
+            <span class="m-new-probe" x-show="down()" x-cloak><span class="m-dot m-dot--xs m-dot--failed"></span><span>not reachable</span></span>
+          </th:block>
+        </span>
+        <span th:if="app.url" class="m-hint" x-show="!isProjectApp()" x-cloak>The recording opens this address instead of the project's app. <button type="button" class="m-link" @click="useProjectApp()">Use the project's app</button></span>
+        <th:block th:unless="app.url">
+          <span class="m-hint">No app address for this project yet. Type one, or ask a developer to set <span class="m-mono">appUrl</span> in <span class="m-mono">karate-config.js</span> so every test opens the same app.</span>
+          <span th:if="app.error" class="m-hint m-new-cut" th:attr="'title': app.error" th:text="app.errorShort">karate-config.js failed</span>
+        </th:block>
+        <span th:if="app.url" class="m-hint" x-show="down()" x-cloak><span :title="probe && probe.error" x-text="downText()">The app did not answer.</span> Start it, then <a href="" @click.prevent="check()">check again</a>, or type another address.</span>
+      </div>
+
+      <label class="m-field">
+        <span class="m-label">Name this test</span>
+        <span class="m-new-box m-new-name">
+          <span>checks/</span><input name="name" x-ref="name" x-model="name" @input="name = clean(name); err = ''; replace = false" :style="'width:' + (name.length ? name.length + 0.5 : 14) + 'ch'" placeholder="type-a-name" autocomplete="off" spellcheck="false" aria-label="Test file name"><span>.js</span>
+        </span>
+        <span x-show="isTaken()" x-cloak class="m-hint" data-m-taken><span x-text="replace ? 'The test with this name will be replaced.' : 'A test with this name already exists.'">A test with this name already exists.</span>
+          <button type="button" class="m-link" @click="replace = !replace; err = ''" x-text="replace ? 'Keep it' : 'Replace it'">Replace it</button></span>
+      </label>
+
+      <div class="m-field">
+        <span class="m-label">It verifies</span>
+        <div class="m-new-box m-new-chips">
+          <template x-for="id in req" :key="id">
+            <span class="m-chip" :title="textOf(id)"><span x-text="id"></span><button type="button" class="m-chip-x" aria-label="Remove" @click="drop(id)">×</button></span>
+          </template>
+          <button type="button" class="m-link" style="font-size: 13.5px" @click="toggle()" x-text="open ? 'Done' : 'Add'">Add</button>
+        </div>
+        <span x-show="!req.length && !open" class="m-hint">Pick the criteria this flow proves, so coverage counts it.</span>
+        <div x-show="open" x-cloak class="m-new-picker">
+          <input class="m-input" x-ref="q" x-model="q" placeholder="Find a criterion" aria-label="Find a criterion">
+          <div class="m-new-options">
+            <template x-for="c in matches()" :key="c.id">
+              <button type="button" class="m-new-option" @click="add(c.id)">
+                <span class="m-new-option-id" x-text="c.id"></span>
+                <span class="m-new-option-text" x-text="c.text"></span>
+              </button>
+            </template>
+            <p x-show="!matches().length" class="m-hint" style="padding-top: 9px">No criterion matches. Write it in Requirements first.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p th:if="!showTest.ai" class="m-new-note m-muted">No AI model is set up yet. You can record now; turning the recording into a test needs one.</p>
+
+    <div class="m-actions m-new-go">
+      <button type="button" class="m-btn m-btn--lg m-beacon" data-m-start x-effect="hold($el)" @click="start()"
+              th:attr="'disabled': showTest.blocked ? 'disabled' : null"><span x-text="starting ? 'Opening the browser…' : 'Start recording'">Start recording</span></button>
+      <span th:if="busy" class="m-new-why">A run is using the browser; the console drives one at a time. <a th:href="busy.href">Watch it</a></span>
+      <span class="m-new-err" role="alert" x-show="err" x-cloak><span class="m-dot m-dot--xs m-dot--failed"></span><span x-text="err"></span></span>
+      <span class="m-cost">Recording uses no AI. Turning it into a test uses AI.</span>
+    </div>
+  </div>
+</section>
+<script>
+  // The New test form (Alpine): its initial state is the SSR island; Start hands the intent to
+  // kaManual.startRecording, which opens the live browser, arms the recorder and lands on the run page.
+  function kaShowTest() {
+    var el = document.getElementById('showTest-data');
+    var s = (el && JSON.parse(el.textContent)) || {};
+    var criteria = s.criteria || [];
+    function slug(v) { return String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }
+    return {
+      name: s.name || '', url: s.url || '', req: (s.req || []).slice(), open: false, q: '', err: '', starting: false,
+      replace: false,
+      // the project app's answer, {reachable, status?, latencyMs?, error?}, once asked (Runner.target)
+      probe: null, checking: false,
+      init() { this.check(); },
+      check() {
+        if (!s.probe) return;
+        this.checking = true;
+        fetch(s.probe, { cache: 'no-store' }).then((r) => r.json())
+          .then((t) => { this.probe = t && t.url === s.url ? t : null; })
+          .catch(() => { this.probe = null; })
+          .finally(() => { this.checking = false; });
+      },
+      reachable() { return this.isProjectApp() && !!this.probe && this.probe.reachable === true; },
+      down() { return this.isProjectApp() && !!this.probe && this.probe.reachable === false; },
+      answer() {
+        var t = this.probe;
+        return this.reachable() && t.status != null ? 'HTTP ' + t.status + (t.latencyMs != null ? ' · ' + t.latencyMs + ' ms' : '') : null;
+      },
+      // the probe's own sentence, cut to what a hint line holds (the whole text rides the title)
+      downText() {
+        var e = this.probe && this.probe.error ? String(this.probe.error) : '';
+        return e ? 'The app did not answer: ' + (e.length > 140 ? e.substring(0, 140) + '…' : e) + '.' : 'The app did not answer.';
+      },
+      clean(v) { return String(v || '').replace(/[^A-Za-z0-9_./-]+/g, '-').replace(/^[./]+/, ''); },
+      // the name Start sends: Harness.author refuses one a test has unless Replace it was chosen (409 EXISTS)
+      fileName() { return this.clean(this.name).replace(/\.js$/, '').replace(/[-./]+$/, ''); },
+      isTaken() { var n = this.fileName(); return !!n && (s.taken || []).indexOf(n) >= 0; },
+      free(n) { var out = n; for (var i = 2; out && (s.taken || []).indexOf(out) >= 0; i++) out = n + '-' + i; return out; },
+      textOf(id) { var c = criteria.find((x) => x.id === id); return c ? c.text : ''; },
+      toggle() { this.open = !this.open; if (this.open) this.$nextTick(() => this.$refs.q && this.$refs.q.focus()); },
+      matches() {
+        var q = this.q.trim().toLowerCase();
+        return criteria.filter((c) => this.req.indexOf(c.id) < 0
+          && (!q || (c.id + ' ' + c.text + ' ' + c.title).toLowerCase().indexOf(q) >= 0)).slice(0, 60);
+      },
+      // the first criterion picked names an unnamed test after its requirement
+      add(id) {
+        if (this.req.indexOf(id) < 0) this.req.push(id);
+        this.q = '';
+        if (!this.name.trim()) {
+          var c = criteria.find((x) => x.id === id);
+          if (c) { this.name = this.free(slug(c.title || c.req)); this.err = ''; }
+        }
+      },
+      drop(id) { this.req = this.req.filter((x) => x !== id); },
+      // the address opens prefilled with the project's app (runner.app()); a typed one is this recording's
+      isProjectApp() { return !!s.url && this.url.trim() === s.url; },
+      useProjectApp() { this.url = s.url || ''; this.err = ''; this.$nextTick(() => this.$refs.url && this.$refs.url.focus()); },
+      // Start is held only for a reason shown beside it (the browser is busy, the project's app is being checked or
+      // is down, and is still the address); a missing name or address is said on click instead of greying it out
+      held() { return s.blocked === 'busy' || (this.isProjectApp() && (this.checking || this.down())); },
+      hold(btn) { btn.disabled = this.held() || this.starting; },
+      async start() {
+        if (this.held() || this.starting) return;
+        this.err = '';
+        var name = this.fileName();
+        if (!this.url.trim()) { this.err = 'Type the address of the app first.'; this.$refs.url && this.$refs.url.focus(); return; }
+        if (!name) { this.err = 'Name the test first.'; this.$refs.name && this.$refs.name.focus(); return; }
+        if (this.isTaken() && !this.replace) {
+          this.err = 'A test with this name already exists. Type another name, or choose Replace it.';
+          this.$refs.name && this.$refs.name.focus();
+          return;
+        }
+        this.starting = true;
+        try {
+          await kaManual.startRecording({ name: name, url: this.url.trim(), req: this.req.slice(),
+                                          overwrite: this.isTaken() && this.replace });
+        } catch (e) { this.err = String(e && e.message ? e.message : e).replace(/^Error: /, ''); this.starting = false; }
+      }
+    };
+  }
+</script>

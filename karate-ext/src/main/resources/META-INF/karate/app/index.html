@@ -1,0 +1,51 @@
+<!--/* The table of the resource's worlds, and the creating command's action. */-->
+<script ka:scope="global">
+  if (request.post) {
+    var posted = app.act(null, request.param('command'), request.paramJson('form'));
+    context.init();
+    context.flash.result = posted;
+    context.redirect(posted.location);
+  }
+  _.ui = app.ui;
+  _.worlds = app.worlds();
+  _.count = _.worlds.length + ' ' + app.ui.resource.label.toLowerCase() + (_.worlds.length === 1 ? '' : 's');
+  _.creates = app.creates();
+  _.result = context.flash.result;
+</script>
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight" th:text="ui.title">Title</h1>
+    <p class="mt-1 text-sm text-ink-500 dark:text-ink-400"
+       th:text="count">0</p>
+  </div>
+
+  <th:block th:if="result" th:insert="~{components/result :: result}" th:with="r: result, full: false"></th:block>
+
+  <div th:if="worlds.length > 0"
+       class="bg-white dark:bg-ink-900 rounded-xl shadow-sm border border-ink-100 dark:border-ink-800 overflow-x-auto">
+    <table data-worlds class="w-full text-sm">
+      <thead class="bg-ink-50 dark:bg-ink-950/60 text-[11px] font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400">
+        <tr>
+          <th th:each="col : ui.resource.columns" class="px-4 py-2.5 text-left" th:text="ui.fields[col].label">Column</th>
+          <th class="px-4 py-2.5"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-ink-100 dark:divide-ink-800">
+        <tr th:each="w : worlds" th:attr="'data-world': w.key" class="hover:bg-ink-50 dark:hover:bg-ink-800/40">
+          <td th:each="c : w.cells" class="px-4 py-2.5" th:insert="~{components/result :: value}" th:with="c: c"></td>
+          <td class="px-4 py-2.5 text-right"><a th:href="w.href" class="text-brand-700 dark:text-brand-300 font-medium">Open</a></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div th:unless="worlds.length > 0" data-empty
+       class="bg-white dark:bg-ink-900 rounded-xl border border-dashed border-ink-200 dark:border-ink-700 px-6 py-10 text-center">
+    <p class="text-sm font-semibold" th:text="'No ' + ui.resource.label + ' yet'">No records yet</p>
+    <p class="mt-1 text-xs text-ink-500">Start one with the action below — it is a real call to the mock.</p>
+  </div>
+
+  <div class="grid md:grid-cols-2 gap-4">
+    <th:block th:each="f : creates" th:insert="~{components/action :: action}" th:with="f: f, post: '/'"></th:block>
+  </div>
+</div>

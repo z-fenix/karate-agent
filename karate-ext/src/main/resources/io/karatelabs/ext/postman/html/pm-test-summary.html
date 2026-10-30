@@ -1,0 +1,10 @@
+<div class="alert px-2 py-1 m-1" th:classappend="totalCount == 0 ? 'alert-secondary' : (failCount > 0 ? 'alert-danger' : 'alert-success')">
+    <span>Tests</span>
+    <span class="px-2">
+    <i class="bi bi-check-circle-fill" th:if="failCount == 0"></i>
+    <i class="bi bi-x-circle-fill" th:unless="failCount == 0"></i>
+    </span>
+    <span th:text="passCount"></span>
+    <span>/</span>
+    <span th:text="totalCount"></span>
+</div>
