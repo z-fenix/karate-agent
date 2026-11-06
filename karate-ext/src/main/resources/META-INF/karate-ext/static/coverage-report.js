@@ -7,11 +7,15 @@
 document.addEventListener('alpine:init', function () {
   Alpine.data('coverageReport', function () {
     return {
-      data: window.KARATE_COVERAGE_DATA || {},
+      // The reporting graph is a read-only, multi-megabyte object. Keep Alpine's deep
+      // reactive proxy away from it; reactive UI state belongs in the fields below.
+      data: Alpine.raw(window.KARATE_COVERAGE_DATA || {}),
       q: '',
       sourceFilter: '',
       statusFilter: '',
       expanded: {},
+      page: 0,
+      pageSize: 100,
 
       // Per-scenario `rules` rows are removed from the report (the arm — not the scenario — is the
       // coverable unit; see the Rule Coverage section below). Hide the whole `rules` SOURCE from the
@@ -402,7 +406,7 @@ document.addEventListener('alpine:init', function () {
         });
       },
       get visibleTotal() { return this.listItems.length; },
-      get rows() {
+      get filteredRows() {
         var q = this.q.trim().toLowerCase();
         var src = this.sourceFilter, st = this.statusFilter;
         return this.listItems.filter(function (i) {
@@ -415,6 +419,22 @@ document.addEventListener('alpine:init', function () {
           return true;
         });
       },
+      get pageCount() {
+        return Math.max(1, Math.ceil(this.filteredRows.length / this.pageSize));
+      },
+      get rows() {
+        var start = this.page * this.pageSize;
+        return this.filteredRows.slice(start, start + this.pageSize);
+      },
+      get pageStart() {
+        return this.filteredRows.length ? this.page * this.pageSize + 1 : 0;
+      },
+      get pageEnd() {
+        return Math.min((this.page + 1) * this.pageSize, this.filteredRows.length);
+      },
+      resetPage: function () { this.page = 0; },
+      prevPage: function () { this.page = Math.max(0, this.page - 1); },
+      nextPage: function () { this.page = Math.min(this.pageCount - 1, this.page + 1); },
 
       // (the per-source operation/combos/inputs sub-stats moved wholesale to the scorecard + the Input
       // Coverage section — the demoted source strip is retired, D181; its getters went with it.)

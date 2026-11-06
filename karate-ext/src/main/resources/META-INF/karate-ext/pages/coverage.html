@@ -94,21 +94,21 @@
 
     <!-- filter toolbar -->
     <div class="k-toolbar">
-      <input type="search" placeholder="Filter by id, name, path, method…" x-model="q">
-      <select x-model="sourceFilter">
+      <input type="search" placeholder="Filter by id, name, path, method…" x-model="q" @input="resetPage()">
+      <select x-model="sourceFilter" @change="resetPage()">
         <option value="">All sources</option>
         <template x-for="s in sources" :key="s.namespace">
           <option :value="s.namespace" x-text="s.namespace"></option>
         </template>
       </select>
-      <select x-model="statusFilter">
+      <select x-model="statusFilter" @change="resetPage()">
         <option value="">All statuses</option>
         <option>COVERED</option>
         <option>FAILING</option>
         <option>NOTRUN</option>
         <option>NOTCOVERED</option>
       </select>
-      <span class="k-count" x-text="rows.length + ' of ' + visibleTotal + ' items'"></span>
+      <span class="k-count" x-text="filteredRows.length + ' matching · page ' + (page + 1) + ' of ' + pageCount"></span>
     </div>
 
     <!-- items table; one <tbody> per item so the row + its drill-down stay one x-for unit -->
@@ -315,6 +315,11 @@
     </table>
 
     <div class="k-empty" x-show="rows.length === 0">No items match the filter.</div>
+    <div class="k-pager" x-show="filteredRows.length > 0">
+      <button type="button" @click="prevPage()" :disabled="page === 0" aria-label="Previous page">&#8249; Previous</button>
+      <span x-text="'Showing ' + pageStart + '–' + pageEnd + ' of ' + filteredRows.length"></span>
+      <button type="button" @click="nextPage()" :disabled="page >= pageCount - 1" aria-label="Next page">Next &#8250;</button>
+    </div>
 
     <!-- Input Coverage (Part 3, §2h) — the marginal analog of the Rule Coverage arm view below: each input
          VALUE is a coverable item. Per tested area, the value universe of each field with tried ✓ / missed ✗

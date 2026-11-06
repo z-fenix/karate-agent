@@ -8,12 +8,16 @@
 document.addEventListener('alpine:init', function () {
   Alpine.data('traceabilityReport', function () {
     return {
-      data: window.KARATE_TRACE || {},
+      // The graph + readiness payload is read-only and can be multi-megabyte.
+      // Keep Alpine's deep reactive proxy away from it.
+      data: Alpine.raw(window.KARATE_TRACE || {}),
       q: '',
       critFilter: '',
       statusFilter: '',
       provFilter: '',
       expanded: {},
+      page: 0,
+      pageSize: 100,
       view: 'matrix',           // 'matrix' (RTM rows) | 'grid' (the req × test cross-grid) | 'tree' (the epic→feature→leaf hierarchy)
       treeCollapsed: {},
       sortKey: '',              // T4: '' = authored order; else a matrix column key
@@ -59,7 +63,7 @@ document.addEventListener('alpine:init', function () {
         (this.readiness.requirements || []).forEach(function (r) { m[r.reqId] = r.risk; });
         return m;
       },
-      get rows() {
+      get filteredRows() {
         var self = this, q = this.q.trim().toLowerCase(), cf = this.critFilter, sf = this.statusFilter, pf = this.provFilter, risk = this.riskById;
         var out = this.reqs.filter(function (r) {
           if (cf && (r.criticality || 'medium') !== cf) return false;
@@ -82,9 +86,26 @@ document.addEventListener('alpine:init', function () {
         }
         return out;
       },
+      get pageCount() {
+        return Math.max(1, Math.ceil(this.filteredRows.length / this.pageSize));
+      },
+      get rows() {
+        var start = this.page * this.pageSize;
+        return this.filteredRows.slice(start, start + this.pageSize);
+      },
+      get pageStart() {
+        return this.filteredRows.length ? this.page * this.pageSize + 1 : 0;
+      },
+      get pageEnd() {
+        return Math.min((this.page + 1) * this.pageSize, this.filteredRows.length);
+      },
+      resetPage: function () { this.page = 0; },
+      prevPage: function () { this.page = Math.max(0, this.page - 1); },
+      nextPage: function () { this.page = Math.min(this.pageCount - 1, this.page + 1); },
 
       // ---- T4: column sort (ranked enums sort by severity order, not alphabetically) ----
       sortBy: function (k) {
+        this.resetPage();
         if (this.sortKey === k) {
           if (this.sortDir === 1) { this.sortDir = -1; } else { this.sortKey = ''; this.sortDir = 1; }   // 3rd click = authored order
         } else { this.sortKey = k; this.sortDir = 1; }
@@ -161,6 +182,7 @@ document.addEventListener('alpine:init', function () {
         return h ? t + ' — includes ' + h + ' covered but unchecked (oracle-only, refusal-only or notasserted), graded as not covered (see Blockers)' : t;
       },
       setFilter: function (cr, st) {
+        this.resetPage();
         this.critFilter = (this.critFilter === cr && this.statusFilter === st) ? '' : cr;
         this.statusFilter = (this.statusFilter === st && this.critFilter === '') ? '' : st;
       },
@@ -372,7 +394,7 @@ document.addEventListener('alpine:init', function () {
         var self = this;
         var cols = ['Requirement', 'Title', 'Type', 'Status', 'Criticality', 'Risk', 'Provenance', 'Posture', 'Tests', 'Acceptance'];
         var lines = [cols.map(this.csvCell).join(',')];
-        this.rows.forEach(function (r) {
+        this.filteredRows.forEach(function (r) {
           lines.push([
             r.reqId, r.title || r.name || '', r.type || '', r.status || '',
             r.criticality || 'medium', r.risk || '', self.prov(r), r.posture || '',
@@ -433,7 +455,7 @@ document.addEventListener('alpine:init', function () {
       // the same testHref deep link as the drill-down.
       get gridTests() {
         var self = this, seen = {}, out = [];
-        this.rows.forEach(function (r) {
+        this.filteredRows.forEach(function (r) {
           self.testsOf(r).forEach(function (t) { if (!seen[t]) { seen[t] = true; out.push(t); } });
         });
         return out;

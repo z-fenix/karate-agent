@@ -262,21 +262,21 @@
 
     <!-- filter toolbar (slices the matrix AND the grid — the grid columns follow the filtered rows) -->
     <div class="k-toolbar" x-show="view === 'matrix' || view === 'grid'">
-      <input type="search" placeholder="Filter by id, title, prose…" x-model="q">
-      <select x-model="critFilter">
+      <input type="search" placeholder="Filter by id, title, prose…" x-model="q" @input="resetPage()">
+      <select x-model="critFilter" @change="resetPage()">
         <option value="">All criticality</option>
         <option value="high">high</option><option value="medium">medium</option><option value="low">low</option>
       </select>
-      <select x-model="statusFilter">
+      <select x-model="statusFilter" @change="resetPage()">
         <option value="">All statuses</option>
         <option>COVERED</option><option>FAILING</option><option>NOTRUN</option><option>NOTCOVERED</option>
       </select>
-      <select x-model="provFilter">
+      <select x-model="provFilter" @change="resetPage()">
         <option value="">All provenance</option>
         <option>exercised</option><option>partexercised</option><option>incidental</option><option>notexercised</option>
       </select>
       <button class="k-csv-btn" @click="exportCsv()" title="Export the filtered matrix as CSV (Excel)">&#8595; CSV</button>
-      <span class="k-count" x-text="rows.length + ' of ' + total + ' requirements'"></span>
+      <span class="k-count" x-text="filteredRows.length + ' of ' + total + ' requirements · page ' + (page + 1) + ' of ' + pageCount"></span>
     </div>
 
     <!-- the Requirements Traceability Matrix -->
@@ -294,7 +294,7 @@
           <th style="width:66px" class="k-sortable" @click="sortBy('accept')" title="sort by acceptance-criteria coverage">Accept.<span class="k-sort" x-text="sortInd('accept')"></span></th>
         </tr>
       </thead>
-      <template x-for="it in rows" :key="it.id">
+      <template x-for="it in (view === 'matrix' ? rows : [])" :key="it.id">
         <tbody class="k-itembody">
           <tr class="k-row" @click="toggle(it.id)">
             <td><span class="k-caret" :class="isOpen(it.id) && 'k-open'">&#9654;</span></td>
@@ -434,6 +434,11 @@
       </template>
     </table>
     <div class="k-empty" x-show="view === 'matrix' && rows.length === 0">No requirements match the filter.</div>
+    <div class="k-pager" x-show="view === 'matrix' && filteredRows.length > 0">
+      <button type="button" @click="prevPage()" :disabled="page === 0" aria-label="Previous page">&#8249; Previous</button>
+      <span x-text="'Showing ' + pageStart + '–' + pageEnd + ' of ' + filteredRows.length"></span>
+      <button type="button" @click="nextPage()" :disabled="page >= pageCount - 1" aria-label="Next page">Next &#8250;</button>
+    </div>
 
     <!-- T1: the bidirectional requirement × test cross-grid — the canonical RTM artifact (rows =
          requirements, columns = the tests covering any filtered row, a cell = that test's own status
@@ -443,7 +448,7 @@
         <thead>
           <tr>
             <th class="k-grid-req">Requirement</th>
-            <template x-for="t in gridTests" :key="t">
+            <template x-for="t in (view === 'grid' ? gridTests : [])" :key="t">
               <th class="k-grid-test">
                 <div class="k-grid-test-lbl" :title="testName(t) + (testLoc(t) ? ' · ' + testLoc(t) : '')">
                   <a x-show="testHref(t)" :href="testHref(t)" target="_blank" rel="noopener" x-text="testName(t)"></a>
@@ -454,14 +459,14 @@
           </tr>
         </thead>
         <tbody>
-          <template x-for="it in rows" :key="it.id">
+          <template x-for="it in (view === 'grid' ? rows : [])" :key="it.id">
             <tr>
               <th class="k-grid-req">
                 <span class="k-pill" :class="statusClass(it.status)" :title="def('status', it.status)" x-text="statusIcon(it.status)"></span>
                 <a class="k-reqid" x-show="reqHref(it.reqId)" :href="reqHref(it.reqId)" target="_blank" rel="noopener" :title="'open ' + it.reqId + ' in tracker'" x-text="it.reqId"></a><span class="k-reqid" x-show="!reqHref(it.reqId)" x-text="it.reqId"></span>
                 <span class="k-path" x-text="it.title || it.name"></span>
               </th>
-              <template x-for="t in gridTests" :key="t">
+              <template x-for="t in (view === 'grid' ? gridTests : [])" :key="t">
                 <td class="k-grid-cell" :class="covers(it, t) ? statusClass(testStatus(t)) : ''"
                     :title="covers(it, t) ? (it.reqId + ' &#8592; ' + testName(t) + ' (' + testStatus(t) + ')') : ''">
                   <span x-text="covers(it, t) ? statusIcon(testStatus(t)) : ''"></span>
@@ -471,14 +476,19 @@
           </template>
         </tbody>
       </table>
-      <div class="k-empty" x-show="rows.length === 0">No requirements match the filter.</div>
-      <div class="k-empty" x-show="rows.length && !gridTests.length">No covering tests in the graph yet.</div>
+      <div class="k-empty" x-show="view === 'grid' && rows.length === 0">No requirements match the filter.</div>
+      <div class="k-empty" x-show="view === 'grid' && rows.length && !gridTests.length">No covering tests in the graph yet.</div>
+      <div class="k-pager" x-show="view === 'grid' && filteredRows.length > 0">
+        <button type="button" @click="prevPage()" :disabled="page === 0" aria-label="Previous page">&#8249; Previous</button>
+        <span x-text="'Showing ' + pageStart + '–' + pageEnd + ' of ' + filteredRows.length"></span>
+        <button type="button" @click="nextPage()" :disabled="page >= pageCount - 1" aria-label="Next page">Next &#8250;</button>
+      </div>
     </div>
 
     <!-- the epic → feature → leaf hierarchy tree (the "it's all connected" structural view) -->
     <div class="k-tree" x-show="view === 'tree'">
       <div class="k-sub">The requirement hierarchy &mdash; epic &rarr; feature &rarr; leaf. Click a parent to collapse its subtree.</div>
-      <template x-for="r in treeRows" :key="r.node.reqId">
+      <template x-for="r in (view === 'tree' ? treeRows : [])" :key="r.node.reqId">
         <div class="k-tree-row" :class="r.hasKids && 'k-clickable'" :style="'padding-left:' + (r.depth * 22) + 'px'"
              @click="r.hasKids && treeToggle(r.node.reqId)">
           <span class="k-caret" :class="[r.hasKids ? '' : 'k-caret-leaf', treeOpen(r.node.reqId) && 'k-open']"
@@ -490,7 +500,7 @@
           <span class="k-crit" :class="critClass(r.node.criticality)" :title="def('criticality', r.node.criticality)" x-show="!r.hasKids" x-text="r.node.criticality || 'medium'"></span>
         </div>
       </template>
-      <div class="k-empty" x-show="treeRows.length === 0">No requirements to show.</div>
+      <div class="k-empty" x-show="view === 'tree' && treeRows.length === 0">No requirements to show.</div>
     </div>
 
     <!-- glossary overlay -->

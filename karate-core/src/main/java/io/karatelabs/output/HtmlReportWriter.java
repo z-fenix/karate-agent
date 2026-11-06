@@ -27,7 +27,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.UnaryOperator;
 import org.slf4j.Logger;
@@ -98,7 +100,7 @@ public final class HtmlReportWriter {
       Path featuresDir = outputDir.resolve("feature-html");
       Files.createDirectories(featuresDir);
       String template = loadTemplate("karate-feature.html");
-      String fileName = getFeatureFileName(featureData) + ".html";
+      String fileName = featureFileName(featureData) + ".html";
       writeInlined(featuresDir.resolve(fileName), template, featureData, reportAssets, "../", mask);
    }
 
@@ -276,7 +278,7 @@ public final class HtmlReportWriter {
 
    private static void writeFeatureHtml(Map<String, Object> feature, Path featuresDir) throws IOException {
       String template = loadTemplate("karate-feature.html");
-      String fileName = getFeatureFileName(feature) + ".html";
+      String fileName = featureFileName(feature) + ".html";
       writeInlined(featuresDir.resolve(fileName), template, feature);
    }
 
@@ -654,7 +656,7 @@ public final class HtmlReportWriter {
          Map<String, Object> summary = new LinkedHashMap<>();
          summary.put("name", feature.get("name"));
          summary.put("relativePath", feature.get("relativePath"));
-         summary.put("fileName", getFeatureFileName(feature));
+         summary.put("fileName", featureFileName(feature));
          summary.put("passed", Boolean.TRUE.equals(feature.get("passed")));
          summary.put("failed", Boolean.TRUE.equals(feature.get("failed")));
          Object duration = feature.get("durationMillis");
@@ -715,15 +717,25 @@ public final class HtmlReportWriter {
       return summaryList;
    }
 
-   private static String getFeatureFileName(Map<String, Object> feature) {
+   static String featureFileName(Map<String, Object> feature) {
       String path = (String)feature.get("relativePath");
       if (path == null || path.isEmpty()) {
          path = (String)feature.get("name");
       }
 
-      return path != null && !path.isEmpty()
-         ? path.replace(".feature", "").replace("/", ".").replace("\\", ".").replaceAll("[^a-zA-Z0-9_.-]", "_").toLowerCase()
-         : "unknown";
+      if (path == null || path.isEmpty()) {
+         path = "unknown";
+      }
+      String logicalPath = path.toLowerCase(Locale.ROOT).endsWith(".feature")
+         ? path.substring(0, path.length() - ".feature".length())
+         : path;
+      String slug = logicalPath.replace("/", ".").replace("\\", ".")
+         .replaceAll("[^a-zA-Z0-9_.-]", "_").toLowerCase(Locale.ROOT);
+      // Sanitizing non-ASCII path segments can collapse distinct paths to the same name.
+      // Keep a stable fingerprint of the original path so every feature owns one HTML file.
+      String fingerprint = UUID.nameUUIDFromBytes(path.getBytes(StandardCharsets.UTF_8))
+         .toString().replace("-", "").substring(0, 10);
+      return slug + "-" + fingerprint;
    }
 
    public static void writeTimelineHtml(List<Map<String, Object>> features, SuiteResult result, Path outputDir, String env, int threadCount) throws IOException {
@@ -777,7 +789,7 @@ public final class HtmlReportWriter {
       for (Map<String, Object> feature : features) {
          String path = (String)feature.get("relativePath");
          String featureFileName = extractFileName(path);
-         String featureHtmlName = getFeatureFileName(feature);
+         String featureHtmlName = featureFileName(feature);
          List<Map<String, Object>> scenarios = (List<Map<String, Object>>)feature.get("scenarioResults");
          if (scenarios != null) {
             for (Map<String, Object> scenario : scenarios) {
